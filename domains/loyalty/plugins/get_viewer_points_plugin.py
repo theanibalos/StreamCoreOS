@@ -33,10 +33,17 @@ class GetViewerPointsPlugin(BasePlugin):
 
     async def execute(self, data: dict, context=None):
         try:
-            viewer = await self.db.query_one(
-                "SELECT twitch_id, display_name, points, total_earned FROM viewer_points WHERE twitch_id=$1",
-                [data["twitch_id"]],
-            )
+            identifier = data["twitch_id"]
+            if identifier.isdigit():
+                viewer = await self.db.query_one(
+                    "SELECT twitch_id, display_name, points, total_earned FROM viewer_points WHERE twitch_id=$1",
+                    [identifier],
+                )
+            else:
+                viewer = await self.db.query_one(
+                    "SELECT twitch_id, display_name, points, total_earned FROM viewer_points WHERE lower(display_name)=lower($1)",
+                    [identifier],
+                )
             if not viewer:
                 if context:
                     context.set_status(404)

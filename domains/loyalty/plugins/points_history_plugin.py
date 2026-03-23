@@ -35,10 +35,25 @@ class PointsHistoryPlugin(BasePlugin):
         try:
             limit = max(1, min(int(data.get("limit", 50)), 200))
             offset = int(data.get("offset", 0))
+            identifier = data["twitch_id"]
+
+            if identifier.isdigit():
+                twitch_id = identifier
+            else:
+                viewer = await self.db.query_one(
+                    "SELECT twitch_id FROM viewer_points WHERE lower(display_name)=lower($1)",
+                    [identifier],
+                )
+                if not viewer:
+                    if context:
+                        context.set_status(404)
+                    return {"success": False, "error": "Viewer not found"}
+                twitch_id = viewer["twitch_id"]
+
             rows = await self.db.query(
                 """SELECT id, amount, reason, created_at FROM points_transactions
                    WHERE twitch_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3""",
-                [data["twitch_id"], limit, offset],
+                [twitch_id, limit, offset],
             )
             return {"success": True, "data": rows}
         except Exception as e:

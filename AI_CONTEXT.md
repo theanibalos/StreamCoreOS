@@ -269,6 +269,18 @@ Logging Tool (logger):
                 Use it to attribute errors to specific plugins for health tracking.
 ```
 
+### 🔧 Tool: `state` (Status: ✅)
+```text
+In-Memory State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
+        - CAPABILITIES:
+            - set(key, value, namespace='default'): Store a value.
+            - get(key, default=None, namespace='default'): Retrieve a value.
+            - increment(key, amount=1, namespace='default'): Atomic increment.
+            - delete(key, namespace='default'): Delete a key.
+```
+
 ### 🔧 Tool: `registry` (Status: ✅)
 ```text
 Systems Registry Tool (registry):
@@ -303,18 +315,6 @@ Systems Registry Tool (registry):
             - update_tool_status(name, status, message=None): Manually override a tool's health status.
                 status: "OK" | "FAIL" | "DEAD".
                 Intended for health-check plugins that verify tools proactively.
-```
-
-### 🔧 Tool: `state` (Status: ✅)
-```text
-In-Memory State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
-        - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value.
-            - increment(key, amount=1, namespace='default'): Atomic increment.
-            - delete(key, namespace='default'): Delete a key.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
