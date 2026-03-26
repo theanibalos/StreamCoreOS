@@ -370,7 +370,7 @@ Async SQLite Persistence Tool (sqlite):
 - **Events emitted**: chat.command.executed, chat.command.received, chat.message.received
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CreateCommandPlugin, DeleteCommandPlugin, ListCommandsPlugin, UpdateCommandPlugin
+- **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CreateCommandPlugin, DeleteCommandPlugin, IAChatPlugin, ListCommandsPlugin, UpdateCommandPlugin
 
 ### `dashboard`
 - **Tables**: channel_stats
@@ -394,7 +394,7 @@ Async SQLite Persistence Tool (sqlite):
 - **Events emitted**: moderation.action.taken, moderation.rules.updated
 - **Events consumed**: chat.message.received, moderation.rules.updated
 - **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
+- **Plugins**: AiModPlugin, AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
 
 ### `ping`
 - **Tables**: none

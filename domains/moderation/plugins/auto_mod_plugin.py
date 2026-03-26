@@ -30,6 +30,7 @@ class AutoModPlugin(BasePlugin):
         self.logger = logger
 
     async def on_boot(self):
+        self.twitch.require_scopes(["moderator:manage:banned_users"])
         await self.bus.subscribe("chat.message.received", self._on_message)
         await self.bus.subscribe("moderation.rules.updated", self._invalidate_cache)
         await self._load_rules()
@@ -93,18 +94,19 @@ class AutoModPlugin(BasePlugin):
         broadcaster_id = session["broadcaster_id"]
         access_token = session["access_token"]
         reason = f"Auto-mod: {rule['type']} rule #{rule['id']}"
+        endpoint = f"/moderation/bans?broadcaster_id={broadcaster_id}&moderator_id={broadcaster_id}"
 
         try:
             if action == "ban" and broadcaster_id and access_token:
                 await self.twitch.post(
-                    "/moderation/bans",
+                    endpoint,
                     body={"data": {"user_id": user_id, "reason": reason}},
                     user_token=access_token,
                 )
             elif action == "timeout" and broadcaster_id and access_token:
                 duration = rule.get("duration_s") or 600
                 await self.twitch.post(
-                    "/moderation/bans",
+                    endpoint,
                     body={"data": {"user_id": user_id, "duration": duration, "reason": reason}},
                     user_token=access_token,
                 )
