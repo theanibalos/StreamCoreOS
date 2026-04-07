@@ -6,28 +6,54 @@ A personal Twitch streaming backend built on [MicroCoreOS](https://github.com/th
 
 ## Table of Contents
 
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Setup](#setup)
-- [How the Twitch Tool Works](#how-the-twitch-tool-works)
-- [Existing Domains](#existing-domains)
-- [Event Catalog](#event-catalog)
-- [How to Write a New Feature](#how-to-write-a-new-feature)
-  - [HTTP Endpoint](#1-http-endpoint)
-  - [Twitch EventSub Listener](#2-twitch-eventsub-listener)
-  - [Chat Listener](#3-chat-listener)
-  - [Scheduled Job](#4-scheduled-job)
-  - [Event Bus Consumer](#5-event-bus-consumer)
-  - [Domain with DB Migration](#6-domain-with-db-migration)
-- [Available Tools Reference](#available-tools-reference)
-- [API Reference](#api-reference)
+- [StreamCoreOS](#streamcoreos)
+  - [Table of Contents](#table-of-contents)
+  - [Quick Start](#quick-start)
+  - [Architecture](#architecture)
+  - [Setup](#setup)
+    - [Environment Variables](#environment-variables)
+    - [Authentication Flow](#authentication-flow)
+  - [How the Twitch Tool Works](#how-the-twitch-tool-works)
+    - [Lifecycle](#lifecycle)
+    - [Subscription Deduplication](#subscription-deduplication)
+    - [Session Access](#session-access)
+  - [Existing Domains](#existing-domains)
+    - [`twitch_auth`](#twitch_auth)
+    - [`stream_state`](#stream_state)
+    - [`chat_bot`](#chat_bot)
+    - [`loyalty`](#loyalty)
+    - [`moderation`](#moderation)
+    - [`dashboard`](#dashboard)
+  - [Event Catalog](#event-catalog)
+  - [How to Write a New Feature](#how-to-write-a-new-feature)
+    - [1. HTTP Endpoint](#1-http-endpoint)
+    - [2. Twitch EventSub Listener](#2-twitch-eventsub-listener)
+    - [3. Chat Listener](#3-chat-listener)
+    - [4. Scheduled Job](#4-scheduled-job)
+    - [5. Event Bus Consumer](#5-event-bus-consumer)
+    - [6. Domain with DB Migration](#6-domain-with-db-migration)
+  - [Available Tools Reference](#available-tools-reference)
+    - [`twitch`](#twitch)
+    - [`db`](#db)
+    - [`event_bus`](#event_bus)
+    - [`http`](#http)
+    - [`scheduler`](#scheduler)
+    - [`state`](#state)
+    - [`logger`](#logger)
+  - [Developing with AI](#developing-with-ai)
+    - [Reading path for the AI](#reading-path-for-the-ai)
+    - [The two-step workflow](#the-two-step-workflow)
+    - [Example prompts](#example-prompts)
+    - [Tips for better results](#tips-for-better-results)
+  - [API Reference](#api-reference)
+  - [Commands](#commands)
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone <repo>
+git clone https://github.com/theanibalos/StreamCoreOS
 cd StreamCoreOS
 cp .env.example .env          # fill in TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET
 uv run main.py
