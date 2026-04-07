@@ -57,7 +57,9 @@ async def test_echo_reminder_synonym_accepted(plugin, mock_tools):
     mock_tools["scheduler"].add_one_shot.assert_called_once()
     kwargs = mock_tools["scheduler"].add_one_shot.call_args.kwargs
     assert kwargs["message"] == "Synonym test"
-    # Regular viewer
+
+@pytest.mark.anyio
+async def test_echo_permissions_denied(plugin, mock_tools):
     data = {
         "command": "!echo",
         "args": "10s Test",
