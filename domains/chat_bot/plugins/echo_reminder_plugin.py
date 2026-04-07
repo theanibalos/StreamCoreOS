@@ -22,6 +22,17 @@ class EchoReminderPlugin(BasePlugin):
     async def _on_command(self, data: dict):
         if data.get("command") != "!echo":
             return
+
+        # Check permissions (Broadcaster, Mod, or VIP)
+        badges = data.get("badges", {})
+        is_permitted = (
+            data.get("is_mod") or 
+            data.get("is_broadcaster") or 
+            "vip" in badges
+        )
+        
+        if not is_permitted:
+            return
         
         # Get the full arguments string and split it
         args_str = data.get("args", "")
