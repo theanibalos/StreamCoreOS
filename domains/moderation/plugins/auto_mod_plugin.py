@@ -42,7 +42,7 @@ class AutoModPlugin(BasePlugin):
     async def _load_rules(self):
         try:
             rules = await self.db.query(
-                "SELECT * FROM mod_rules WHERE enabled=1"
+                "SELECT * FROM mod_rules WHERE enabled=1 AND type != 'ai_filter'"
             )
             self.state.set("rules", rules, namespace=_NS)
         except Exception as e:

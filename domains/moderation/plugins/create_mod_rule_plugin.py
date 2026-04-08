@@ -2,13 +2,13 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from core.base_plugin import BasePlugin
 
-VALID_TYPES = {"word_filter", "link_filter", "caps_filter", "spam_filter"}
+VALID_TYPES = {"word_filter", "link_filter", "caps_filter", "spam_filter", "ai_filter"}
 VALID_ACTIONS = {"timeout", "ban", "delete"}
 
 
 class CreateModRuleRequest(BaseModel):
     type: str = Field(min_length=1)
-    value: Optional[str] = Field(default=None, max_length=2000)
+    value: Optional[str] = Field(default=None, max_length=4000)
     action: str = Field(default="timeout")
     duration_s: Optional[int] = Field(default=600, ge=1, le=1209600)
 

@@ -157,3 +157,36 @@ What is gained over the existing causality system (`/system/traces`):
 Depends on Issue 7 (ToolProxy timing) as a prerequisite.
 
 Boton de busqueda de conexiones
+
+---
+
+## AI Tool — Pending
+
+**Issue 14 — AI token usage tracking**
+
+Track input/output/cache tokens per AI call to give the user visibility into consumption and estimated cost.
+
+**Steps:**
+
+1. `ai_tool.py` — add internal `_complete_raw()` that returns `{text, usage}`. Keep `complete()` returning `str` to avoid breaking callers. Expose `complete_with_usage()` for callers that want metrics.
+
+2. Migration `ai_usage_log` table:
+   ```sql
+   CREATE TABLE ai_usage_log (
+       id                INTEGER PRIMARY KEY AUTOINCREMENT,
+       context           TEXT NOT NULL,  -- 'chat' | 'moderation'
+       model             TEXT NOT NULL,
+       prompt_tokens     INTEGER,
+       completion_tokens INTEGER,
+       cached_tokens     INTEGER,
+       created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+   );
+   ```
+
+3. `IAChatPlugin` and `AiModPlugin` — call `complete_with_usage()` and fire-and-forget persist to DB. Must handle providers that don't return `usage` gracefully (Ollama sometimes omits it).
+
+4. `GET /ai/usage` endpoint — returns aggregates: total tokens today/week/all-time, breakdown by context (chat vs moderation), estimated cost per provider (cost-per-token config per provider).
+
+5. `AIUsageStats.svelte` — panel in `/ai` page showing the stats. Add to `ai/+page.svelte` as optional import (modular, removable).
+
+**Complexity:** Medium. Main risk is provider inconsistency — not all return `usage`, and `cached_tokens` is only available on OpenAI and Anthropic. Must fail silently when absent.

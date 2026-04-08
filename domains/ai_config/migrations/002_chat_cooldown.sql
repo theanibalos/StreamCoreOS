@@ -1,0 +1,1 @@
+ALTER TABLE ai_config ADD COLUMN chat_cooldown_s INTEGER NOT NULL DEFAULT 120;

@@ -227,6 +227,30 @@ Twitch Tool (twitch):
           - await delete(endpoint, params?, user_token?): DELETE to Helix.
 ```
 
+### 🔧 Tool: `ai` (Status: ✅)
+```text
+AI Tool (ai):
+    - PURPOSE: Send prompts to any OpenAI-compatible LLM. Config is stored in DB and
+      managed via /ai/config endpoints. Supports OpenAI, Anthropic, Gemini, Ollama, Groq, etc.
+    - CONFIG: Set via PUT /ai/config — {provider, endpoint_url, api_key, model}
+    - CAPABILITIES:
+        - await complete(messages, system?, max_tokens?, temperature?) -> str:
+            Send a list of messages and get a text response.
+            messages: [{"role": "user"|"assistant", "content": str}]
+            system: optional system prompt string
+            temperature: 0.0 for deterministic (ideal for moderation)
+        - is_configured() -> bool: True if endpoint_url and model are set.
+        - get_config() -> dict | None: Current config without the api_key.
+        - await reload_config(): Refresh config from DB (call after saving new config).
+    - COMMON ENDPOINTS:
+        OpenAI:    https://api.openai.com/v1/chat/completions
+        Anthropic: https://api.anthropic.com/v1/chat/completions
+        Gemini:    https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+        Groq:      https://api.groq.com/openai/v1/chat/completions
+        Ollama:    http://localhost:11434/v1/chat/completions
+        LM Studio: http://localhost:1234/v1/chat/completions
+```
+
 ### 🔧 Tool: `auth` (Status: ✅)
 ```text
 Authentication Tool (auth):
@@ -364,12 +388,20 @@ Async SQLite Persistence Tool (sqlite):
 
 ## 📦 Domains
 
+### `ai_config`
+- **Tables**: ai_config
+- **Endpoints**: GET /ai/config, POST /ai/test, PUT /ai/config
+- **Events emitted**: none
+- **Events consumed**: none
+- **Dependencies**: ai, db, http, logger
+- **Plugins**: GetAIConfigPlugin, SaveAIConfigPlugin, TestAIConfigPlugin
+
 ### `chat_bot`
 - **Tables**: chat_command, chat_var
 - **Endpoints**: DELETE /chat/commands/{id}, DELETE /chat/vars/{id}, GET /chat/commands, GET /chat/reminders, GET /chat/vars, POST /chat/commands, POST /chat/vars, PUT /chat/commands/{id}, PUT /chat/vars/{id}
 - **Events emitted**: chat.command.executed, chat.command.received, chat.message.received
 - **Events consumed**: chat.command.received, chat.message.received
-- **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
+- **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CommandsListPlugin, CreateCommandPlugin, CreateVarPlugin, DeleteCommandPlugin, DeleteVarPlugin, EchoReminderPlugin, IAChatPlugin, ListCommandsPlugin, ListRemindersPlugin, ListVarsPlugin, UpdateCommandPlugin, UpdateVarPlugin, VarCommandPlugin
 
 ### `dashboard`
@@ -385,8 +417,8 @@ Async SQLite Persistence Tool (sqlite):
 - **Endpoints**: DELETE /moderation/rules/{id}, GET /moderation/log, GET /moderation/rules, POST /moderation/ban, POST /moderation/rules, POST /moderation/timeout, POST /moderation/unban, PUT /moderation/rules/{id}
 - **Events emitted**: moderation.action.taken, moderation.rules.updated
 - **Events consumed**: chat.message.received, moderation.rules.updated
-- **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, TailwindModerationIAPlugin, UpdateModRulePlugin
+- **Dependencies**: ai, db, event_bus, http, logger, state, twitch
+- **Plugins**: AiModPlugin, AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
 
 ### `ping`
 - **Tables**: none
