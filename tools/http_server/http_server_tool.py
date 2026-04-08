@@ -198,6 +198,18 @@ class HttpContext:
         """Add a custom header to the HTTP response."""
         self._headers[key] = value
 
+    def redirect(self, url: str, status: int = 302) -> None:
+        """
+        Redirect the browser to the given URL.
+        The handler's return value is ignored when this is called.
+
+        Example:
+            context.redirect("http://localhost:5173/")
+            context.redirect("/dashboard", status=301)
+        """
+        self._redirect_url = url
+        self._status_code = status
+
     def apply_to(self, response: JSONResponse) -> None:
         """Apply all accumulated cookies and headers to the given JSONResponse."""
         for key, value in self._headers.items():
@@ -208,6 +220,10 @@ class HttpContext:
     @property
     def status_code(self) -> int:
         return self._status_code
+
+    @property
+    def redirect_url(self) -> str | None:
+        return getattr(self, "_redirect_url", None)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -610,6 +626,17 @@ class HttpServerTool(BaseTool):
             )
 
             # ── Phase 5: Response ──────────────────────────────────────────────
+            if context.redirect_url:
+                from fastapi.responses import RedirectResponse
+                redirect_response = RedirectResponse(
+                    url=context.redirect_url, status_code=context.status_code
+                )
+                for key, value in context._headers.items():
+                    redirect_response.headers[key] = value
+                for cookie in context._cookies:
+                    redirect_response.set_cookie(**cookie)
+                return redirect_response
+
             json_response = JSONResponse(status_code=context.status_code, content=_serialize(result))
             context.apply_to(json_response)
             return json_response

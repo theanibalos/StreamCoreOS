@@ -1,3 +1,4 @@
+import os
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -98,6 +99,10 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
             await self.twitch.connect(access_token, twitch_id, login)
             self.logger.info(f"[TwitchAuth] Connected as {display_name} ({login})")
 
+            # Redirect browser to frontend instead of returning raw JSON
+            frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+            if context:
+                context.redirect(frontend_url)
             return {
                 "success": True,
                 "data": {"login": login, "display_name": display_name},
