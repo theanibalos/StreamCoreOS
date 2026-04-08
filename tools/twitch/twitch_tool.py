@@ -78,6 +78,18 @@ class TwitchTool(BaseTool):
         self._available = True
         print("[TwitchTool] Ready.")
 
+    async def on_boot_complete(self, container) -> None:
+        if self._available and not self._access_token:
+            url, _ = self.get_auth_url()
+            scopes_list = "\n  ".join(self._scopes)
+            print(
+                f"\n{'='*60}\n"
+                f"[TwitchTool] No active session — authentication required.\n"
+                f"Scopes requested ({len(self._scopes)}):\n  {scopes_list}\n\n"
+                f"Open this URL to authorize:\n{url}\n"
+                f"{'='*60}\n"
+            )
+
     async def shutdown(self) -> None:
         if self._eventsub:
             await self._eventsub.disconnect()

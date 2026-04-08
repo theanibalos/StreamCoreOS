@@ -422,11 +422,11 @@ Async SQLite Persistence Tool (sqlite):
 
 ### `twitch_auth`
 - **Tables**: twitch_token
-- **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback
+- **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback, GET /auth/twitch/status
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
-- **Plugins**: RestoreSessionPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchTokenRefreshPlugin
+- **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchTokenRefreshPlugin
 
 ### `twitch_redemptions`
 - **Tables**: redemption
