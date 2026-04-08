@@ -79,7 +79,7 @@ class EchoReminderPlugin(BasePlugin):
         async def _fire():
             await self._send_echo(channel, message, job_id)
 
-        self.scheduler.add_one_shot(run_at=run_at, callback=_fire, job_id=job_id)
+        self.scheduler.add_one_shot(run_at=run_at, callback=_fire, job_id=job_id, message=message, channel=channel)
 
         await self.twitch.send_message(
             channel,

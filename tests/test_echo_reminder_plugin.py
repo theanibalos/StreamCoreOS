@@ -17,9 +17,16 @@ def mock_tools():
 def plugin(mock_tools):
     return EchoReminderPlugin(**mock_tools)
 
+def _state_get_side_effect(key, default=None, **kwargs):
+    if key == "echo_count":
+        return 0
+    if key == "active_reminders":
+        return {}
+    return default
+
 @pytest.mark.anyio
 async def test_echo_parsing_and_scheduling(plugin, mock_tools):
-    mock_tools["state"].get.return_value = 0
+    mock_tools["state"].get.side_effect = _state_get_side_effect
     data = {
         "command": "!echo",
         "args": "10s Test message",
@@ -43,7 +50,7 @@ async def test_echo_parsing_and_scheduling(plugin, mock_tools):
 
 @pytest.mark.anyio
 async def test_echo_reminder_synonym_accepted(plugin, mock_tools):
-    mock_tools["state"].get.return_value = 0
+    mock_tools["state"].get.side_effect = _state_get_side_effect
     data = {
         "command": "!reminder",
         "args": "10s Synonym test",
@@ -73,7 +80,7 @@ async def test_echo_permissions_denied(plugin, mock_tools):
 
 @pytest.mark.anyio
 async def test_echo_vip_accepted(plugin, mock_tools):
-    mock_tools["state"].get.return_value = 0
+    mock_tools["state"].get.side_effect = _state_get_side_effect
     data = {
         "command": "!echo",
         "args": "10s Test",
@@ -111,13 +118,20 @@ async def test_echo_limit_reached(plugin, mock_tools):
 
 @pytest.mark.anyio
 async def test_echo_counter_lifecycle(plugin, mock_tools):
-    mock_tools["state"].get.return_value = 0
+    mock_tools["state"].get.side_effect = _state_get_side_effect
     data = {"command": "!echo", "args": "10s T", "channel": "ch", "is_mod": True, "display_name": "U", "badges": {}}
     await plugin._on_command(data)
-    
+
     mock_tools["state"].set.assert_called_with("echo_count", 1, namespace="echo")
-    
-    mock_tools["state"].get.return_value = 1
-    await plugin._send_echo("ch", "T")
-    
+
+    def _state_get_after(key, default=None, **kwargs):
+        if key == "echo_count":
+            return 1
+        if key == "active_reminders":
+            return {}
+        return default
+
+    mock_tools["state"].get.side_effect = _state_get_after
+    await plugin._send_echo("ch", "T", "dummy_job_id")
+
     mock_tools["state"].set.assert_any_call("echo_count", 0, namespace="echo")
