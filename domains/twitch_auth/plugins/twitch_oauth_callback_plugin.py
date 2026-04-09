@@ -21,12 +21,11 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
     the EventSub WebSocket + IRC chat.
     """
 
-    def __init__(self, twitch, http, db, event_bus, state, logger):
+    def __init__(self, twitch, http, db, event_bus, logger):
         self.twitch = twitch
         self.http = http
         self.db = db
         self.bus = event_bus
-        self.state = state
         self.logger = logger
 
     async def on_boot(self):
@@ -50,10 +49,8 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
             return {"success": False, "error": "Missing code parameter"}
 
         # Validate CSRF state
-        if not received_state or not self.state.get(received_state, namespace="twitch_oauth_state"):
+        if not received_state or not self.twitch.consume_state(received_state):
             return {"success": False, "error": "Invalid or expired state"}
-
-        self.state.delete(received_state, namespace="twitch_oauth_state")
 
         try:
             # Exchange code for tokens

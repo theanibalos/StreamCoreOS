@@ -101,26 +101,28 @@ Configuration Tool (config):
                 Example: self.config.require("STRIPE_KEY", "SENDGRID_KEY")
 ```
 
-### 🔧 Tool: `event_bus` (Status: ✅)
+### 🔧 Tool: `ai` (Status: ✅)
 ```text
-Async Event Bus Tool (event_bus):
-        - PURPOSE: Non-blocking communication between plugins. Pub/Sub and Async RPC.
-        - SUBSCRIBER SIGNATURE: async def handler(self, data: dict)
-        - CAPABILITIES:
-            - await publish(event_name, data): Fire-and-forget broadcast.
-            - await subscribe(event_name, callback): Register a subscriber.
-                Use event_name='*' for wildcard (observability only, no RPC).
-            - await unsubscribe(event_name, callback): Remove a subscriber.
-            - await request(event_name, data, timeout=5): Async RPC.
-                The subscriber must return a non-None dict.
-            - get_trace_history() -> list: Last 500 event records with causality data.
-            - get_subscribers() -> dict: Current subscriber map {event_name: [subscriber_names]}.
-            - add_listener(callback): Sink pattern — called with full trace record on every event.
-                Signature: callback(record: dict) — record has: id, event, emitter, subscribers, payload_keys, timestamp.
-                Use for real-time observability (e.g. WebSocket broadcast). Non-blocking.
-            - add_failure_listener(callback): Sink called when a subscriber raises during dispatch.
-                Signature: callback(record: dict) — record has: event, event_id, subscriber, error.
-                Use to implement dead-letter alerting. Non-blocking — keep it fast.
+AI Tool (ai):
+    - PURPOSE: Send prompts to any OpenAI-compatible LLM. Config is stored in DB and
+      managed via /ai/config endpoints. Supports OpenAI, Anthropic, Gemini, Ollama, Groq, etc.
+    - CONFIG: Set via PUT /ai/config — {provider, endpoint_url, api_key, model}
+    - CAPABILITIES:
+        - await complete(messages, system?, max_tokens?, temperature?) -> str:
+            Send a list of messages and get a text response.
+            messages: [{"role": "user"|"assistant", "content": str}]
+            system: optional system prompt string
+            temperature: 0.0 for deterministic (ideal for moderation)
+        - is_configured() -> bool: True if endpoint_url and model are set.
+        - get_config() -> dict | None: Current config without the api_key.
+        - await reload_config(): Refresh config from DB (call after saving new config).
+    - COMMON ENDPOINTS:
+        OpenAI:    https://api.openai.com/v1/chat/completions
+        Anthropic: https://api.anthropic.com/v1/chat/completions
+        Gemini:    https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+        Groq:      https://api.groq.com/openai/v1/chat/completions
+        Ollama:    http://localhost:11434/v1/chat/completions
+        LM Studio: http://localhost:1234/v1/chat/completions
 ```
 
 ### 🔧 Tool: `http` (Status: ✅)
@@ -150,6 +152,28 @@ HTTP Server Tool (http):
           WARNING: All values in the returned dict must be JSON-serializable (plain dicts,
           lists, str, int, etc.). Pydantic model instances are NOT serializable — always call
           .model_dump() before nesting them: MyModel(...).model_dump()
+```
+
+### 🔧 Tool: `event_bus` (Status: ✅)
+```text
+Async Event Bus Tool (event_bus):
+        - PURPOSE: Non-blocking communication between plugins. Pub/Sub and Async RPC.
+        - SUBSCRIBER SIGNATURE: async def handler(self, data: dict)
+        - CAPABILITIES:
+            - await publish(event_name, data): Fire-and-forget broadcast.
+            - await subscribe(event_name, callback): Register a subscriber.
+                Use event_name='*' for wildcard (observability only, no RPC).
+            - await unsubscribe(event_name, callback): Remove a subscriber.
+            - await request(event_name, data, timeout=5): Async RPC.
+                The subscriber must return a non-None dict.
+            - get_trace_history() -> list: Last 500 event records with causality data.
+            - get_subscribers() -> dict: Current subscriber map {event_name: [subscriber_names]}.
+            - add_listener(callback): Sink pattern — called with full trace record on every event.
+                Signature: callback(record: dict) — record has: id, event, emitter, subscribers, payload_keys, timestamp.
+                Use for real-time observability (e.g. WebSocket broadcast). Non-blocking.
+            - add_failure_listener(callback): Sink called when a subscriber raises during dispatch.
+                Signature: callback(record: dict) — record has: event, event_id, subscriber, error.
+                Use to implement dead-letter alerting. Non-blocking — keep it fast.
 ```
 
 ### 🔧 Tool: `telemetry` (Status: ✅)
@@ -227,28 +251,14 @@ Twitch Tool (twitch):
           - await delete(endpoint, params?, user_token?): DELETE to Helix.
 ```
 
-### 🔧 Tool: `ai` (Status: ✅)
+### 🔧 Tool: `context_manager` (Status: ✅)
 ```text
-AI Tool (ai):
-    - PURPOSE: Send prompts to any OpenAI-compatible LLM. Config is stored in DB and
-      managed via /ai/config endpoints. Supports OpenAI, Anthropic, Gemini, Ollama, Groq, etc.
-    - CONFIG: Set via PUT /ai/config — {provider, endpoint_url, api_key, model}
-    - CAPABILITIES:
-        - await complete(messages, system?, max_tokens?, temperature?) -> str:
-            Send a list of messages and get a text response.
-            messages: [{"role": "user"|"assistant", "content": str}]
-            system: optional system prompt string
-            temperature: 0.0 for deterministic (ideal for moderation)
-        - is_configured() -> bool: True if endpoint_url and model are set.
-        - get_config() -> dict | None: Current config without the api_key.
-        - await reload_config(): Refresh config from DB (call after saving new config).
-    - COMMON ENDPOINTS:
-        OpenAI:    https://api.openai.com/v1/chat/completions
-        Anthropic: https://api.anthropic.com/v1/chat/completions
-        Gemini:    https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-        Groq:      https://api.groq.com/openai/v1/chat/completions
-        Ollama:    http://localhost:11434/v1/chat/completions
-        LM Studio: http://localhost:1234/v1/chat/completions
+Context Manager Tool (context_manager):
+        - PURPOSE: Automatically manages and generates live AI contextual documentation.
+        - CAPABILITIES:
+            - Reads the system registry.
+            - Exports active tools, health status, and domain models to AI_CONTEXT.md.
+            - Generates per-domain AI_CONTEXT.md files inside each domain folder.
 ```
 
 ### 🔧 Tool: `auth` (Status: ✅)
@@ -267,42 +277,6 @@ Authentication Tool (auth):
             - validate_token(token: str) -> dict | None:
                 Safe, non-throwing token validation. Returns the decoded payload
                 if valid, or None if expired/invalid. Ideal for middleware guards.
-```
-
-### 🔧 Tool: `context_manager` (Status: ✅)
-```text
-Context Manager Tool (context_manager):
-        - PURPOSE: Automatically manages and generates live AI contextual documentation.
-        - CAPABILITIES:
-            - Reads the system registry.
-            - Exports active tools, health status, and domain models to AI_CONTEXT.md.
-            - Generates per-domain AI_CONTEXT.md files inside each domain folder.
-```
-
-### 🔧 Tool: `logger` (Status: ✅)
-```text
-Logging Tool (logger):
-        - PURPOSE: Record system events and business activity for audit and debugging.
-        - CAPABILITIES:
-            - info(message): General information.
-            - error(message): Critical failures.
-            - warning(message): Non-critical alerts.
-            - add_sink(callback): Connect external observability (e.g. to EventBus).
-                Sink signature: callback(level: str, message: str, timestamp: str, identity: str)
-                'identity' is the current plugin/tool context (from current_identity_var).
-                Use it to attribute errors to specific plugins for health tracking.
-```
-
-### 🔧 Tool: `state` (Status: ✅)
-```text
-In-Memory State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
-        - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value.
-            - increment(key, amount=1, namespace='default'): Atomic increment.
-            - delete(key, namespace='default'): Delete a key.
 ```
 
 ### 🔧 Tool: `registry` (Status: ✅)
@@ -364,6 +338,32 @@ Scheduler Tool (scheduler):
           in on_boot_complete() after all plugins have registered.
         - SWAP: replace with Celery beat by creating a new tool with name = "scheduler"
           and the same 4-method API. Plugins do not change.
+```
+
+### 🔧 Tool: `state` (Status: ✅)
+```text
+In-Memory State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
+        - CAPABILITIES:
+            - set(key, value, namespace='default'): Store a value.
+            - get(key, default=None, namespace='default'): Retrieve a value.
+            - increment(key, amount=1, namespace='default'): Atomic increment.
+            - delete(key, namespace='default'): Delete a key.
+```
+
+### 🔧 Tool: `logger` (Status: ✅)
+```text
+Logging Tool (logger):
+        - PURPOSE: Record system events and business activity for audit and debugging.
+        - CAPABILITIES:
+            - info(message): General information.
+            - error(message): Critical failures.
+            - warning(message): Non-critical alerts.
+            - add_sink(callback): Connect external observability (e.g. to EventBus).
+                Sink signature: callback(level: str, message: str, timestamp: str, identity: str)
+                'identity' is the current plugin/tool context (from current_identity_var).
+                Use it to attribute errors to specific plugins for health tracking.
 ```
 
 ### 🔧 Tool: `db` (Status: ✅)
@@ -457,7 +457,7 @@ Async SQLite Persistence Tool (sqlite):
 - **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback, GET /auth/twitch/status
 - **Events emitted**: none
 - **Events consumed**: none
-- **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
+- **Dependencies**: db, event_bus, http, logger, scheduler, twitch
 - **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchTokenRefreshPlugin
 
 ### `twitch_redemptions`

@@ -50,6 +50,8 @@ class TwitchTool(BaseTool):
         self._scopes: list[str] = []
         # Tracks registered event types to avoid duplicate Twitch subscriptions
         self._registered_event_types: set[str] = set()
+        # Pending OAuth states for CSRF validation
+        self._pending_states: set[str] = set()
         # Active session — populated on connect()
         self._access_token: str | None = None
         self._broadcaster_id: str | None = None
@@ -154,12 +156,20 @@ class TwitchTool(BaseTool):
     def get_auth_url(self) -> tuple[str, str]:
         """
         Build the Twitch OAuth2 authorization URL with all accumulated scopes.
-        Returns (auth_url, state). The caller must save state for CSRF validation.
+        Returns (auth_url, state). State is stored internally for CSRF validation.
         """
         self._check_available()
         state = secrets.token_urlsafe(16)
         url = self._api.get_auth_url(self._scopes, state)
+        self._pending_states.add(state)
         return url, state
+
+    def consume_state(self, state: str) -> bool:
+        """Validate and consume a CSRF state. Returns True if valid."""
+        if state in self._pending_states:
+            self._pending_states.discard(state)
+            return True
+        return False
 
     async def exchange_code(self, code: str) -> dict:
         """
