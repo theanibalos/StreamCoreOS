@@ -1,13 +1,12 @@
 services:
   nginx:
-    image: nginx:alpine
+    image: ghcr.io/theanibalos/streamcoreos-front:latest
     ports:
       - "80:80"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - backend
-      - frontend
     restart: unless-stopped
 
   backend:
@@ -17,8 +16,4 @@ services:
     volumes:
       - ./database.db:/app/database.db
     command: sh -c "touch /app/database.db && uv run main.py"
-    restart: unless-stopped
-
-  frontend:
-    image: ghcr.io/theanibalos/streamcoreos-front:latest
     restart: unless-stopped
