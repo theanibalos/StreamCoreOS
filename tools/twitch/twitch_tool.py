@@ -40,6 +40,21 @@ class TwitchTool(BaseTool):
     def name(self) -> str:
         return "twitch"
 
+    @property
+    def on_auth_fail(self):
+        """Getter for the auth failure hook."""
+        return self._api.on_auth_fail if self._api else None
+
+    @on_auth_fail.setter
+    def on_auth_fail(self, callback):
+        """
+        Setter for the auth failure hook.
+        The callback should be: async def hook() -> str | None
+        It must return the new access_token or None if refresh failed.
+        """
+        if self._api:
+            self._api.on_auth_fail = callback
+
     def __init__(self) -> None:
         self._client_id: str | None = None
         self._client_secret: str | None = None
@@ -80,6 +95,12 @@ class TwitchTool(BaseTool):
         self._available = True
         print("[TwitchTool] Ready.")
 
+    async def update_access_token(self, new_token: str) -> None:
+        """Update the internal access token for the active session."""
+        self._access_token = new_token
+        # If EventSub is active, it might need the new token for reconnections
+        if self._eventsub:
+            self._eventsub._access_token = new_token
     async def on_boot_complete(self, container) -> None:
         if self._available and not self._access_token:
             url, _ = self.get_auth_url()

@@ -23,6 +23,8 @@ class TwitchApiClient:
         self._app_token: str | None = None
         self._app_token_expires: datetime | None = None
         self._http: httpx.AsyncClient | None = None
+        # Hook for reactive refresh: async def hook() -> str | None (returns new access_token)
+        self.on_auth_fail = None
 
     async def start(self) -> None:
         self._http = httpx.AsyncClient(timeout=30.0)
@@ -100,11 +102,7 @@ class TwitchApiClient:
 
     async def get_user_info(self, access_token: str) -> dict:
         """Get the authenticated user's info from /users."""
-        resp = await self._http.get(
-            f"{self.HELIX_BASE}/users",
-            headers=self._user_headers(access_token),
-        )
-        resp.raise_for_status()
+        resp = await self._request("GET", "/users", headers=self._user_headers(access_token))
         data = resp.json()
         return data["data"][0] if data.get("data") else {}
 
@@ -117,10 +115,7 @@ class TwitchApiClient:
         user_token: str | None = None,
     ) -> dict:
         headers = self._user_headers(user_token) if user_token else await self._app_headers()
-        resp = await self._http.get(
-            f"{self.HELIX_BASE}{endpoint}", params=params, headers=headers
-        )
-        resp.raise_for_status()
+        resp = await self._request("GET", endpoint, params=params, headers=headers, user_token=user_token)
         return resp.json()
 
     async def post(
@@ -130,10 +125,7 @@ class TwitchApiClient:
         user_token: str | None = None,
     ) -> dict:
         headers = self._user_headers(user_token) if user_token else await self._app_headers()
-        resp = await self._http.post(
-            f"{self.HELIX_BASE}{endpoint}", json=body, headers=headers
-        )
-        resp.raise_for_status()
+        resp = await self._request("POST", endpoint, json=body, headers=headers, user_token=user_token)
         return resp.json() if resp.content else {}
 
     async def delete(
@@ -143,13 +135,26 @@ class TwitchApiClient:
         user_token: str | None = None,
     ) -> dict:
         headers = self._user_headers(user_token) if user_token else await self._app_headers()
-        resp = await self._http.delete(
-            f"{self.HELIX_BASE}{endpoint}", params=params, headers=headers
-        )
-        resp.raise_for_status()
+        resp = await self._request("DELETE", endpoint, params=params, headers=headers, user_token=user_token)
         return resp.json() if resp.content else {}
 
     # ── Internal ─────────────────────────────────────────────────────
+
+    async def _request(self, method: str, endpoint: str, user_token: str | None = None, **kwargs) -> httpx.Response:
+        """Internal helper to handle requests with optional reactive refresh on 401."""
+        url = f"{self.HELIX_BASE}{endpoint}"
+        resp = await self._http.request(method, url, **kwargs)
+
+        if resp.status_code == 401 and user_token and self.on_auth_fail:
+            # Token expired? Ask the hook for a new one
+            new_token = await self.on_auth_fail()
+            if new_token:
+                # Update headers and retry once
+                kwargs["headers"] = self._user_headers(new_token)
+                resp = await self._http.request(method, url, **kwargs)
+
+        resp.raise_for_status()
+        return resp
 
     async def _app_headers(self) -> dict:
         token = await self.get_app_token()
