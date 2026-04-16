@@ -1,3 +1,4 @@
+import os
 import httpx
 from core.base_plugin import BasePlugin
 
@@ -5,11 +6,13 @@ class HackThePlanetPlugin(BasePlugin):
     """
     Listens for Twitch channel point redemptions and triggers a Home Assistant webhook
     when 'Hack the Planet' is redeemed.
+
+    Reads HOME_ASSISTANT_WEBHOOK from the environment (.env).
     """
     def __init__(self, twitch, logger):
         self.twitch = twitch
         self.logger = logger
-        self.webhook_url = "http://192.168.1.99:8123/api/webhook/-Ff-tVFyyqHjvZ5P9P5lXONTK"
+        self.webhook_url = os.getenv("HOME_ASSISTANT_WEBHOOK", "")
 
     async def on_boot(self):
         # Register the redemption event with TwitchTool
@@ -36,6 +39,9 @@ class HackThePlanetPlugin(BasePlugin):
         title = reward.get("title", "")
         
         if title == "Hack the Planet":
+            if not self.webhook_url:
+                self.logger.warning("[HackThePlanet] HOME_ASSISTANT_WEBHOOK not set in .env — skipping.")
+                return
             self.logger.info(f"[HackThePlanet] Reward '{title}' detected from {event.get('user_name')}! Triggering HA webhook...")
             
             payload = {

@@ -297,6 +297,24 @@ Context Manager Tool (context_manager):
             - Generates per-domain AI_CONTEXT.md files inside each domain folder.
 ```
 
+### 🔧 Tool: `auth` (Status: ✅)
+```text
+Authentication Tool (auth):
+        - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
+        - CAPABILITIES:
+            - hash_password(password: str) -> str: Securely hashes a plain-text password using bcrypt.
+            - verify_password(password: str, hashed_password: str) -> bool: Verifies if a password matches its hash.
+            - create_token(data: dict, expires_delta: Optional[int] = None) -> str: 
+                Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}). 
+                'expires_delta' is optional minutes until expiration.
+            - decode_token(token: str) -> dict: 
+                Verifies and decodes a JWT token. Returns the payload dictionary. 
+                Raises Exception if token is expired or invalid.
+            - validate_token(token: str) -> dict | None:
+                Safe, non-throwing token validation. Returns the decoded payload
+                if valid, or None if expired/invalid. Ideal for middleware guards.
+```
+
 ### 🔧 Tool: `registry` (Status: ✅)
 ```text
 Systems Registry Tool (registry):
@@ -331,24 +349,6 @@ Systems Registry Tool (registry):
             - update_tool_status(name, status, message=None): Manually override a tool's health status.
                 status: "OK" | "FAIL" | "DEAD".
                 Intended for health-check plugins that verify tools proactively.
-```
-
-### 🔧 Tool: `auth` (Status: ✅)
-```text
-Authentication Tool (auth):
-        - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
-        - CAPABILITIES:
-            - hash_password(password: str) -> str: Securely hashes a plain-text password using bcrypt.
-            - verify_password(password: str, hashed_password: str) -> bool: Verifies if a password matches its hash.
-            - create_token(data: dict, expires_delta: Optional[int] = None) -> str: 
-                Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}). 
-                'expires_delta' is optional minutes until expiration.
-            - decode_token(token: str) -> dict: 
-                Verifies and decodes a JWT token. Returns the payload dictionary. 
-                Raises Exception if token is expired or invalid.
-            - validate_token(token: str) -> dict | None:
-                Safe, non-throwing token validation. Returns the decoded payload
-                if valid, or None if expired/invalid. Ideal for middleware guards.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
@@ -422,6 +422,30 @@ Async SQLite Persistence Tool (sqlite):
         - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
 ```
 
+### 🔧 Tool: `tts` (Status: ✅)
+```text
+TTS Tool (tts):
+    - PURPOSE: Universal TTS router with swappable providers. Plugins never
+      interact with providers directly — just call generate(text, voice_id).
+    - VOICE ID FORMAT: "<provider>:<raw_id>"
+        edge_tts:es-ES-AlvaroNeural
+        voicebox:b7e63948-323c-4711-be5a-1a44ef1f2be6
+    - FALLBACK: If the requested provider is unavailable, falls back silently
+      to the edge_tts default voice. edge_tts is always available.
+    - PROVIDER CONFIG: env vars only (VOICEBOX_HOST, VOICEBOX_PORT, VOICEBOX_TIMEOUT_S,
+      EDGE_TTS_DEFAULT_VOICE). Never stored in DB.
+    - BEHAVIORAL CONFIG: pushed via load_config() from DB on boot and on PUT /tts/settings.
+    - API:
+        await generate(text, voice_id?) → bytes (MP3 or WAV)
+        await list_voices()             → list[{id, name, gender, locale, provider}]
+        load_config(config: dict)       → sets behavioral settings
+        get_config()                    → dict (includes providers availability)
+        is_available()                  → bool
+        get_default_voice()             → namespaced voice id
+        get_provider()                  → provider name of default voice
+        get_providers()                 → dict[provider_name, is_available]
+```
+
 ## 📦 Domains
 
 ### `ai_config`
@@ -487,6 +511,14 @@ Async SQLite Persistence Tool (sqlite):
 - **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: CreateTimerPlugin, DeleteTimerPlugin, GetTimersPlugin, TimerExecutorPlugin, UpdateTimerPlugin
+
+### `tts_chat`
+- **Tables**: tts_voice_config
+- **Endpoints**: DELETE /tts/user-voices/{twitch_login}, GET /tts/settings, GET /tts/user-voices, GET /tts/user-voices/{twitch_login}, GET /tts/voices, PUT /tts/settings, PUT /tts/user-voices
+- **Events emitted**: tts.audio.ready
+- **Events consumed**: chat.message.received, tts.audio.ready
+- **Dependencies**: db, event_bus, http, logger, tts, twitch
+- **Plugins**: TtsListenerPlugin, TtsRedemptionPlugin, TtsRestoreConfigPlugin, TtsSettingsPlugin, TtsStreamPlugin, TtsUserVoicesPlugin, TtsVoiceCommandPlugin, TtsVoiceListPlugin
 
 ### `twitch_auth`
 - **Tables**: twitch_token
