@@ -46,11 +46,16 @@ class TTSTool(BaseTool):
 
     # ── Public API (used by plugins) ──────────────────────────────────────────
 
+    # Only these errors mean "provider is unreachable" → safe to silently fallback to edge_tts.
+    # timeout / generation_failed / voice_not_found mean the provider IS reachable but
+    # couldn't handle this request — substituting a different voice would be confusing.
+    _CONNECTIVITY_ERRORS = frozenset({"connection_error", "provider_unavailable", "not_configured"})
+
     async def generate(self, text: str, voice_id: str | None = None) -> bytes:
         """
         Generate speech audio. Returns raw bytes (MP3 or WAV depending on provider).
-        Falls back to edge_tts default voice if the requested provider is unavailable.
-        Raises TTSError only if edge_tts itself fails (extremely rare).
+        Falls back to edge_tts ONLY when the provider has a connectivity error (is down).
+        Re-raises TTSError for timeouts and generation failures so the caller can skip cleanly.
         """
         voice = voice_id or self.get_default_voice()
         provider_name, raw_id = self._parse_voice(voice)
@@ -59,13 +64,16 @@ class TTSTool(BaseTool):
         if provider and provider.is_available():
             try:
                 return await provider.generate(text, raw_id)
-            except TTSError:
-                pass  # fall through to fallback
+            except TTSError as e:
+                if e.code not in self._CONNECTIVITY_ERRORS or provider_name == "edge_tts":
+                    raise  # slow/broken request or no fallback available — let caller decide
+                # connectivity error on a non-edge_tts provider → fall through to edge_tts
 
-        # Fallback: edge_tts with its own default voice
+        # Fallback: edge_tts default voice (reached only on connectivity failures)
+        if provider_name == "edge_tts":
+            raise TTSError("provider_unavailable", "edge_tts is not available")
         edge = self._providers["edge_tts"]
-        fallback_voice = edge.get_default_voice()
-        return await edge.generate(text, fallback_voice)
+        return await edge.generate(text, edge.get_default_voice())
 
     async def list_voices(self) -> list[dict]:
         """

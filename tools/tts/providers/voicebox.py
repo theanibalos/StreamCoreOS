@@ -5,26 +5,31 @@ from tools.tts.errors import TTSError
 from tools.tts.providers.base import TTSProvider
 
 
-_HOST    = os.getenv("VOICEBOX_HOST", "localhost")
-_PORT    = int(os.getenv("VOICEBOX_PORT", "17493"))
-_TIMEOUT = int(os.getenv("VOICEBOX_TIMEOUT_S", "60"))
-_POLL_INTERVAL = 1.0   # seconds between status polls
+_HOST          = os.getenv("VOICEBOX_HOST", "localhost")
+_PORT          = int(os.getenv("VOICEBOX_PORT", "17493"))
+_JOB_TIMEOUT_S = int(os.getenv("VOICEBOX_JOB_TIMEOUT_S", "300"))  # 5 min max per job
+_POLL_INTERVAL = 2.0  # seconds between background poll cycles
 
 
 class VoiceboxProvider(TTSProvider):
     """
     Voicebox REST API (http://host:port).
 
-    Generation uses the async flow to avoid holding an HTTP connection open
-    for the full synthesis duration (can be 30-60s on CPU):
-        1. POST /generate       → job id
-        2. Poll GET /history/id → wait for status == "completed"
-        3. GET  /audio/id       → raw WAV bytes
+    Generation is fire-and-forget:
+        1. POST /generate        → job id (returns immediately)
+        2. Background loop polls GET /history/id every 2s for all pending jobs
+        3. When "completed" → GET /audio/id → resolves the caller's Future
+
+    generate() returns bytes like any other provider, but internally it awaits
+    a Future resolved by the background loop. This means:
+    - No hard timeout (default 5 min max via VOICEBOX_JOB_TIMEOUT_S)
+    - Multiple users' jobs are polled in parallel efficiently
+    - The caller's asyncio task is free to be cancelled if needed
 
     Env vars:
-        VOICEBOX_HOST         host (default: localhost)
-        VOICEBOX_PORT         port (default: 17493)
-        VOICEBOX_TIMEOUT_S    max seconds to wait for synthesis (default: 60)
+        VOICEBOX_HOST             host (default: localhost)
+        VOICEBOX_PORT             port (default: 17493)
+        VOICEBOX_JOB_TIMEOUT_S    max seconds per job before giving up (default: 300)
     """
 
     @property
@@ -32,12 +37,11 @@ class VoiceboxProvider(TTSProvider):
         return "voicebox"
 
     async def setup(self) -> None:
-        self._available = False
-        self._client = httpx.AsyncClient(
-            base_url=f"http://{_HOST}:{_PORT}",
-            timeout=10,
-        )
+        self._available  = False
+        self._client     = httpx.AsyncClient(base_url=f"http://{_HOST}:{_PORT}", timeout=10)
+        self._pending: dict[str, tuple[asyncio.Future, float]] = {}  # job_id → (future, deadline)
         await self._ping()
+        self._poll_task = asyncio.create_task(self._poll_loop())
 
     def is_available(self) -> bool:
         return self._available
@@ -50,17 +54,19 @@ class VoiceboxProvider(TTSProvider):
             raise TTSError("provider_unavailable", "Voicebox is not reachable.")
         try:
             gen_id = await self._submit(text, voice_id)
-            await self._wait_until_done(gen_id)
-            return await self._fetch_audio(gen_id)
         except TTSError:
             raise
-        except httpx.TimeoutException:
-            raise TTSError("timeout", "Voicebox request timed out.")
         except httpx.ConnectError:
             self._available = False
             raise TTSError("connection_error", "Cannot connect to Voicebox.")
         except Exception as e:
-            raise TTSError("generation_failed", f"Voicebox generation failed: {e}")
+            raise TTSError("generation_failed", f"Voicebox submit failed: {e}")
+
+        loop    = asyncio.get_running_loop()
+        future  = loop.create_future()
+        deadline = loop.time() + _JOB_TIMEOUT_S
+        self._pending[gen_id] = (future, deadline)
+        return await future
 
     async def list_voices(self) -> list[dict]:
         if not self._available:
@@ -86,9 +92,66 @@ class VoiceboxProvider(TTSProvider):
             raise TTSError("generation_failed", f"Could not list Voicebox voices: {e}")
 
     async def shutdown(self) -> None:
+        if hasattr(self, "_poll_task"):
+            self._poll_task.cancel()
+        for future, _ in self._pending.values():
+            if not future.done():
+                future.cancel()
+        self._pending.clear()
         await self._client.aclose()
 
-    # ── Internal ──────────────────────────────────────────────────────────────
+    # ── Background poll loop ───────────────────────────────────────────────────
+
+    async def _poll_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_POLL_INTERVAL)
+            if not self._pending:
+                continue
+
+            now = asyncio.get_running_loop().time()
+
+            for gen_id in list(self._pending):
+                future, deadline = self._pending[gen_id]
+
+                if future.done():
+                    self._pending.pop(gen_id, None)
+                    continue
+
+                if now > deadline:
+                    self._pending.pop(gen_id, None)
+                    future.set_exception(
+                        TTSError("timeout", f"Voicebox job {gen_id[:8]} timed out after {_JOB_TIMEOUT_S}s.")
+                    )
+                    continue
+
+                try:
+                    resp = await self._client.get(f"/history/{gen_id}", timeout=10)
+                    if resp.status_code >= 400:
+                        continue  # retry next cycle
+                    status = resp.json().get("status", "")
+
+                    if status == "completed":
+                        try:
+                            audio = await self._fetch_audio(gen_id)
+                            self._pending.pop(gen_id, None)
+                            if not future.done():
+                                future.set_result(audio)
+                        except TTSError as e:
+                            self._pending.pop(gen_id, None)
+                            if not future.done():
+                                future.set_exception(e)
+
+                    elif status in ("failed", "error"):
+                        self._pending.pop(gen_id, None)
+                        if not future.done():
+                            future.set_exception(
+                                TTSError("generation_failed", f"Voicebox job failed: {status}")
+                            )
+
+                except Exception as e:
+                    print(f"[Voicebox] Poll error for job {gen_id[:8]}: {e}")
+
+    # ── HTTP helpers ──────────────────────────────────────────────────────────
 
     async def _ping(self) -> None:
         try:
@@ -112,24 +175,14 @@ class VoiceboxProvider(TTSProvider):
             raise TTSError("generation_failed", f"Voicebox /generate returned {resp.status_code}: {resp.text[:200]}")
         return resp.json()["id"]
 
-    async def _wait_until_done(self, gen_id: str) -> None:
-        deadline = asyncio.get_event_loop().time() + _TIMEOUT
-        while True:
-            if asyncio.get_event_loop().time() > deadline:
-                raise TTSError("timeout", f"Voicebox synthesis timed out after {_TIMEOUT}s.")
-            await asyncio.sleep(_POLL_INTERVAL)
-            resp = await self._client.get(f"/history/{gen_id}", timeout=10)
-            if resp.status_code >= 400:
-                raise TTSError("generation_failed", f"Voicebox /history returned {resp.status_code}")
-            data = resp.json()
-            status = data.get("status", "")
-            if status == "completed":
-                return
-            if status in ("failed", "error"):
-                raise TTSError("generation_failed", f"Voicebox generation failed: {data.get('error', status)}")
-
     async def _fetch_audio(self, gen_id: str) -> bytes:
-        resp = await self._client.get(f"/audio/{gen_id}", timeout=30)
-        if resp.status_code >= 400:
-            raise TTSError("generation_failed", f"Voicebox /audio returned {resp.status_code}")
-        return resp.content
+        # Voicebox marks jobs "completed" before the audio file is fully written.
+        # Retry with increasing delays (2s, 4s, 6s, 8s, 10s = 30s max extra wait).
+        for attempt in range(6):
+            resp = await self._client.get(f"/audio/{gen_id}", timeout=30)
+            if resp.status_code == 200:
+                return resp.content
+            if resp.status_code != 500 or attempt == 5:
+                raise TTSError("generation_failed", f"Voicebox /audio returned {resp.status_code}")
+            await asyncio.sleep(2 * (attempt + 1))
+        raise TTSError("generation_failed", "Voicebox /audio failed after retries")

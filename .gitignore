@@ -31,6 +31,8 @@ ENV/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # Logs and temporary files

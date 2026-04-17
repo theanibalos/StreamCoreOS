@@ -27,3 +27,38 @@ docker compose -f dev_infra/docker-compose.yml up -d  # Dev infra
 7. **Runner**: Always `uv run`.
 
 > Advanced topics (testing, observability, creating tools): `INSTRUCTIONS_FOR_AI.md`.
+
+## Plugin Import Rules
+
+Un plugin SOLO puede importar de stdlib y de `core.base_plugin`. Nada más.
+
+```python
+# ✅ Permitido
+import asyncio
+import json
+from core.base_plugin import BasePlugin
+
+# ❌ NUNCA — aunque sea "infraestructura compartida"
+from tools.xxx import YYY
+from tools.xxx.errors import SomeError
+from domains.xxx import YYY
+
+# ❌ NUNCA — ni siquiera entre plugins del mismo dominio
+from domains.tts_chat.plugins.otro_plugin import algo
+```
+
+Las tools y servicios se reciben **exclusivamente por DI** en `__init__`. Si necesitas manejar errores de una tool, usa duck typing:
+
+```python
+except Exception as e:
+    code = getattr(e, "code", None)   # no import necesario
+```
+
+## Pre-commit Hook (pendiente de implementar)
+
+Para enforcer las reglas de imports automáticamente sin depender de que la IA las recuerde, implementar un script `.git/hooks/pre-commit` que:
+1. Busque todos los archivos en `domains/*/plugins/*.py`
+2. Rechace el commit si alguno contiene `from tools.` o `from domains.` en sus imports
+3. Muestre qué archivo y línea viola la regla
+
+Esto convierte una regla de honor en una regla de máquina.
