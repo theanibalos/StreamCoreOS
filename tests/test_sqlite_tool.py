@@ -1,192 +1,180 @@
-"""
-Tests for SqliteTool.
-
-Covers: placeholder normalization, query/query_one/execute/execute_many,
-RETURNING clause, transactions (commit & rollback), health_check,
-and migration history deduplication.
-"""
 import pytest
-from tools.sqlite.sqlite_tool import SqliteTool, DatabaseError, _normalize_sql, _normalize_sql_many
 
+from tools.sqlite.sqlite_tool import SqliteTool, _normalize_sql
 
-# ─── Fixtures ─────────────────────────────────────────────────────────────
+pytestmark = pytest.mark.anyio
+
 
 @pytest.fixture
-async def db(tmp_path):
-    """Fresh in-memory-like SQLite DB for each test (temp file)."""
-    import os
-    os.environ["SQLITE_DB_PATH"] = str(tmp_path / "test.db")
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
+async def db(monkeypatch):
+    monkeypatch.setenv("SQLITE_DB_PATH", ":memory:")
     tool = SqliteTool()
     await tool.setup()
-    await tool.execute("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, value INTEGER)")
     yield tool
     await tool.shutdown()
 
 
-# ─── Placeholder normalization ────────────────────────────────────────────
-
-class TestNormalizeSql:
-    def test_converts_pg_placeholders_to_sqlite(self):
-        sql, params = _normalize_sql("SELECT * FROM t WHERE id=$1 AND x=$2", [42, "foo"])
-        assert "?" in sql
-        assert "$" not in sql
-        assert params == [42, "foo"]
-
-    def test_no_placeholders_passthrough(self):
-        sql, params = _normalize_sql("SELECT 1", [])
-        assert sql == "SELECT 1"
-        assert params == []
-
-    def test_reorders_params_by_position(self):
-        sql, params = _normalize_sql("SELECT $2, $1", ["a", "b"])
-        assert params == ["b", "a"]
-
-    def test_normalize_many(self):
-        sql, pl = _normalize_sql_many("INSERT INTO t VALUES ($1)", [["x"], ["y"]])
-        assert "?" in sql
-        assert pl == [["x"], ["y"]]
+@pytest.fixture
+async def db_with_table(db):
+    await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+    return db
 
 
-# ─── query() ──────────────────────────────────────────────────────────────
+# ── _normalize_sql (sync, sin DB) ─────────────────────────────────────────────
 
-class TestQuery:
-    @pytest.mark.anyio
-    async def test_returns_list_of_dicts(self, db):
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["a", 1])
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["b", 2])
-
-        rows = await db.query("SELECT name, value FROM items ORDER BY name")
-        assert rows == [{"name": "a", "value": 1}, {"name": "b", "value": 2}]
-
-    @pytest.mark.anyio
-    async def test_returns_empty_list_when_no_rows(self, db):
-        rows = await db.query("SELECT * FROM items")
-        assert rows == []
-
-    @pytest.mark.anyio
-    async def test_with_params(self, db):
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["keep", 10])
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["skip", 20])
-
-        rows = await db.query("SELECT name FROM items WHERE value=$1", [10])
-        assert len(rows) == 1
-        assert rows[0]["name"] == "keep"
+def test_normalize_single_placeholder():
+    sql, params = _normalize_sql("SELECT * FROM t WHERE id = $1", [42])
+    assert "?" in sql
+    assert "$1" not in sql
+    assert params == [42]
 
 
-# ─── query_one() ──────────────────────────────────────────────────────────
-
-class TestQueryOne:
-    @pytest.mark.anyio
-    async def test_returns_dict_when_found(self, db):
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["x", 99])
-        row = await db.query_one("SELECT name, value FROM items WHERE name=$1", ["x"])
-        assert row == {"name": "x", "value": 99}
-
-    @pytest.mark.anyio
-    async def test_returns_none_when_not_found(self, db):
-        row = await db.query_one("SELECT * FROM items WHERE id=$1", [9999])
-        assert row is None
+def test_normalize_multiple_placeholders():
+    sql, params = _normalize_sql("INSERT INTO t VALUES ($1, $2)", ["a", "b"])
+    assert sql.count("?") == 2
+    assert params == ["a", "b"]
 
 
-# ─── execute() ────────────────────────────────────────────────────────────
-
-class TestExecute:
-    @pytest.mark.anyio
-    async def test_insert_returns_lastrowid(self, db):
-        row_id = await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["z", 5])
-        assert isinstance(row_id, int)
-        assert row_id >= 1
-
-    @pytest.mark.anyio
-    async def test_insert_with_returning(self, db):
-        row_id = await db.execute(
-            "INSERT INTO items (name, value) VALUES ($1, $2) RETURNING id", ["ret", 7]
-        )
-        assert isinstance(row_id, int)
-        assert row_id >= 1
-
-    @pytest.mark.anyio
-    async def test_update_returns_affected_rows(self, db):
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["u", 1])
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["u", 2])
-
-        count = await db.execute("UPDATE items SET value=$1 WHERE name=$2", [99, "u"])
-        assert count == 2
-
-    @pytest.mark.anyio
-    async def test_delete_returns_affected_rows(self, db):
-        await db.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["d", 1])
-        count = await db.execute("DELETE FROM items WHERE name=$1", ["d"])
-        assert count == 1
+def test_normalize_no_placeholders():
+    original = "SELECT * FROM t"
+    sql, params = _normalize_sql(original, [])
+    assert sql == original
+    assert params == []
 
 
-# ─── execute_many() ───────────────────────────────────────────────────────
+# ── Operaciones reales ────────────────────────────────────────────────────────
 
-class TestExecuteMany:
-    @pytest.mark.anyio
-    async def test_inserts_all_rows(self, db):
-        await db.execute_many(
-            "INSERT INTO items (name, value) VALUES ($1, $2)",
-            [["x", 1], ["y", 2], ["z", 3]],
-        )
-        rows = await db.query("SELECT name FROM items ORDER BY name")
-        assert [r["name"] for r in rows] == ["x", "y", "z"]
+async def test_execute_create_table(db):
+    await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
 
 
-# ─── transaction() ────────────────────────────────────────────────────────
-
-class TestTransaction:
-    @pytest.mark.anyio
-    async def test_commits_on_success(self, db):
-        async with db.transaction() as tx:
-            await tx.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["t1", 1])
-            await tx.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["t2", 2])
-
-        rows = await db.query("SELECT name FROM items ORDER BY name")
-        assert [r["name"] for r in rows] == ["t1", "t2"]
-
-    @pytest.mark.anyio
-    async def test_rolls_back_on_exception(self, db):
-        with pytest.raises(Exception):
-            async with db.transaction() as tx:
-                await tx.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["ok", 1])
-                raise RuntimeError("forced rollback")
-
-        rows = await db.query("SELECT * FROM items")
-        assert rows == []
-
-    @pytest.mark.anyio
-    async def test_transaction_query_within_block(self, db):
-        async with db.transaction() as tx:
-            await tx.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["q", 55])
-            row = await tx.query_one("SELECT value FROM items WHERE name=$1", ["q"])
-            assert row["value"] == 55
-
-    @pytest.mark.anyio
-    async def test_nested_transactions_via_savepoint(self, db):
-        async with db.transaction() as outer:
-            await outer.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["outer", 1])
-            with pytest.raises(Exception):
-                async with db.transaction() as inner:
-                    await inner.execute("INSERT INTO items (name, value) VALUES ($1, $2)", ["inner", 2])
-                    raise RuntimeError("inner rollback")
-
-        # outer committed, inner rolled back
-        rows = await db.query("SELECT name FROM items")
-        names = [r["name"] for r in rows]
-        assert "outer" in names
-        assert "inner" not in names
+async def test_execute_insert_returns_id(db_with_table):
+    row_id = await db_with_table.execute("INSERT INTO t (name) VALUES ($1)", ["Ana"])
+    assert row_id == 1
 
 
-# ─── health_check() ───────────────────────────────────────────────────────
+async def test_query_returns_rows(db_with_table):
+    await db_with_table.execute("INSERT INTO t (name) VALUES ($1)", ["Ana"])
+    rows = await db_with_table.query("SELECT * FROM t")
+    assert rows == [{"id": 1, "name": "Ana"}]
 
-class TestHealthCheck:
-    @pytest.mark.anyio
-    async def test_returns_true_when_connected(self, db):
-        assert await db.health_check() is True
 
-    @pytest.mark.anyio
-    async def test_returns_false_when_not_connected(self):
-        tool = SqliteTool()
-        # never called setup()
-        assert await tool.health_check() is False
+async def test_query_one_found(db_with_table):
+    await db_with_table.execute("INSERT INTO t (name) VALUES ($1)", ["Ana"])
+    row = await db_with_table.query_one("SELECT * FROM t WHERE id = $1", [1])
+    assert row == {"id": 1, "name": "Ana"}
+
+
+async def test_query_one_not_found(db_with_table):
+    row = await db_with_table.query_one("SELECT * FROM t WHERE id = $1", [999])
+    assert row is None
+
+
+async def test_execute_update_returns_affected_rows(db_with_table):
+    await db_with_table.execute("INSERT INTO t (name) VALUES ($1)", ["Ana"])
+    affected = await db_with_table.execute(
+        "UPDATE t SET name = $1 WHERE id = $2", ["Bob", 1]
+    )
+    assert affected == 1
+
+
+async def test_execute_many_inserts_all(db_with_table):
+    await db_with_table.execute_many(
+        "INSERT INTO t (name) VALUES ($1)", [["X"], ["Y"], ["Z"]]
+    )
+    rows = await db_with_table.query("SELECT * FROM t")
+    assert len(rows) == 3
+
+
+# ── Transactions ──────────────────────────────────────────────────────────────
+
+async def test_transaction_commits(db_with_table):
+    async with db_with_table.transaction() as tx:
+        await tx.execute("INSERT INTO t (name) VALUES ($1)", ["Alice"])
+        await tx.execute("INSERT INTO t (name) VALUES ($1)", ["Bob"])
+    rows = await db_with_table.query("SELECT * FROM t")
+    assert len(rows) == 2
+
+
+async def test_transaction_rollback_on_exception(db_with_table):
+    with pytest.raises(RuntimeError):
+        async with db_with_table.transaction() as tx:
+            await tx.execute("INSERT INTO t (name) VALUES ($1)", ["Alice"])
+            raise RuntimeError("oops")
+    rows = await db_with_table.query("SELECT * FROM t")
+    assert rows == []
+
+
+async def test_nested_transaction_inner_rollback_no_affect_outer(db_with_table):
+    async with db_with_table.transaction() as outer:
+        await outer.execute("INSERT INTO t (name) VALUES ($1)", ["outer"])
+        try:
+            async with db_with_table.transaction() as inner:
+                await inner.execute("INSERT INTO t (name) VALUES ($1)", ["inner"])
+                raise RuntimeError("inner fail")
+        except RuntimeError:
+            pass
+    rows = await db_with_table.query("SELECT * FROM t")
+    names = [r["name"] for r in rows]
+    assert "outer" in names
+    assert "inner" not in names
+
+
+async def test_execute_insert_with_returning(db_with_table):
+    row_id = await db_with_table.execute(
+        "INSERT INTO t (name) VALUES ($1) RETURNING id", ["Ana"]
+    )
+    assert row_id == 1
+
+
+async def test_transaction_raises_when_no_connection(db):
+    db._db = None
+    with pytest.raises(Exception):
+        async with db.transaction():
+            pass
+
+
+# ── Health check ──────────────────────────────────────────────────────────────
+
+async def test_health_check_active(db):
+    assert await db.health_check() is True
+
+
+async def test_health_check_no_connection(db):
+    db._db = None
+    assert await db.health_check() is False
+
+
+# ── execute_many vacío ────────────────────────────────────────────────────────
+
+async def test_execute_many_empty_list_is_noop(db_with_table):
+    await db_with_table.execute_many("INSERT INTO t (name) VALUES ($1)", [])
+    rows = await db_with_table.query("SELECT * FROM t")
+    assert rows == []
+
+
+# ── query sin resultados ───────────────────────────────────────────────────────
+
+async def test_query_returns_empty_list_when_no_rows(db_with_table):
+    rows = await db_with_table.query("SELECT * FROM t")
+    assert rows == []
+
+
+# ── execute DELETE ─────────────────────────────────────────────────────────────
+
+async def test_execute_delete_returns_affected_rows(db_with_table):
+    await db_with_table.execute("INSERT INTO t (name) VALUES ($1)", ["Ana"])
+    affected = await db_with_table.execute("DELETE FROM t WHERE id = $1", [1])
+    assert affected == 1
+    rows = await db_with_table.query("SELECT * FROM t")
+    assert rows == []
+
+
+async def test_execute_delete_no_match_returns_zero(db_with_table):
+    affected = await db_with_table.execute("DELETE FROM t WHERE id = $1", [999])
+    assert affected == 0

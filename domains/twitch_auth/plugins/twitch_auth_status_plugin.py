@@ -35,16 +35,19 @@ class TwitchAuthStatusPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             session = self.twitch.get_session()
-            if session:
+            if session and self.twitch.is_eventsub_connected():
                 return {
                     "success": True,
                     "data": {
                         "connected": True,
+                        "connecting": False,
                         "login": session["login"],
                         "broadcaster_id": session["broadcaster_id"],
                     },
                 }
-            return {"success": True, "data": {"connected": False}}
+            if self.twitch.is_connecting():
+                return {"success": True, "data": {"connected": False, "connecting": True}}
+            return {"success": True, "data": {"connected": False, "connecting": False}}
         except Exception as e:
             self.logger.error(f"[TwitchAuthStatus] {e}")
             return {"success": False, "error": str(e)}

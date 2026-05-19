@@ -1,0 +1,65 @@
+from typing import Optional, Any
+from pydantic import BaseModel
+from core.base_plugin import BasePlugin
+
+
+class OverlayDataResponse(BaseModel):
+    success: bool
+    data: Optional[Any] = None
+    error: Optional[str] = None
+
+
+class OverlayDataPlugin(BasePlugin):
+    """
+    GET /overlays/data  (public — used by OBS browser source renderer)
+
+    Returns live aggregated stats for overlay stat/progress_bar widgets:
+      subscribers.active_total  — active subscribers from local DB
+      bits.total                — all-time bits accumulated locally
+      stream.online             — whether the stream is currently live
+    """
+
+    def __init__(self, http, db, state, logger):
+        self.http = http
+        self.db = db
+        self.state = state
+        self.logger = logger
+
+    async def on_boot(self):
+        self.http.add_endpoint(
+            "/overlays/data", "GET", self.execute,
+            tags=["Overlays"],
+            response_model=OverlayDataResponse,
+        )
+
+    async def execute(self, data: dict, context=None):
+        try:
+            result = {}
+
+            # Stream online state
+            result["stream.online"] = self.state.get(
+                "online", default=False, namespace="stream_state"
+            )
+
+            # Active subscriber count
+            try:
+                row = await self.db.query_one(
+                    "SELECT COUNT(*) AS n FROM subscribers WHERE is_active=1", []
+                )
+                result["subscribers.active_total"] = int(row["n"]) if row else 0
+            except Exception:
+                result["subscribers.active_total"] = 0
+
+            # All-time bits total
+            try:
+                row = await self.db.query_one(
+                    "SELECT COALESCE(SUM(bits_total), 0) AS n FROM viewer_bits", []
+                )
+                result["bits.total"] = int(row["n"]) if row else 0
+            except Exception:
+                result["bits.total"] = 0
+
+            return {"success": True, "data": result}
+        except Exception as e:
+            self.logger.error(f"[OverlayData] {e}")
+            return {"success": False, "error": str(e)}

@@ -35,6 +35,9 @@ ENV/
 *.db-wal
 *.sqlite3
 
+# Data exports (temporary, never commit)
+*.csv
+
 # Logs and temporary files
 *.log
 doc_update*.log

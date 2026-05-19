@@ -17,6 +17,7 @@ PUBLIC CONTRACT (what plugins use):
         request_model=UserEntity,         # Optional: Pydantic model → body validation + schema
         response_model=UserResponse,      # Optional: Pydantic model → OpenAPI response schema
         auth_validator=self._validate,    # Optional: token validator (see AUTH section)
+        has_files=False,                  # Optional: if True, enables multipart/form-data
     )
 
     # Serve static files from a directory
@@ -43,6 +44,7 @@ HANDLER SIGNATURE:
 
     async def execute(self, data: dict, context: HttpContext) -> dict:
         # 'data' is a flat dict merging: path params + query params + body
+        # If has_files=True, 'data["_files"]' contains the list of UploadFile objects.
         # 'context' is an HttpContext handle for response manipulation
         return {"success": True, "data": {...}}
 
@@ -59,6 +61,10 @@ RESPONSE CONTRACT:
     # Explicit HTTP status override via context
     context.set_status(404)
     return {"success": False, "error": "User not found"}
+
+    # Binary response (e.g. images, PDFs)
+    context.set_binary_response(b"...", media_type="image/png")
+    return {} # handler return value is ignored when binary response is set
 
     # Auth failure — handled automatically (HTTP 401, envelope format)
     # {"success": False, "error": "Missing authorization token"}
@@ -78,6 +84,8 @@ HttpContext API:
     context.set_status(code: int)           → Override HTTP status code (default: 200)
     context.set_cookie(key, value, ...)     → Set a response cookie
     context.set_header(key, value)          → Add a custom response header
+    context.redirect(url, status=302)       → Redirect to another URL
+    context.set_binary_response(content, media_type) → Return raw binary data
 
 
 AUTH VALIDATOR CONTRACT:
@@ -100,15 +108,15 @@ REPLACEMENT STANDARD (implement this to swap the backend):
 
     1. Create tools/aiohttp_server/aiohttp_server_tool.py
     2. name = "http"                               ← same injection key, plugins are unaffected
-    3. Implement the 4 public methods:
-          add_endpoint(path, method, handler, tags, request_model, response_model, auth_validator)
+    3. Implement the public methods:
+          add_endpoint(path, method, handler, tags, request_model, response_model, auth_validator, has_files)
           mount_static(path, directory_path)
           add_ws_endpoint(path, on_connect, on_disconnect)
           add_sse_endpoint(path, generator, tags, auth_validator)
     4. Handler contract: handler(data: dict, context: HttpContext) → dict
-       - data: flat merge of path params + query params + body
+       - data: flat merge of path params + query params + body (+ _files if applicable)
        - context: instance of HttpContext (or a compatible duck-type)
-    5. Honor context.status_code for the HTTP response status
+    5. Honor context.status_code and context.binary_content for the HTTP response
     6. For auth: call auth_validator(token), inject payload into data["_auth"]
     7. On auth failure: return HTTP 401 with {"success": False, "error": "..."}
     8. On unhandled exception: return HTTP 500 with {"success": False, "error": "Internal server error"}
@@ -137,7 +145,7 @@ def _serialize(obj):
     return obj
 from core.base_tool import BaseTool
 from core.context import current_identity_var, current_event_id_var
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -210,12 +218,27 @@ class HttpContext:
         self._redirect_url = url
         self._status_code = status
 
-    def apply_to(self, response: JSONResponse) -> None:
-        """Apply all accumulated cookies and headers to the given JSONResponse."""
+    def apply_to(self, response: Any) -> None:
+        """Apply all accumulated cookies and headers to the given response object."""
         for key, value in self._headers.items():
             response.headers[key] = value
         for cookie in self._cookies:
             response.set_cookie(**cookie)
+
+    def set_binary_response(self, content: bytes, media_type: str = "application/octet-stream") -> None:
+        """
+        Instruct the tool to return raw binary data instead of the default JSON envelope.
+        The handler's return value will be ignored.
+        """
+        self._binary_content = content
+        self._media_type = media_type
+
+    @property
+    def binary_content(self) -> tuple[bytes, str] | None:
+        content = getattr(self, "_binary_content", None)
+        if content is not None:
+            return content, getattr(self, "_media_type", "application/octet-stream")
+        return None
 
     @property
     def status_code(self) -> int:
@@ -316,28 +339,32 @@ class HttpServerTool(BaseTool):
     def get_interface_description(self) -> str:
         return """
         HTTP Server Tool (http):
-        - PURPOSE: FastAPI-powered HTTP gateway. Supports REST, static files, and WebSockets.
+        - PURPOSE: FastAPI-powered HTTP gateway. Supports REST, static files, WebSockets and SSE.
         - HANDLER SIGNATURE: async def execute(self, data: dict, context: HttpContext) -> dict
-          'data' = flat merge of path params + query params + body.
-          'context' = HttpContext for set_status(), set_cookie(), set_header().
+          'data' = flat merge of [path params] + [query params] + [body/form fields].
+          Special keys in 'data':
+            - data["_auth"]: contains the payload from auth_validator if successful.
+            - data["_files"]: list of FastAPI UploadFile objects (only if has_files=True).
         - CAPABILITIES:
             - add_endpoint(path, method, handler, tags=None, request_model=None,
-                           response_model=None, auth_validator=None):
-                Buffers a route for registration. Supports Pydantic models for validation
-                and OpenAPI schema generation.
-                auth_validator: async fn(token: str) -> dict | None
-                  → returned payload is injected into data["_auth"].
-            - mount_static(path, directory_path): Serve static files.
-            - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket endpoint.
-            - add_sse_endpoint(path, generator, tags=None, auth_validator=None):
-                Server-Sent Events endpoint (GET, text/event-stream).
-                generator: async generator callable(data: dict) → yields "data: ...\n\n" strings.
-                Client disconnect is detected automatically; generator's finally block runs on cleanup.
-        - RESPONSE CONTRACT: return {"success": bool, "data": ..., "error": ...}
-          Use context.set_status(N) to override HTTP status code (default: 200).
-          WARNING: All values in the returned dict must be JSON-serializable (plain dicts,
-          lists, str, int, etc.). Pydantic model instances are NOT serializable — always call
-          .model_dump() before nesting them: MyModel(...).model_dump()
+                           response_model=None, auth_validator=None, has_files=False):
+                - has_files: if True, enables multipart/form-data. Request model fields 
+                  become Form fields. To use a file: file = data["_files"][0]; 
+                  await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
+            - mount_static(path, directory_path): Serve static files from a directory.
+            - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
+            - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
+                Server-Sent Events. generator yields formatted strings: "data: {...}\\n\\n".
+        - HttpContext CAPABILITIES (inside handler):
+            - context.set_status(code: int): Override HTTP status (default: 200).
+            - context.redirect(url: str, status=302): Redirect to another URL.
+            - context.set_cookie(key, value, max_age=3600, httponly=True, samesite='lax'): Set cookie.
+            - context.set_header(key, value): Add custom response header.
+            - context.set_binary_response(content: bytes, media_type: str): Return raw file.
+        - RESPONSE CONTRACT:
+            - Standard: return {"success": bool, "data": ..., "error": ...}
+            - WARNING: All values in 'data' must be JSON-serializable. Pydantic model 
+              instances are NOT serializable — always call .model_dump() before returning.
         """
 
     # ── Public API ───────────────────────────────────────────────────────────────
@@ -351,6 +378,7 @@ class HttpServerTool(BaseTool):
         request_model=None,
         response_model=None,
         auth_validator: Optional[Callable] = None,
+        has_files: bool = False,
     ) -> None:
         """
         Registers an HTTP endpoint. Buffered until on_boot_complete() to allow
@@ -364,6 +392,7 @@ class HttpServerTool(BaseTool):
             "request_model": request_model,
             "response_model": response_model,
             "auth_validator": auth_validator,
+            "has_files": has_files,
         })
 
     def mount_static(self, path: str, directory_path: str) -> None:
@@ -482,6 +511,7 @@ class HttpServerTool(BaseTool):
         injected into the wrapper's signature so FastAPI generates proper OpenAPI docs.
         """
         import re
+        from fastapi import File, UploadFile
 
         path = ep["path"]
         method = ep["method"].upper()
@@ -490,6 +520,7 @@ class HttpServerTool(BaseTool):
         request_model = ep["request_model"]
         response_model = ep["response_model"]
         auth_validator = ep["auth_validator"]
+        has_files = ep.get("has_files", False)
 
         # Unique operation ID for OpenAPI
         clean_path = path.replace("/", "_").replace("{", "").replace("}", "")
@@ -504,6 +535,11 @@ class HttpServerTool(BaseTool):
         if request_model and method == "GET":
             async def fastapi_wrapper(request: Request, params: request_model = Depends(), **kwargs):
                 return await self._process_request(request, params, handler, auth_validator)
+        elif has_files:
+            # If we have files and a request model, we want the model fields to show up as Form fields.
+            # We pass kwargs to _process_request which will contain both path params and Form params.
+            async def fastapi_wrapper(request: Request, files: Optional[list[UploadFile]] = File(None), **kwargs):
+                return await self._process_request(request, kwargs, handler, auth_validator, files=files)
         elif request_model:
             async def fastapi_wrapper(request: Request, body: request_model = None, **kwargs):
                 return await self._process_request(request, body, handler, auth_validator)
@@ -512,21 +548,41 @@ class HttpServerTool(BaseTool):
                 return await self._process_request(request, None, handler, auth_validator)
 
         # Override __signature__ to control OpenAPI documentation.
-        # Always remove **kwargs; add explicit path params if present.
+        # Always remove **kwargs; add explicit path params and Form params if present.
         sig = inspect.signature(fastapi_wrapper)
-        existing_params = [
+        params = [
             p for p in sig.parameters.values() if p.kind != inspect.Parameter.VAR_KEYWORD
         ]
+
+        # 1. Add path parameters
         if path_param_names:
             path_params_list = [
                 inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=str)
                 for name in path_param_names
             ]
-            # Insert path params after 'request' but before body/params
-            new_params = [existing_params[0]] + path_params_list + existing_params[1:]
-        else:
-            new_params = existing_params
-        fastapi_wrapper.__signature__ = sig.replace(parameters=new_params)
+            # Insert path params after 'request'
+            params = [params[0]] + path_params_list + params[1:]
+
+        # 2. Add Form parameters if has_files and request_model
+        if has_files and request_model:
+            from fastapi import Form
+            for field_name, field in request_model.model_fields.items():
+                # Check if it's required (no default value)
+                if field.is_required():
+                    default_val = Form(...)
+                else:
+                    default_val = Form(field.default)
+                
+                params.append(
+                    inspect.Parameter(
+                        field_name,
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        default=default_val,
+                        annotation=field.annotation
+                    )
+                )
+
+        fastapi_wrapper.__signature__ = sig.replace(parameters=params)
 
         fastapi_wrapper.__name__ = operation_id
         self.app.add_api_route(
@@ -546,7 +602,8 @@ class HttpServerTool(BaseTool):
         body_data: Any,
         handler: Callable,
         auth_validator: Optional[Callable],
-    ) -> JSONResponse:
+        files: Optional[list] = None,
+    ) -> Any:
         """
         Core request processing pipeline. Executed for every incoming HTTP request.
 
@@ -559,20 +616,43 @@ class HttpServerTool(BaseTool):
         """
         # ── Phase 1: Data Assembly ─────────────────────────────────────────────
         data: dict = {}
+        # 1. Query parameters always come from the request object
         data.update(request.query_params)
+        # 2. Path parameters always come from the request object (path params are
+        #    injected by FastAPI into **kwargs but never forwarded to _process_request,
+        #    so we always pull them directly from request.path_params here)
         data.update(request.path_params)
 
+        # 3. Body/Form data
+        # If body_data is provided (from FastAPI DI), it contains body/form fields
         if body_data is not None:
-            body_dict = body_data.dict() if hasattr(body_data, "dict") else body_data
-            if isinstance(body_dict, dict):
-                data.update(body_dict)
-        elif request.method in ("POST", "PUT", "PATCH", "DELETE"):
-            try:
-                raw_body = await request.json()
-                if isinstance(raw_body, dict):
-                    data.update(raw_body)
-            except Exception:
-                pass
+            if hasattr(body_data, "model_dump"):
+                data.update(body_data.model_dump())
+            elif hasattr(body_data, "dict"):
+                data.update(body_data.dict())
+            elif isinstance(body_data, dict):
+                data.update(body_data)
+        else:
+            # Fallback: manual extraction if no DI model was used
+            data.update(request.path_params)
+            
+            content_type = request.headers.get("Content-Type", "")
+            if "application/json" in content_type:
+                try:
+                    raw_json = await request.json()
+                    if isinstance(raw_json, dict):
+                        data.update(raw_json)
+                except Exception: pass
+            elif "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+                try:
+                    form = await request.form()
+                    for key, value in form.items():
+                        if not hasattr(value, "filename"): # Only take non-field data
+                            data[key] = value
+                except Exception: pass
+
+        if files is not None:
+            data["_files"] = files
 
         # ── Phase 2: Causality Context Seeding ────────────────────────────────
         # Honor X-Request-ID from an upstream MicroCoreOS service if present,
@@ -636,6 +716,14 @@ class HttpServerTool(BaseTool):
                 for cookie in context._cookies:
                     redirect_response.set_cookie(**cookie)
                 return redirect_response
+
+            binary = context.binary_content
+            if binary:
+                from fastapi.responses import Response
+                content, media_type = binary
+                response = Response(content=content, media_type=media_type, status_code=context.status_code)
+                context.apply_to(response)
+                return response
 
             json_response = JSONResponse(status_code=context.status_code, content=_serialize(result))
             context.apply_to(json_response)

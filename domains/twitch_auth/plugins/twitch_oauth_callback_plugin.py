@@ -1,4 +1,3 @@
-import os
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -21,12 +20,13 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
     the EventSub WebSocket + IRC chat.
     """
 
-    def __init__(self, twitch, http, db, event_bus, logger):
+    def __init__(self, twitch, http, db, event_bus, logger, config):
         self.twitch = twitch
         self.http = http
         self.db = db
         self.bus = event_bus
         self.logger = logger
+        self.config = config
 
     async def on_boot(self):
         self.http.add_endpoint(
@@ -96,14 +96,9 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
             await self.twitch.connect(access_token, twitch_id, login)
             self.logger.info(f"[TwitchAuth] Connected as {display_name} ({login})")
 
-            # Redirect browser to frontend instead of returning raw JSON
-            frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-            if context:
-                context.redirect(frontend_url)
-            return {
-                "success": True,
-                "data": {"login": login, "display_name": display_name},
-            }
+            frontend_url = self.config.get("FRONTEND_URL", "/")
+            context.redirect(frontend_url)
+            return {}
         except Exception as e:
             self.logger.error(f"[TwitchOAuthCallback] {e}")
             return {"success": False, "error": str(e)}

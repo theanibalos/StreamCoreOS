@@ -1,0 +1,1 @@
+ALTER TABLE ai_config ADD COLUMN chat_ia_enabled INTEGER NOT NULL DEFAULT 1;

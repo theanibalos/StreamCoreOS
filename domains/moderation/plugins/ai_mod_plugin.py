@@ -1,5 +1,4 @@
 from core.base_plugin import BasePlugin
-from tools.ai.ai_tool import AIError
 
 _NS = "ai_mod_rules"
 
@@ -90,11 +89,11 @@ class AiModPlugin(BasePlugin):
                 + (f" reason={reason!r}" if reason else "")
             )
             return flagged
-        except AIError as e:
-            if e.code == "not_configured":
-                return False  # silent — expected when AI is intentionally off
-            # Any provider error = fail open (don't moderate on uncertainty)
-            self.logger.error(f"[AiMod] Rule #{rule['id']} [{e.code}]: {e}")
+        except Exception as e:
+            code = getattr(e, "code", None)
+            if code == "not_configured":
+                return False
+            self.logger.error(f"[AiMod] Rule #{rule['id']} [{code}]: {e}")
             return False
 
     async def _enforce(

@@ -86,21 +86,6 @@ domains/{name}/
 ## 🛠️ Available Tools
 Check method signatures before implementation.
 
-### 🔧 Tool: `config` (Status: ✅)
-```text
-Configuration Tool (config):
-        - PURPOSE: Validated access to environment variables for plugins.
-          Tools read their own env vars with os.getenv() — this tool is for plugins.
-        - CAPABILITIES:
-            - get(key, default=None, required=False) -> str | None:
-                Returns the value of the environment variable.
-                If required=True and the variable is not set, raises EnvironmentError.
-            - require(*keys) -> None:
-                Validates that all specified variables are set.
-                Call in on_boot() to fail early with a clear error message.
-                Example: self.config.require("STRIPE_KEY", "SENDGRID_KEY")
-```
-
 ### 🔧 Tool: `ai` (Status: ✅)
 ```text
 AI Tool (ai):
@@ -161,33 +146,19 @@ AI Tool (ai):
         OpenRouter: https://openrouter.ai/api/v1/chat/completions
 ```
 
-### 🔧 Tool: `http` (Status: ✅)
+### 🔧 Tool: `config` (Status: ✅)
 ```text
-HTTP Server Tool (http):
-        - PURPOSE: FastAPI-powered HTTP gateway. Supports REST, static files, and WebSockets.
-        - HANDLER SIGNATURE: async def execute(self, data: dict, context: HttpContext) -> dict
-          'data' = flat merge of path params + query params + body.
-          'context' = HttpContext for set_status(), set_cookie(), set_header().
+Configuration Tool (config):
+        - PURPOSE: Validated access to environment variables for plugins.
+          Tools read their own env vars with os.getenv() — this tool is for plugins.
         - CAPABILITIES:
-            - add_endpoint(path, method, handler, tags=None, request_model=None,
-                           response_model=None, auth_validator=None):
-                Buffers a route for registration. Supports Pydantic models for validation
-                and OpenAPI schema generation.
-                auth_validator: async fn(token: str) -> dict | None
-                  → returned payload is injected into data["_auth"].
-            - mount_static(path, directory_path): Serve static files.
-            - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket endpoint.
-            - add_sse_endpoint(path, generator, tags=None, auth_validator=None):
-                Server-Sent Events endpoint (GET, text/event-stream).
-                generator: async generator callable(data: dict) → yields "data: ...
-
-" strings.
-                Client disconnect is detected automatically; generator's finally block runs on cleanup.
-        - RESPONSE CONTRACT: return {"success": bool, "data": ..., "error": ...}
-          Use context.set_status(N) to override HTTP status code (default: 200).
-          WARNING: All values in the returned dict must be JSON-serializable (plain dicts,
-          lists, str, int, etc.). Pydantic model instances are NOT serializable — always call
-          .model_dump() before nesting them: MyModel(...).model_dump()
+            - get(key, default=None, required=False) -> str | None:
+                Returns the value of the environment variable.
+                If required=True and the variable is not set, raises EnvironmentError.
+            - require(*keys) -> None:
+                Validates that all specified variables are set.
+                Call in on_boot() to fail early with a clear error message.
+                Example: self.config.require("STRIPE_KEY", "SENDGRID_KEY")
 ```
 
 ### 🔧 Tool: `event_bus` (Status: ✅)
@@ -210,6 +181,37 @@ Async Event Bus Tool (event_bus):
             - add_failure_listener(callback): Sink called when a subscriber raises during dispatch.
                 Signature: callback(record: dict) — record has: event, event_id, subscriber, error.
                 Use to implement dead-letter alerting. Non-blocking — keep it fast.
+```
+
+### 🔧 Tool: `http` (Status: ✅)
+```text
+HTTP Server Tool (http):
+        - PURPOSE: FastAPI-powered HTTP gateway. Supports REST, static files, WebSockets and SSE.
+        - HANDLER SIGNATURE: async def execute(self, data: dict, context: HttpContext) -> dict
+          'data' = flat merge of [path params] + [query params] + [body/form fields].
+          Special keys in 'data':
+            - data["_auth"]: contains the payload from auth_validator if successful.
+            - data["_files"]: list of FastAPI UploadFile objects (only if has_files=True).
+        - CAPABILITIES:
+            - add_endpoint(path, method, handler, tags=None, request_model=None,
+                           response_model=None, auth_validator=None, has_files=False):
+                - has_files: if True, enables multipart/form-data. Request model fields 
+                  become Form fields. To use a file: file = data["_files"][0]; 
+                  await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
+            - mount_static(path, directory_path): Serve static files from a directory.
+            - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
+            - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
+                Server-Sent Events. generator yields formatted strings: "data: {...}\n\n".
+        - HttpContext CAPABILITIES (inside handler):
+            - context.set_status(code: int): Override HTTP status (default: 200).
+            - context.redirect(url: str, status=302): Redirect to another URL.
+            - context.set_cookie(key, value, max_age=3600, httponly=True, samesite='lax'): Set cookie.
+            - context.set_header(key, value): Add custom response header.
+            - context.set_binary_response(content: bytes, media_type: str): Return raw file.
+        - RESPONSE CONTRACT:
+            - Standard: return {"success": bool, "data": ..., "error": ...}
+            - WARNING: All values in 'data' must be JSON-serializable. Pydantic model 
+              instances are NOT serializable — always call .model_dump() before returning.
 ```
 
 ### 🔧 Tool: `telemetry` (Status: ✅)
@@ -287,16 +289,6 @@ Twitch Tool (twitch):
           - await delete(endpoint, params?, user_token?): DELETE to Helix.
 ```
 
-### 🔧 Tool: `context_manager` (Status: ✅)
-```text
-Context Manager Tool (context_manager):
-        - PURPOSE: Automatically manages and generates live AI contextual documentation.
-        - CAPABILITIES:
-            - Reads the system registry.
-            - Exports active tools, health status, and domain models to AI_CONTEXT.md.
-            - Generates per-domain AI_CONTEXT.md files inside each domain folder.
-```
-
 ### 🔧 Tool: `auth` (Status: ✅)
 ```text
 Authentication Tool (auth):
@@ -313,6 +305,46 @@ Authentication Tool (auth):
             - validate_token(token: str) -> dict | None:
                 Safe, non-throwing token validation. Returns the decoded payload
                 if valid, or None if expired/invalid. Ideal for middleware guards.
+```
+
+### 🔧 Tool: `context_manager` (Status: ✅)
+```text
+Context Manager Tool (context_manager):
+        - PURPOSE: Automatically manages and generates live AI contextual documentation.
+        - CAPABILITIES:
+            - Reads the system registry.
+            - Exports active tools, health status, and domain models to AI_CONTEXT.md.
+            - Generates per-domain AI_CONTEXT.md files inside each domain folder.
+```
+
+### 🔧 Tool: `logger` (Status: ✅)
+```text
+Logging Tool (logger):
+        - PURPOSE: Record system events and business activity for audit and debugging.
+        - CAPABILITIES:
+            - info(message): General information.
+            - error(message): Critical failures.
+            - warning(message): Non-critical alerts.
+            - add_sink(callback): Connect external observability (e.g. to EventBus).
+                Sink signature: callback(level: str, message: str, timestamp: str, identity: str)
+                'identity' is the current plugin/tool context (from current_identity_var).
+                Use it to attribute errors to specific plugins for health tracking.
+```
+
+### 🔧 Tool: `state` (Status: ✅)
+```text
+In-Memory State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
+        - CAPABILITIES:
+            - set(key, value, namespace='default'): Store a value.
+            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
+            - has(key, namespace='default'): Returns True if key exists.
+            - keys(namespace='default'): Returns list of all keys in the namespace.
+            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
+            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
+            - delete(key, namespace='default'): Delete a key (no-op if missing).
+            - clear(namespace='default'): Remove all keys in the namespace.
 ```
 
 ### 🔧 Tool: `registry` (Status: ✅)
@@ -376,32 +408,6 @@ Scheduler Tool (scheduler):
           and the same 4-method API. Plugins do not change.
 ```
 
-### 🔧 Tool: `state` (Status: ✅)
-```text
-In-Memory State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
-        - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value.
-            - increment(key, amount=1, namespace='default'): Atomic increment.
-            - delete(key, namespace='default'): Delete a key.
-```
-
-### 🔧 Tool: `logger` (Status: ✅)
-```text
-Logging Tool (logger):
-        - PURPOSE: Record system events and business activity for audit and debugging.
-        - CAPABILITIES:
-            - info(message): General information.
-            - error(message): Critical failures.
-            - warning(message): Non-critical alerts.
-            - add_sink(callback): Connect external observability (e.g. to EventBus).
-                Sink signature: callback(level: str, message: str, timestamp: str, identity: str)
-                'identity' is the current plugin/tool context (from current_identity_var).
-                Use it to attribute errors to specific plugins for health tracking.
-```
-
 ### 🔧 Tool: `db` (Status: ✅)
 ```text
 Async SQLite Persistence Tool (sqlite):
@@ -449,36 +455,45 @@ TTS Tool (tts):
 ## 📦 Domains
 
 ### `ai_config`
-- **Tables**: ai_config
-- **Endpoints**: GET /ai/config, POST /ai/test, PUT /ai/config
+- **Table `ai_config`**: provider (str), endpoint_url (str), model (str), updated_at (str)
+- **Endpoints**: GET /ai/config, GET /ai/ia/enabled, POST /ai/test, PUT /ai/config, PUT /ai/ia/enabled
 - **Events emitted**: none
 - **Events consumed**: none
-- **Dependencies**: ai, db, http, logger
-- **Plugins**: GetAIConfigPlugin, RestoreAIConfigPlugin, SaveAIConfigPlugin, TestAIConfigPlugin
+- **Dependencies**: ai, db, http, logger, state
+- **Plugins**: GetAIConfigPlugin, RestoreAIConfigPlugin, SaveAIConfigPlugin, TestAIConfigPlugin, ToggleIAChatPlugin
 
 ### `chat_bot`
-- **Tables**: chat_command, chat_var
+- **Table `chat_command`**: name (str), response (str), cooldown_s (int), enabled (int), created_at (str), channel (str), user_id (str), display_name (str), message (str), is_command (int), timestamp (str)
+- **Table `chat_var`**: name (str), value (str), enabled (int), created_at (str)
 - **Endpoints**: DELETE /chat/commands/{id}, DELETE /chat/vars/{id}, GET /chat/commands, GET /chat/reminders, GET /chat/vars, POST /chat/commands, POST /chat/vars, PUT /chat/commands/{id}, PUT /chat/vars/{id}
-- **Events emitted**: chat.command.executed, chat.command.received, chat.message.received
+- **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command)
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CommandsListPlugin, CreateCommandPlugin, CreateVarPlugin, DeleteCommandPlugin, DeleteVarPlugin, EchoReminderPlugin, IAChatPlugin, ListCommandsPlugin, ListRemindersPlugin, ListVarsPlugin, UpdateCommandPlugin, UpdateVarPlugin, VarCommandPlugin
 
 ### `dashboard`
-- **Tables**: channel_stats
+- **Table `channel_stats`**: recorded_at (str), viewer_count (int), follower_count (int)
 - **Endpoints**: GET /dashboard/stats, GET /dashboard/stats/history
-- **Events emitted**: dashboard.stats.updated
+- **Events emitted**: `dashboard.stats.updated` (follower_count, viewer_count)
 - **Events consumed**: dashboard.stats.updated, moderation.action.taken, stream.session.ended, stream.session.started, viewer.regular.added, viewer.regular.removed
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: ChannelStatsCollectorPlugin, ChannelStatsHistoryPlugin, DashboardAlertsPlugin, DashboardStatsPlugin
 
 ### `moderation`
-- **Tables**: mod_rule
+- **Table `mod_rule`**: type (str       # word_filter | link_filter | caps_filter | spam_filter), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /moderation/rules/{id}, GET /moderation/log, GET /moderation/rules, POST /moderation/ban, POST /moderation/rules, POST /moderation/timeout, POST /moderation/unban, PUT /moderation/rules/{id}
-- **Events emitted**: moderation.action.taken, moderation.rules.updated
+- **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
 - **Events consumed**: chat.message.received, moderation.rules.updated
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
 - **Plugins**: AiModPlugin, AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
+
+### `overlays`
+- **Table `overlay`**: name (str), config (str), created_at (datetime | None), updated_at (datetime | None)
+- **Endpoints**: DELETE /overlays/{id}, GET /overlays, GET /overlays/data, GET /overlays/{id}, GET /overlays/{id}/config, POST /overlays, POST /overlays/generate, PUT /overlays/{id}
+- **Events emitted**: none
+- **Events consumed**: none
+- **Dependencies**: ai, db, http, logger, state
+- **Plugins**: CreateOverlayPlugin, DeleteOverlayPlugin, GenerateOverlayPlugin, GetOverlayPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, UpdateOverlayPlugin
 
 ### `ping`
 - **Tables**: none
@@ -489,47 +504,55 @@ TTS Tool (tts):
 - **Plugins**: PingPlugin
 
 ### `stream_state`
-- **Tables**: stream_session
+- **Table `stream_session`**: twitch_stream_id (Optional[str]), started_at (str       # ISO8601), ended_at (Optional[str]), title (Optional[str]), game_name (Optional[str]), peak_viewers (int)
 - **Endpoints**: GET /stream/sessions, GET /stream/status
-- **Events emitted**: stream.session.ended, stream.session.started
+- **Events emitted**: `stream.session.ended` (ended_at, session_id), `stream.session.started` (broadcaster_login, session_id, started_at, twitch_stream_id)
 - **Events consumed**: stream.status.requested
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: GetStreamStatusPlugin, StreamHistoryPlugin, StreamStateRpcPlugin, StreamStatusPlugin
 
+### `subscribers`
+- **Table `subscriber`**: twitch_id (str), login (str), display_name (str), tier (str), is_prime (bool), is_gift (bool), cumulative_months (int), streak_months (Optional[int]), subscribed_at (str), last_sub_at (str), is_active (bool), bits_total (int), last_cheer_at (str)
+- **Endpoints**: GET /bits/leaderboard, GET /gifters/leaderboard, GET /subscribers/leaderboard, POST /bits/sync, POST /subscribers/sync
+- **Events emitted**: `subscriber.expired` (twitch_id), `subscriber.gift` (cumulative_total, gifter_id, gifter_name, total), `subscriber.new` (display_name, is_gift, tier, twitch_id), `subscriber.resub` (cumulative_months, display_name, streak_months, tier, twitch_id), `viewer.bits.received` (bits, display_name, twitch_id)
+- **Events consumed**: none
+- **Dependencies**: db, event_bus, http, logger, twitch
+- **Plugins**: BitsLeaderboardPlugin, BitsTrackerPlugin, GiftersLeaderboardPlugin, SubscribersLeaderboardPlugin, SubscriptionTrackerPlugin, SyncBitsPlugin, SyncSubscribersPlugin
+
 ### `system`
 - **Tables**: none
 - **Endpoints**: GET /system/events, GET /system/status, GET /system/traces/flat, GET /system/traces/tree
-- **Events emitted**: event.delivery.failed
+- **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, registry
 - **Plugins**: EventDeliveryMonitorPlugin, SystemEventsPlugin, SystemEventsStreamPlugin, SystemLogsStreamPlugin, SystemStatusPlugin, SystemTracesPlugin, SystemTracesStreamPlugin, ToolHealthPlugin
 
 ### `timers`
-- **Tables**: timer
+- **Table `timer`**: name (str), message (str), interval_minutes (int), min_lines (int), enabled (int), last_executed_at (datetime | None), created_at (datetime | None)
 - **Endpoints**: DELETE /timers/{id}, GET /timers, POST /timers, PUT /timers/{id}
-- **Events emitted**: timer.created, timer.deleted, timer.updated
+- **Events emitted**: `timer.created` (id, name), `timer.deleted` (id), `timer.updated` (id)
 - **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: CreateTimerPlugin, DeleteTimerPlugin, GetTimersPlugin, TimerExecutorPlugin, UpdateTimerPlugin
 
 ### `tts_chat`
-- **Tables**: tts_voice_config
+- **Table `tts_voice_config`**: twitch_id (str), twitch_login (str), voice_id (str), voice_name (str), provider (str), created_at (str), updated_at (str), enabled (bool), host (str), port (int), timeout_s (int), max_message_length (int), skip_commands (bool), skip_links (bool), sub_only (bool), cooldown_seconds (int), blocked_words (str   # JSON array stored as text)
 - **Endpoints**: DELETE /tts/user-voices/{twitch_login}, GET /tts/settings, GET /tts/user-voices, GET /tts/user-voices/{twitch_login}, GET /tts/voices, PUT /tts/settings, PUT /tts/user-voices
-- **Events emitted**: tts.audio.ready
+- **Events emitted**: `tts.audio.ready` (audio_b64, text, username, voice_id)
 - **Events consumed**: chat.message.received, tts.audio.ready
 - **Dependencies**: db, event_bus, http, logger, tts, twitch
 - **Plugins**: TtsListenerPlugin, TtsRedemptionPlugin, TtsRestoreConfigPlugin, TtsSettingsPlugin, TtsStreamPlugin, TtsUserVoicesPlugin, TtsVoiceCommandPlugin, TtsVoiceListPlugin
 
 ### `twitch_auth`
-- **Tables**: twitch_token
-- **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback, GET /auth/twitch/status
+- **Table `twitch_token`**: twitch_id (str), login (str), display_name (str), access_token (str), refresh_token (str), scopes (str          # JSON array stored as TEXT), expires_at (str      # ISO8601), created_at (str), updated_at (str)
+- **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback, GET /auth/twitch/scopes, GET /auth/twitch/status, POST /auth/twitch/logout
 - **Events emitted**: none
 - **Events consumed**: none
-- **Dependencies**: db, event_bus, http, logger, scheduler, twitch
-- **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchTokenRefreshPlugin
+- **Dependencies**: config, db, event_bus, http, logger, scheduler, twitch
+- **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchLogoutPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchScopesPlugin, TwitchTokenRefreshPlugin
 
 ### `twitch_redemptions`
-- **Tables**: redemption
+- **Table `redemption`**: reward_title (str), user_id (str), user_name (str), redeemed_at (datetime | None)
 - **Endpoints**: none
 - **Events emitted**: none
 - **Events consumed**: none
@@ -537,9 +560,9 @@ TTS Tool (tts):
 - **Plugins**: HackThePlanetPlugin
 
 ### `viewers`
-- **Tables**: viewer
+- **Table `viewer`**: twitch_id (str), login (str), display_name (str), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
 - **Endpoints**: DELETE /viewers/regulars/{twitch_id}, GET /viewers, GET /viewers/leaderboard, GET /viewers/regulars, GET /viewers/{login}, POST /viewers/regulars, POST /viewers/{twitch_id}/points
-- **Events emitted**: viewer.points.awarded, viewer.regular.added, viewer.regular.removed
+- **Events emitted**: `viewer.points.awarded` (delta, display_name, twitch_id), `viewer.regular.added` (added_by, display_name, twitch_id), `viewer.regular.removed` (display_name, twitch_id)
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, twitch
 - **Plugins**: AddRegularPlugin, AdjustPointsPlugin, GetViewerPlugin, LeaderboardPlugin, ListRegularsPlugin, ListViewersPlugin, RegularsCommandPlugin, RemoveRegularPlugin, ViewerActivityPlugin

@@ -97,17 +97,30 @@ class ContextTool(BaseTool):
                 all_deps.update(info.get("dependencies", []))
 
             endpoints = self._get_domain_endpoints(domain)
-            emitted = self._scan_published_events(domain)
+            emitted_map = self._scan_published_events(domain)
             consumed = self._get_consumed_events(plugin_names, container)
             tables = self._get_domain_tables(domain)
 
             manifest += f"### `{domain}`\n"
-            manifest += f"- **Tables**: {', '.join(tables) if tables else 'none'}\n"
+            if tables:
+                for table in tables:
+                    fields = self._get_model_fields(domain, table)
+                    fields_str = ", ".join(f"{name} ({type_})" for name, type_ in fields.items())
+                    manifest += f"- **Table `{table}`**: {fields_str}\n"
+            else:
+                manifest += "- **Tables**: none\n"
+
             if endpoints:
                 manifest += f"- **Endpoints**: {', '.join(endpoints)}\n"
             else:
                 manifest += "- **Endpoints**: none\n"
-            manifest += f"- **Events emitted**: {', '.join(sorted(emitted)) if emitted else 'none'}\n"
+            
+            if emitted_map:
+                emitted_strs = [f"`{name}` ({', '.join(sorted(keys))})" for name, keys in sorted(emitted_map.items())]
+                manifest += f"- **Events emitted**: {', '.join(emitted_strs)}\n"
+            else:
+                manifest += "- **Events emitted**: none\n"
+
             manifest += f"- **Events consumed**: {', '.join(sorted(consumed)) if consumed else 'none'}\n"
             manifest += f"- **Dependencies**: {', '.join(sorted(all_deps)) if all_deps else 'none'}\n"
             manifest += f"- **Plugins**: {', '.join(sorted(plugin_names))}\n\n"
@@ -245,21 +258,36 @@ domains/{name}/
         except Exception:
             return set()
 
-    def _scan_published_events(self, domain: str) -> set[str]:
-        events: set[str] = set()
+    def _scan_published_events(self, domain: str) -> dict[str, set[str]]:
+        """
+        Scans plugin files to find published events and their payload keys.
+        Returns a dict: { "event.name": {"key1", "key2", ...} }
+        """
+        event_map: dict[str, set[str]] = {}
         plugins_dir = os.path.join("domains", domain, "plugins")
         if not os.path.isdir(plugins_dir):
-            return events
+            return event_map
+        
+        # Regex to find: .publish("event.name", {"key": val, 'key2': val2})
+        # This is a basic extractor for simple dict literals.
+        publish_pattern = re.compile(r'\.publish\(\s*["\']([^"\']+)["\']\s*,\s*(\{.*?\})', re.DOTALL)
+        
         for filename in os.listdir(plugins_dir):
             if not filename.endswith(".py"):
                 continue
             try:
                 with open(os.path.join(plugins_dir, filename), "r", encoding="utf-8") as f:
                     content = f.read()
-                events.update(re.findall(r'\.publish\(\s*["\']([^"\']+)["\']', content))
+                
+                for event_name, payload_str in publish_pattern.findall(content):
+                    keys = set(re.findall(r'["\']([^"\']+)["\']\s*:', payload_str))
+                    if event_name not in event_map:
+                        event_map[event_name] = keys
+                    else:
+                        event_map[event_name].update(keys)
             except Exception:
                 pass
-        return events
+        return event_map
 
     def _get_domain_tables(self, domain: str) -> list[str]:
         models_dir = os.path.join("domains", domain, "models")
@@ -270,3 +298,32 @@ domains/{name}/
             for f in os.listdir(models_dir)
             if f.endswith(".py") and f != "__init__.py"
         ])
+
+    def _get_model_fields(self, domain: str, table: str) -> dict[str, str]:
+        """
+        Parses the model file to extract fields and their types.
+        Simple regex-based parsing for MicroCoreOS models.
+        """
+        model_path = os.path.join("domains", domain, "models", f"{table}.py")
+        if not os.path.exists(model_path):
+            return {}
+        
+        fields = {}
+        try:
+            with open(model_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            # Match fields in Pydantic model (e.g. name: str, price: float = 0.0)
+            # We skip 'id' as it's auto-generated.
+            for line in content.split("\n"):
+                line = line.strip()
+                if ":" in line and not line.startswith("class") and not line.startswith("def"):
+                    parts = line.split(":")
+                    name = parts[0].strip()
+                    if name == "id":
+                        continue
+                    type_part = parts[1].split("=")[0].strip()
+                    fields[name] = type_part
+        except Exception:
+            pass
+        return fields

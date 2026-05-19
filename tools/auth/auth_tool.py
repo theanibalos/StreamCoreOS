@@ -10,6 +10,10 @@ class AuthTool(BaseTool):
         self._secret_key = os.getenv("AUTH_SECRET_KEY")
         if not self._secret_key:
             raise EnvironmentError("AUTH_SECRET_KEY is required. Set it in your .env file.")
+        
+        if len(self._secret_key) < 32:
+            raise ValueError("AUTH_SECRET_KEY must be at least 32 characters long for security.")
+
         self._algorithm = os.getenv("AUTH_ALGORITHM", "HS256")
         self._access_token_expire_minutes = int(os.getenv("AUTH_TOKEN_EXPIRE_MINUTES", 60))
 

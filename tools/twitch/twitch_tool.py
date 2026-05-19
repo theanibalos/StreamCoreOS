@@ -236,9 +236,12 @@ class TwitchTool(BaseTool):
         await self._eventsub.connect(access_token, broadcaster_id)
 
     async def disconnect(self) -> None:
-        """Disconnect EventSub WebSocket."""
+        """Disconnect EventSub WebSocket and clear the active session."""
         if self._eventsub:
             await self._eventsub.disconnect()
+        self._access_token = None
+        self._broadcaster_id = None
+        self._login = None
 
     def get_session(self) -> dict | None:
         """
@@ -252,6 +255,14 @@ class TwitchTool(BaseTool):
             "broadcaster_id": self._broadcaster_id,
             "login": self._login,
         }
+
+    def is_eventsub_connected(self) -> bool:
+        """Returns True only when the EventSub WebSocket session is established."""
+        return bool(self._eventsub and self._eventsub._connected)
+
+    def is_connecting(self) -> bool:
+        """Returns True when a token is set but EventSub hasn't connected yet."""
+        return bool(self._access_token and not self.is_eventsub_connected())
 
     # ── Chat API ─────────────────────────────────────────────────────
 

@@ -1,7 +1,6 @@
 import asyncio
 import time
 from core.base_plugin import BasePlugin
-from tools.ai.ai_tool import AIError
 
 MAX_RESPONSE_CHARS = 450  # Twitch chat hard limit is 500
 
@@ -28,6 +27,9 @@ class IAChatPlugin(BasePlugin):
             return
 
         if not self.ai.is_configured():
+            return
+
+        if not self.state.get("chat_ia_enabled", default=True, namespace="ia_config"):
             return
 
         question = data.get("args", "").strip()
@@ -76,9 +78,10 @@ class IAChatPlugin(BasePlugin):
                 reply = reply[: MAX_RESPONSE_CHARS - 1] + "…"
             await self.twitch.send_message(channel, reply)
 
-        except AIError as e:
-            self.logger.error(f"[IAChatPlugin] [{e.code}] {e}")
-            msg = _user_message_for_error(e.code, name)
+        except Exception as e:
+            code = getattr(e, "code", "unknown")
+            self.logger.error(f"[IAChatPlugin] [{code}] {e}")
+            msg = _user_message_for_error(code, name)
             await self.twitch.send_message(channel, msg)
 
 
