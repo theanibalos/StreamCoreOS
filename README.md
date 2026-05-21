@@ -26,64 +26,83 @@ A complete Twitch streaming platform — chatbot, AI moderation, TTS with per-us
 
 ## Quick Start
 
-**Development (backend only):**
+> **Local use only.** Runs on `localhost`. Do not expose ports 80 or 8000 on a public network without a VPN or authenticated reverse proxy in front.
+
+You only need Docker. No Node, no Python, no cloning.
+
+### Step 1 — Register a Twitch app
+
+1. Go to [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps) → **Register Your Application**
+2. Fill in:
+   - **Name:** anything (e.g. `StreamCoreOS`)
+   - **OAuth Redirect URLs:** `http://localhost/api/auth/twitch/callback`
+   - **Category:** Application Integration
+   - **Client Type:** Confidential
+3. Click **Create**, then **Manage** → copy your **Client ID** and generate a **Client Secret**
+
+### Step 2 — Download and configure
 
 ```bash
-git clone https://github.com/theanibalos/StreamCoreOS
-cd StreamCoreOS
-cp .env.example .env          # fill in TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET
-uv run main.py
-# API docs: http://localhost:8000/docs
-# Auth:     http://localhost:8000/api/auth/twitch
+curl -O https://raw.githubusercontent.com/theanibalos/StreamCoreOS/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/theanibalos/StreamCoreOS/main/.env.example
+mv .env.example .env
 ```
 
-Dev infrastructure (SQLite is default, no setup needed):
+Open `.env` and fill in these fields:
 
-```bash
-docker compose -f dev_infra/docker-compose.yml up -d   # optional PostgreSQL
+```env
+TWITCH_CLIENT_ID=        # from Twitch Developer Console
+TWITCH_CLIENT_SECRET=    # from Twitch Developer Console
+TWITCH_REDIRECT_URI=http://localhost/api/auth/twitch/callback
+
+AUTH_SECRET_KEY=         # any random string, e.g: openssl rand -hex 32
+FRONTEND_URL=http://localhost
+HTTP_HOST=0.0.0.0
 ```
 
----
-
-## Deploy
-
-> **Local use only.** All deploy options below run on `localhost`. Do not expose ports 80 or 8000 on a public network without a VPN or authenticated reverse proxy in front.
-
-Three options depending on your use case:
-
-### Self-host from source (one command)
-
-Clones and builds the frontend automatically. Only requires the backend repo.
+### Step 3 — Run
 
 ```bash
-git clone https://github.com/theanibalos/StreamCoreOS
-cd StreamCoreOS
-cp .env.example .env
-# Edit .env: TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, AUTH_SECRET_KEY, FRONTEND_URL
-docker compose -f docker-compose.selfhost.yml up -d --build
-```
-
-App available at `http://localhost` (port 80).
-
-### Production (pre-built images)
-
-Uses published images from GitHub Container Registry. Fastest start.
-
-```bash
-git clone https://github.com/theanibalos/StreamCoreOS
-cd StreamCoreOS
-cp .env.example .env
-# Edit .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-### Backend only (dev)
+Docker pulls the images automatically. Open `http://localhost`, click **Connect with Twitch** and authorize. Done.
+
+---
+
+## Other Deploy Options
+
+> All options run on `localhost`. Same security warning applies.
+
+### Build from source (no pre-built images)
+
+```bash
+git clone https://github.com/theanibalos/StreamCoreOS
+cd StreamCoreOS
+cp .env.example .env   # fill in the same fields as above
+docker compose -f docker-compose.selfhost.yml up -d --build
+```
+
+### Backend only
 
 ```bash
 docker compose up -d --build
 ```
 
-Exposes backend on `$HTTP_PORT` (default 8000). Frontend not included.
+Exposes the backend API on port 8000. Frontend not included. Useful for development.
+
+### Development (no Docker)
+
+```bash
+git clone https://github.com/theanibalos/StreamCoreOS
+cd StreamCoreOS
+cp .env.example .env
+# Set TWITCH_REDIRECT_URI=http://localhost:5173/api/auth/twitch/callback
+# Set HTTP_HOST=127.0.0.1
+uv run main.py
+```
+
+API docs at `http://localhost:8000/docs`.
 
 ---
 
@@ -125,34 +144,14 @@ StreamCoreOS/
 
 ## Setup
 
-### Environment Variables
-
-Copy `.env.example` to `.env` and fill in:
-
-```env
-TWITCH_CLIENT_ID=your_client_id
-TWITCH_CLIENT_SECRET=your_client_secret
-
-# Dev
-TWITCH_REDIRECT_URI=http://localhost:5173/api/auth/twitch/callback
-# Prod
-# TWITCH_REDIRECT_URI=https://yourdomain.com/api/auth/twitch/callback
-
-FRONTEND_URL=http://localhost:5173   # dev  |  https://yourdomain.com  # prod
-AUTH_SECRET_KEY=change-me-in-production
-```
-
-In your Twitch Developer Console, add the redirect URI above as an OAuth redirect URL.
-
 ### Authentication Flow
 
-1. Visit `/api/auth/twitch` — redirects to Twitch OAuth
+1. Visit `http://localhost` → click **Connect with Twitch**
 2. Authorize on Twitch
-3. Twitch redirects to `/api/auth/twitch/callback`
-4. Callback exchanges the code, saves the token, calls `twitch.connect()`
-5. EventSub WebSocket connects, all subscriptions created, IRC chat connects
+3. Twitch redirects back to `/api/auth/twitch/callback`
+4. Token is saved to DB, EventSub WebSocket connects, IRC chat connects
 
-On restart, `restore_session_plugin` reads the token from DB and reconnects automatically.
+On every subsequent restart the session is restored automatically from the DB — no need to re-authenticate.
 
 ---
 
