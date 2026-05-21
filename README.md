@@ -4,6 +4,9 @@ A complete Twitch streaming platform — chatbot, AI moderation, TTS with per-us
 
 **License:** AGPL-3.0 — free to self-host, modifications must be open-sourced if used as a network service.
 
+> **⚠️ SECURITY WARNING — LOCAL USE ONLY**
+> StreamCoreOS has **no authentication layer** on the dashboard or API. It is designed to run exclusively on your local machine (localhost). **Do NOT expose it directly on a VPS or any public network.** Anyone with access to the port would have full control over your stream, chatbot, TTS, moderation, and overlays. If you need remote access, put it behind a VPN (Tailscale, WireGuard) or a reverse proxy with authentication (Authelia, Cloudflare Access). Running it raw on a public IP is a critical security risk.
+
 ---
 
 ## Table of Contents
@@ -43,6 +46,8 @@ docker compose -f dev_infra/docker-compose.yml up -d   # optional PostgreSQL
 ---
 
 ## Deploy
+
+> **Local use only.** All deploy options below run on `localhost`. Do not expose ports 80 or 8000 on a public network without a VPN or authenticated reverse proxy in front.
 
 Three options depending on your use case:
 

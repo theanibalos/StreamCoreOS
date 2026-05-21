@@ -3,6 +3,11 @@ name: Publish Docker Image
 on:
   push:
     branches: [main]
+    paths:
+      - '**.py'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'uv.lock'
 
 jobs:
   publish:
