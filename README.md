@@ -55,7 +55,6 @@ TWITCH_CLIENT_ID=        # from Twitch Developer Console
 TWITCH_CLIENT_SECRET=    # from Twitch Developer Console
 TWITCH_REDIRECT_URI=http://localhost/api/auth/twitch/callback
 
-AUTH_SECRET_KEY=         # any random string, e.g: openssl rand -hex 32
 FRONTEND_URL=http://localhost
 HTTP_HOST=0.0.0.0
 ```
