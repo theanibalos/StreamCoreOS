@@ -11,7 +11,9 @@ services:
     image: ghcr.io/theanibalos/streamcoreos:latest
     env_file:
       - .env
+    environment:
+      SQLITE_DB_PATH: data/database.db
     volumes:
-      - ./database.db:/app/database.db
-    command: sh -c "touch /app/database.db && uv run main.py"
+      - ./data:/app/data
+    command: sh -c "uv run main.py"
     restart: unless-stopped
