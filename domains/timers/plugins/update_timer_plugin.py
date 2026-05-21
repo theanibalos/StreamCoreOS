@@ -31,7 +31,7 @@ class UpdateTimerPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/timers/{id}", "PUT", self.execute,
+            "/api/timers/{id}", "PUT", self.execute,
             tags=["Timers"],
             request_model=UpdateTimerRequest,
             response_model=UpdateTimerResponse

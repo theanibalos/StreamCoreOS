@@ -19,7 +19,7 @@ class RemoveRegularPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers/regulars/{twitch_id}", "DELETE", self.execute,
+            "/api/viewers/regulars/{twitch_id}", "DELETE", self.execute,
             tags=["Viewers"],
             response_model=RemoveRegularResponse,
         )

@@ -28,7 +28,7 @@ class LeaderboardPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers/leaderboard", "GET", self.execute,
+            "/api/viewers/leaderboard", "GET", self.execute,
             tags=["Viewers"],
             response_model=LeaderboardResponse,
         )

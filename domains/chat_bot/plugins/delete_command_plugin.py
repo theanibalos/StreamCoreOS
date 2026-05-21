@@ -19,7 +19,7 @@ class DeleteCommandPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/commands/{id}", "DELETE", self.execute,
+            "/api/chat/commands/{id}", "DELETE", self.execute,
             tags=["Chat"],
             response_model=DeleteCommandResponse,
         )

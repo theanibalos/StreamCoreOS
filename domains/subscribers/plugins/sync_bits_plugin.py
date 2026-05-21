@@ -16,7 +16,7 @@ class SyncBitsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/bits/sync", "POST", self.execute,
+            "/api/bits/sync", "POST", self.execute,
             tags=["Subscribers"],
         )
 

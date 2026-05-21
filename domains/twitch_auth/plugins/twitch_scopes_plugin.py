@@ -32,7 +32,7 @@ class TwitchScopesPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/auth/twitch/scopes",
+            "/api/auth/twitch/scopes",
             "GET",
             self.execute,
             tags=["Twitch Auth"],

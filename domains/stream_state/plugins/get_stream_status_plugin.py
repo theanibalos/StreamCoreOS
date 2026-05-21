@@ -32,7 +32,7 @@ class GetStreamStatusPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/stream/status",
+            "/api/stream/status",
             "GET",
             self.execute,
             tags=["Stream"],

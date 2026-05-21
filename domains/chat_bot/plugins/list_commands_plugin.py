@@ -30,7 +30,7 @@ class ListCommandsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/commands", "GET", self.execute,
+            "/api/chat/commands", "GET", self.execute,
             tags=["Chat"],
             response_model=ListCommandsResponse,
         )

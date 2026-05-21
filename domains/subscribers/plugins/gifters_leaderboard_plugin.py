@@ -27,7 +27,7 @@ class GiftersLeaderboardPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/gifters/leaderboard", "GET", self.execute,
+            "/api/gifters/leaderboard", "GET", self.execute,
             tags=["Subscribers"],
             response_model=GiftersLeaderboardResponse,
         )

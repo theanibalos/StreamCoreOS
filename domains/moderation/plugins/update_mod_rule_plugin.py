@@ -36,7 +36,7 @@ class UpdateModRulePlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/moderation/rules/{id}", "PUT", self.execute,
+            "/api/moderation/rules/{id}", "PUT", self.execute,
             tags=["Moderation"],
             request_model=UpdateModRuleRequest,
             response_model=UpdateModRuleResponse,

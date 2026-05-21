@@ -54,6 +54,13 @@ except Exception as e:
     code = getattr(e, "code", None)   # no import necesario
 ```
 
+## Uso del tool `http_client`
+
+`http_client` es para llamadas HTTP puntuales y simples (webhooks, notificaciones one-shot).
+Si un plugin necesita más de 2-3 llamadas a la misma API externa, esa API merece su propio tool.
+
+❌ No usar `http_client` como escapatoria para evitar crear un tool específico.
+
 ## Pre-commit Hook (pendiente de implementar)
 
 Para enforcer las reglas de imports automáticamente sin depender de que la IA las recuerde, implementar un script `.git/hooks/pre-commit` que:

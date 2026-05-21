@@ -41,7 +41,7 @@ class CreateCommandPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/commands", "POST", self.execute,
+            "/api/chat/commands", "POST", self.execute,
             tags=["Chat"],
             request_model=CreateCommandRequest,
             response_model=CreateCommandResponse,

@@ -108,6 +108,7 @@ class TwitchEventSubClient:
                 print(f"[TwitchEventSub] Connection error: {e}. Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
+                url = EVENTSUB_WS_URL  # reconnect URLs are one-time use — always fall back
 
     async def _create_subscriptions(self) -> None:
         for sub in self._subscriptions:

@@ -16,7 +16,7 @@ class DeleteOverlayPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/overlays/{id}", "DELETE", self.execute,
+            "/api/overlays/{id}", "DELETE", self.execute,
             tags=["Overlays"],
             response_model=DeleteOverlayResponse,
         )

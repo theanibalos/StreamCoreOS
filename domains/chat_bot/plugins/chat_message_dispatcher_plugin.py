@@ -40,14 +40,27 @@ class ChatMessageDispatcherPlugin(BasePlugin):
         badges_list = event.get("badges", [])
         badge_ids = {b.get("set_id", "") for b in badges_list}
 
+        raw_message = event.get("message", {})
+        fragments = [
+            {
+                "type": f.get("type", "text"),
+                "text": f.get("text", ""),
+                "emote_id": f.get("emote", {}).get("id") if f.get("type") == "emote" else None,
+                "emote_animated": "animated" in f.get("emote", {}).get("format", []) if f.get("type") == "emote" else False,
+            }
+            for f in raw_message.get("fragments", [])
+        ]
+
         msg = {
             "type": "PRIVMSG",
             "message_id": event.get("message_id", ""),
             "channel": event.get("broadcaster_user_login", ""),
             "nick": event.get("chatter_user_login", ""),
             "display_name": event.get("chatter_user_name", event.get("chatter_user_login", "")),
-            "message": event.get("message", {}).get("text", ""),
+            "message": raw_message.get("text", ""),
+            "color": event.get("color", ""),
             "badges": {b.get("set_id"): b.get("id") for b in badges_list},
+            "fragments": fragments,
             "tags": {},
             "is_mod": "moderator" in badge_ids,
             "is_sub": "subscriber" in badge_ids,

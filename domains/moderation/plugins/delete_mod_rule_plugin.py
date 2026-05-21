@@ -20,7 +20,7 @@ class DeleteModRulePlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/moderation/rules/{id}", "DELETE", self.execute,
+            "/api/moderation/rules/{id}", "DELETE", self.execute,
             tags=["Moderation"],
             response_model=DeleteModRuleResponse,
         )

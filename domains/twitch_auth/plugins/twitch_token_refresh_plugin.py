@@ -30,16 +30,15 @@ class TwitchTokenRefreshPlugin(BasePlugin):
     async def _handle_reactive_refresh(self) -> str | None:
         """
         Called automatically by TwitchTool when a 401 error occurs.
-        It attempts to refresh the token using the database and returns the new access_token.
+        Refreshes the token and returns the new access_token, or None on failure.
+        On unrecoverable failure (revoked refresh token), disconnects and clears DB.
         """
         self.logger.info("[TwitchTokenRefresh] Reactive refresh triggered by 401 error.")
         try:
-            # Get the current session to know whose token to refresh
             session = self.twitch.get_session()
             if not session:
                 return None
 
-            # 1. Get the refresh token from DB
             token_data = await self.db.query(
                 "SELECT refresh_token, scopes FROM twitch_tokens WHERE twitch_id = $1",
                 [session["broadcaster_id"]]
@@ -47,28 +46,38 @@ class TwitchTokenRefreshPlugin(BasePlugin):
             if not token_data:
                 return None
 
-            refresh_token = token_data[0]["refresh_token"]
+            try:
+                new_tokens = await self.twitch.refresh_user_token(token_data[0]["refresh_token"])
+            except Exception as e:
+                # 400/401 from Twitch means the refresh token is revoked — clean up completely
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status in (400, 401) or "invalid_grant" in str(e).lower():
+                    self.logger.warning(
+                        f"[TwitchTokenRefresh] Refresh token revoked for {session['login']}. "
+                        "Clearing session — re-auth required."
+                    )
+                    await self.db.execute(
+                        "DELETE FROM twitch_tokens WHERE twitch_id = $1",
+                        [session["broadcaster_id"]],
+                    )
+                    await self.twitch.disconnect()
+                else:
+                    self.logger.error(f"[TwitchTokenRefresh] Transient refresh error: {e}")
+                return None
 
-            # 2. Perform the refresh
-            new_tokens = await self.twitch.refresh_user_token(refresh_token)
             new_access = new_tokens["access_token"]
-            new_refresh = new_tokens["refresh_token"]
-            new_expires_in = new_tokens.get("expires_in", 14400)
             now = datetime.now(timezone.utc)
-            new_expires_at = (now + timedelta(seconds=new_expires_in)).isoformat()
+            new_expires_at = (now + timedelta(seconds=new_tokens.get("expires_in", 14400))).isoformat()
             new_scopes = new_tokens.get("scope", json.loads(token_data[0]["scopes"]))
 
-            # 3. Update DB
             await self.db.execute(
                 """UPDATE twitch_tokens
                    SET access_token=$1, refresh_token=$2,
                        scopes=$3, expires_at=$4, updated_at=datetime('now')
                    WHERE twitch_id=$5""",
-                [new_access, new_refresh, json.dumps(new_scopes),
+                [new_access, new_tokens["refresh_token"], json.dumps(new_scopes),
                  new_expires_at, session["broadcaster_id"]],
             )
-
-            # 4. Update the tool's internal state so future calls use the new token
             await self.twitch.update_access_token(new_access)
 
             self.logger.info(f"[TwitchTokenRefresh] Reactive refresh successful for {session['login']}")

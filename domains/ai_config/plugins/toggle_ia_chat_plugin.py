@@ -26,11 +26,11 @@ class ToggleIAChatPlugin(BasePlugin):
         await self._load_from_db()
 
         self.http.add_endpoint(
-            "/ai/ia/enabled", "GET", self._get,
+            "/api/ai/ia/enabled", "GET", self._get,
             tags=["AI Config"],
         )
         self.http.add_endpoint(
-            "/ai/ia/enabled", "PUT", self._set,
+            "/api/ai/ia/enabled", "PUT", self._set,
             tags=["AI Config"],
             request_model=SetIAEnabledRequest,
         )

@@ -24,7 +24,7 @@ class GetTimersPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/timers", "GET", self.execute,
+            "/api/timers", "GET", self.execute,
             tags=["Timers"],
             response_model=GetTimersResponse
         )

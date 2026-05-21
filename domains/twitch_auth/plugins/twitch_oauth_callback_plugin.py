@@ -30,7 +30,7 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/auth/twitch/callback",
+            "/api/auth/twitch/callback",
             "GET",
             self.execute,
             tags=["Twitch Auth"],

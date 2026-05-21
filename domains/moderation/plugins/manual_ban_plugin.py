@@ -25,7 +25,7 @@ class ManualBanPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/moderation/ban", "POST", self.execute,
+            "/api/moderation/ban", "POST", self.execute,
             tags=["Moderation"],
             request_model=BanRequest,
             response_model=BanResponse,

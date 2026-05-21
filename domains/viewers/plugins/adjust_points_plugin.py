@@ -36,7 +36,7 @@ class AdjustPointsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers/{twitch_id}/points", "POST", self.execute,
+            "/api/viewers/{twitch_id}/points", "POST", self.execute,
             tags=["Viewers"],
             request_model=AdjustPointsRequest,
             response_model=AdjustPointsResponse,

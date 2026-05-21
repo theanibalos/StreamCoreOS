@@ -34,7 +34,7 @@ class StreamHistoryPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/stream/sessions",
+            "/api/stream/sessions",
             "GET",
             self.execute,
             tags=["Stream"],

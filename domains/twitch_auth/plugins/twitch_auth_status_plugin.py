@@ -25,7 +25,7 @@ class TwitchAuthStatusPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/auth/twitch/status",
+            "/api/auth/twitch/status",
             "GET",
             self.execute,
             tags=["Twitch Auth"],

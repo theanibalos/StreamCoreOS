@@ -13,7 +13,7 @@ The JSON must follow this exact schema:
   "elements": [
     {
       "id": "unique-string-id",
-      "type": "alert|stat|chat_highlight|banner",
+      "type": "alert|stat|chat_highlight|banner|progress_bar",
       "x": 0-1920,
       "y": 0-1080,
       "width": pixels,
@@ -22,7 +22,8 @@ The JSON must follow this exact schema:
         "event": "channel.follow|channel.subscribe|channel.subscription.gift|channel.cheer|channel.raid|chat.message",
         "filter_user": null or "username"
       },
-      "data_source": null or "stream.viewer_count|stream.subscriber_count|stream.title",
+      "data_source": null or "subscribers.active_total|stream.viewer_count|followers.total|bits.total|stream.online",
+      "config": null or { "label": "string", "target": number, "show_count": bool, "show_percentage": bool },
       "style": {
         "background": "#000000cc",
         "accent": "#hexcolor",
@@ -38,18 +39,28 @@ The JSON must follow this exact schema:
   ]
 }
 
-Rules:
-- "alert": appears when trigger fires, disappears after duration_ms. Trigger is required.
-- "stat": always visible. Set trigger to null. Requires data_source.
-- "chat_highlight": shows chat messages. Trigger required (event: "chat.message").
-- "banner": always visible static text. Set trigger to null. No data_source.
+Element types:
+- "alert": appears when trigger fires, disappears after duration_ms. Trigger required. No data_source.
+- "stat": always visible counter. trigger: null. Requires data_source. Template uses {value}.
+- "chat_highlight": scrolling chat messages. Trigger required (event: "chat.message"). No data_source.
+- "banner": always visible static text. trigger: null. No data_source.
+- "progress_bar": progress bar toward a goal. trigger: null. Requires data_source and config
+  (label, target, show_count, show_percentage). Template is ignored (leave "").
+
+Data sources (only for stat and progress_bar):
+- "subscribers.active_total" — active subscriber count
+- "stream.viewer_count"      — current viewer count (updated every 5 min)
+- "followers.total"          — total follower count
+- "bits.total"               — all-time bits total
+- "stream.online"            — "true"/"false" whether stream is live
 
 Template variables:
-- follow/sub/raid/cheer: {user_name}, {message}, {bits}, {viewers}, {total}, {tier}
+- alert (follow/sub/raid/cheer): {user_name}, {message}, {bits}, {viewers}, {total}, {tier}
 - chat_highlight: {display_name}, {message}
 - stat: {value}
 
-Canvas is 1920x1080. Typical element sizes: alerts 400x160, stats 220x60, chat 380x500.
+Typical sizes — alert: 420x160, stat: 220x60, chat: 380x500, banner: 500x70, progress_bar: 700x90.
+Canvas is 1920x1080. Place elements in logical positions (stats top-left, chat right side, etc.).
 If current_config is provided, modify those elements instead of generating from scratch.
 Keep existing element ids when modifying. Generate new unique ids for new elements.
 Respond ONLY with the JSON object {"elements": [...]}, no markdown, no explanation.
@@ -75,7 +86,7 @@ class GenerateOverlayPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/overlays/generate", "POST", self.execute,
+            "/api/overlays/generate", "POST", self.execute,
             tags=["Overlays"],
             request_model=GenerateRequest,
             response_model=GenerateResponse,

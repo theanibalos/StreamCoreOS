@@ -41,7 +41,7 @@ class UpdateCommandPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/commands/{id}", "PUT", self.execute,
+            "/api/chat/commands/{id}", "PUT", self.execute,
             tags=["Chat"],
             request_model=UpdateCommandRequest,
             response_model=UpdateCommandResponse,

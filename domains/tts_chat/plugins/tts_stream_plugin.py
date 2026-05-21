@@ -25,7 +25,7 @@ class TtsStreamPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("tts.audio.ready", self._on_audio_ready)
         self.http.add_sse_endpoint(
-            "/tts/overlay/stream",
+            "/api/tts/overlay/stream",
             self._stream,
             tags=["TTS"],
         )

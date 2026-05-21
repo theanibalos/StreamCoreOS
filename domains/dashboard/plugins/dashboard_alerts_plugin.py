@@ -43,10 +43,29 @@ class DashboardAlertsPlugin(BasePlugin):
             await self.bus.subscribe(event_name, self._make_bus_handler(event_name))
 
         self.http.add_sse_endpoint(
-            "/dashboard/alerts",
+            "/api/dashboard/alerts",
             self._stream,
             tags=["Dashboard"],
         )
+
+        # Test endpoint — pushes a fake alert without needing a real Twitch event
+        self.http.add_endpoint(
+            "/api/dashboard/alerts/test", "POST", self._test_alert,
+            tags=["Dashboard"],
+        )
+
+    async def _test_alert(self, data: dict, context=None):
+        event_type = data.get("event_type", "channel.subscribe")
+        payload = data.get("data") or {
+            "channel.follow":            {"user_name": "TestFollower", "user_login": "testfollower"},
+            "channel.subscribe":         {"user_name": "TestSub", "tier": "1000", "is_gift": False},
+            "channel.subscription.gift": {"user_name": "GiftKing", "total": "5", "tier": "1000"},
+            "channel.cheer":             {"user_name": "BitsMaster", "bits": "1000"},
+            "channel.raid":              {"from_broadcaster_user_name": "FriendStream", "viewers": "247"},
+        }.get(event_type, {"user_name": "TestUser"})
+
+        await self._push(event_type, payload)
+        return {"success": True, "data": {"event_type": event_type}}
 
     def _make_bus_handler(self, event_name: str):
         async def handler(data: dict):
@@ -54,9 +73,10 @@ class DashboardAlertsPlugin(BasePlugin):
         return handler
 
     async def _on_twitch_event(self, event_data: dict):
-        # Wildcard handler: _event_type is injected by TwitchEventSubClient
-        event_type = event_data.pop("_event_type", "twitch.event")
-        await self._push(event_type, event_data)
+        # Wildcard handler: _event_type is injected by TwitchEventSubClient.
+        # Use .get() — never .pop() — because the same dict is shared with all wildcard callbacks.
+        event_type = event_data.get("_event_type", "twitch.event")
+        await self._push(event_type, {k: v for k, v in event_data.items() if k != "_event_type"})
 
     async def _push(self, event_type: str, data: dict):
         if not self._queues:

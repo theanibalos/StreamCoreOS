@@ -26,7 +26,7 @@ class GetOverlayPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/overlays/{id}", "GET", self.execute,
+            "/api/overlays/{id}", "GET", self.execute,
             tags=["Overlays"],
             response_model=GetOverlayResponse,
         )

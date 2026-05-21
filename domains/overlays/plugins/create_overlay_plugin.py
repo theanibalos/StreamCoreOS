@@ -29,7 +29,7 @@ class CreateOverlayPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/overlays", "POST", self.execute,
+            "/api/overlays", "POST", self.execute,
             tags=["Overlays"],
             request_model=CreateOverlayRequest,
             response_model=CreateOverlayResponse,

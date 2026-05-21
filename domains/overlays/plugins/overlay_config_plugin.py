@@ -23,7 +23,7 @@ class OverlayConfigPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/overlays/{id}/config", "GET", self.execute,
+            "/api/overlays/{id}/config", "GET", self.execute,
             tags=["Overlays"],
             response_model=OverlayConfigResponse,
         )

@@ -28,7 +28,7 @@ class ListModRulesPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/moderation/rules", "GET", self.execute,
+            "/api/moderation/rules", "GET", self.execute,
             tags=["Moderation"],
             response_model=ListModRulesResponse,
         )

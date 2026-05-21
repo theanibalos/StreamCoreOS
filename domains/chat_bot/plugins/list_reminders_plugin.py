@@ -27,7 +27,7 @@ class ListRemindersPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/reminders", "GET", self.execute,
+            "/api/chat/reminders", "GET", self.execute,
             tags=["Chat"],
             response_model=ListRemindersResponse,
         )

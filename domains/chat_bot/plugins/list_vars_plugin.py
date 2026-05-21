@@ -26,7 +26,7 @@ class ListVarsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/vars", "GET", self.execute,
+            "/api/chat/vars", "GET", self.execute,
             tags=["Chat"],
             response_model=ListVarsResponse,
         )

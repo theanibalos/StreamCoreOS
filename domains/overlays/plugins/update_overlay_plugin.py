@@ -30,7 +30,7 @@ class UpdateOverlayPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/overlays/{id}", "PUT", self.execute,
+            "/api/overlays/{id}", "PUT", self.execute,
             tags=["Overlays"],
             request_model=UpdateOverlayRequest,
             response_model=UpdateOverlayResponse,

@@ -51,23 +51,23 @@ class TtsUserVoicesPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/tts/user-voices", "GET", self.list_assignments,
+            "/api/tts/user-voices", "GET", self.list_assignments,
             tags=["TTS"],
             response_model=UserVoiceListResponse,
         )
         self.http.add_endpoint(
-            "/tts/user-voices/{twitch_login}", "GET", self.get_assignment,
+            "/api/tts/user-voices/{twitch_login}", "GET", self.get_assignment,
             tags=["TTS"],
             response_model=UserVoiceResponse,
         )
         self.http.add_endpoint(
-            "/tts/user-voices", "PUT", self.upsert_assignment,
+            "/api/tts/user-voices", "PUT", self.upsert_assignment,
             tags=["TTS"],
             request_model=UpsertUserVoiceRequest,
             response_model=UserVoiceResponse,
         )
         self.http.add_endpoint(
-            "/tts/user-voices/{twitch_login}", "DELETE", self.delete_assignment,
+            "/api/tts/user-voices/{twitch_login}", "DELETE", self.delete_assignment,
             tags=["TTS"],
             response_model=SimpleResponse,
         )

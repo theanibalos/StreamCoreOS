@@ -23,7 +23,7 @@ class TestAIConfigPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/ai/test", "POST", self.execute,
+            "/api/ai/test", "POST", self.execute,
             tags=["AI Config"],
             response_model=TestAIConfigResponse,
         )

@@ -1,7 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel
 from core.base_plugin import BasePlugin
-from tools.tts.tts_tool import TTSError
 
 
 class VoiceItem(BaseModel):
@@ -32,7 +31,7 @@ class TtsVoiceListPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/tts/voices", "GET", self.list_voices,
+            "/api/tts/voices", "GET", self.list_voices,
             tags=["TTS"],
             response_model=VoiceListResponse,
         )
@@ -50,8 +49,12 @@ class TtsVoiceListPlugin(BasePlugin):
                 voices = [v for v in voices if v["gender"].lower() == gender_filter]
 
             return {"success": True, "data": voices}
-        except TTSError as e:
-            self.logger.error(f"[TTS] list_voices error ({e.code}): {e}")
+        except Exception as e:
+            code = getattr(e, "code", None)
+            if code:
+                self.logger.error(f"[TTS] list_voices error ({code}): {e}")
+            else:
+                self.logger.error(f"[TTS] list_voices unexpected error: {e}")
             return {"success": False, "error": str(e)}
         except Exception as e:
             self.logger.error(f"[TTS] list_voices unexpected error: {e}")

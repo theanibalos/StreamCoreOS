@@ -31,7 +31,7 @@ class CreateVarPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/vars", "POST", self.execute,
+            "/api/chat/vars", "POST", self.execute,
             tags=["Chat"],
             request_model=CreateVarRequest,
             response_model=CreateVarResponse,

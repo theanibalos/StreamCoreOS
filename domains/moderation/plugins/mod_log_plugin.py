@@ -29,7 +29,7 @@ class ModLogPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/moderation/log", "GET", self.execute,
+            "/api/moderation/log", "GET", self.execute,
             tags=["Moderation"],
             response_model=ModLogResponse,
         )

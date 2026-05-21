@@ -27,7 +27,7 @@ class BitsLeaderboardPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/bits/leaderboard", "GET", self.execute,
+            "/api/bits/leaderboard", "GET", self.execute,
             tags=["Subscribers"],
             response_model=BitsLeaderboardResponse,
         )

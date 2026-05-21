@@ -37,7 +37,7 @@ class SystemEventsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/system/events", "GET", self.execute,
+            "/api/system/events", "GET", self.execute,
             tags=["System"],
             response_model=SystemEventsResponse
         )

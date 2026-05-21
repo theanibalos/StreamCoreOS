@@ -31,7 +31,7 @@ class ListViewersPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers", "GET", self.execute,
+            "/api/viewers", "GET", self.execute,
             tags=["Viewers"],
             response_model=ListViewersResponse,
         )

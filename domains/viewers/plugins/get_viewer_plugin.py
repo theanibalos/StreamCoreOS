@@ -31,7 +31,7 @@ class GetViewerPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers/{login}", "GET", self.execute,
+            "/api/viewers/{login}", "GET", self.execute,
             tags=["Viewers"],
             response_model=GetViewerResponse,
         )

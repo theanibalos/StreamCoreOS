@@ -23,7 +23,7 @@ class ChatStreamPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("chat.message.received", self._on_message)
         self.http.add_sse_endpoint(
-            "/chat/stream",
+            "/api/chat/stream",
             self._stream,
             tags=["Chat"],
         )

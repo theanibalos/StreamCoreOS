@@ -17,7 +17,7 @@ class SyncSubscribersPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/subscribers/sync", "POST", self.execute,
+            "/api/subscribers/sync", "POST", self.execute,
             tags=["Subscribers"],
         )
 

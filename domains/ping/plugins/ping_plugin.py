@@ -25,7 +25,7 @@ class PingPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            path="/ping",
+            path="/api/ping",
             method="GET",
             handler=self.execute,
             tags=["System"],

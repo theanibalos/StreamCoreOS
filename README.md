@@ -1,68 +1,37 @@
 # StreamCoreOS
 
-A personal Twitch streaming backend built on [MicroCoreOS](https://github.com/theanibalos/MicroCoreOS). Handles OAuth, EventSub WebSocket, IRC chat, loyalty points, auto-moderation, and a real-time dashboard — all as isolated, single-file plugins.
+A complete Twitch streaming platform — chatbot, AI moderation, TTS with per-user voices, overlay builder with AI generation, real-time dashboard, loyalty points, and more. All as isolated, single-file plugins on a self-contained async kernel.
+
+**License:** AGPL-3.0 — free to self-host, modifications must be open-sourced if used as a network service.
 
 ---
 
 ## Table of Contents
 
-- [StreamCoreOS](#streamcoreos)
-  - [Table of Contents](#table-of-contents)
-  - [Quick Start](#quick-start)
-  - [Architecture](#architecture)
-  - [Setup](#setup)
-    - [Environment Variables](#environment-variables)
-    - [Authentication Flow](#authentication-flow)
-  - [How the Twitch Tool Works](#how-the-twitch-tool-works)
-    - [Lifecycle](#lifecycle)
-    - [Subscription Deduplication](#subscription-deduplication)
-    - [Session Access](#session-access)
-  - [Existing Domains](#existing-domains)
-    - [`twitch_auth`](#twitch_auth)
-    - [`stream_state`](#stream_state)
-    - [`chat_bot`](#chat_bot)
-    - [`viewers`](#viewers)
-    - [`moderation`](#moderation)
-    - [`timers`](#timers)
-    - [`dashboard`](#dashboard)
-    - [`system`](#system)
-    - [`twitch_redemptions`](#twitch_redemptions)
-    - [`ping`](#ping)
-  - [Event Catalog](#event-catalog)
-  - [How to Write a New Feature](#how-to-write-a-new-feature)
-    - [1. HTTP Endpoint](#1-http-endpoint)
-    - [2. Twitch EventSub Listener](#2-twitch-eventsub-listener)
-    - [3. Chat Listener](#3-chat-listener)
-    - [4. Scheduled Job](#4-scheduled-job)
-    - [5. Event Bus Consumer](#5-event-bus-consumer)
-    - [6. Domain with DB Migration](#6-domain-with-db-migration)
-  - [Available Tools Reference](#available-tools-reference)
-    - [`twitch`](#twitch)
-    - [`db`](#db)
-    - [`event_bus`](#event_bus)
-    - [`http`](#http)
-    - [`scheduler`](#scheduler)
-    - [`state`](#state)
-    - [`logger`](#logger)
-  - [Developing with AI](#developing-with-ai)
-    - [Reading path for the AI](#reading-path-for-the-ai)
-    - [The two-step workflow](#the-two-step-workflow)
-    - [Example prompts](#example-prompts)
-    - [Tips for better results](#tips-for-better-results)
-  - [API Reference](#api-reference)
-  - [Commands](#commands)
+- [Quick Start](#quick-start)
+- [Deploy](#deploy)
+- [Architecture](#architecture)
+- [Setup](#setup)
+- [Domains](#domains)
+- [Event Catalog](#event-catalog)
+- [How to Write a New Feature](#how-to-write-a-new-feature)
+- [Available Tools Reference](#available-tools-reference)
+- [Developing with AI](#developing-with-ai)
+- [API Reference](#api-reference)
 
 ---
 
 ## Quick Start
+
+**Development (backend only):**
 
 ```bash
 git clone https://github.com/theanibalos/StreamCoreOS
 cd StreamCoreOS
 cp .env.example .env          # fill in TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET
 uv run main.py
-# Visit http://localhost:8000/docs
-# Visit http://localhost:8000/auth/twitch to authenticate
+# API docs: http://localhost:8000/docs
+# Auth:     http://localhost:8000/api/auth/twitch
 ```
 
 Dev infrastructure (SQLite is default, no setup needed):
@@ -73,34 +42,76 @@ docker compose -f dev_infra/docker-compose.yml up -d   # optional PostgreSQL
 
 ---
 
+## Deploy
+
+Three options depending on your use case:
+
+### Self-host from source (one command)
+
+Clones and builds the frontend automatically. Only requires the backend repo.
+
+```bash
+git clone https://github.com/theanibalos/StreamCoreOS
+cd StreamCoreOS
+cp .env.example .env
+# Edit .env: TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, AUTH_SECRET_KEY, FRONTEND_URL
+docker compose -f docker-compose.selfhost.yml up -d --build
+```
+
+App available at `http://localhost` (port 80).
+
+### Production (pre-built images)
+
+Uses published images from GitHub Container Registry. Fastest start.
+
+```bash
+git clone https://github.com/theanibalos/StreamCoreOS
+cd StreamCoreOS
+cp .env.example .env
+# Edit .env
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### Backend only (dev)
+
+```bash
+docker compose up -d --build
+```
+
+Exposes backend on `$HTTP_PORT` (default 8000). Frontend not included.
+
+---
+
 ## Architecture
 
 ```
 StreamCoreOS/
-├── core/                        # MicroCoreOS kernel (~340 lines, zero external deps)
+├── core/                        # Kernel: IoC container, DI, auto-discovery (~340 lines)
 ├── tools/
 │   ├── twitch/                  # Twitch platform wrapper (OAuth + EventSub + IRC)
-│   │   ├── twitch_tool.py       # Main facade — inject as 'twitch'
-│   │   ├── _api.py              # Helix REST + OAuth client
-│   │   ├── _eventsub.py         # EventSub WebSocket client
-│   │   └── _chat.py             # IRC WebSocket client
-│   ├── sqlite/                  # Default DB (inject as 'db')
-│   ├── event_bus/               # Pub/Sub + async RPC (inject as 'event_bus')
-│   ├── http_server/             # FastAPI gateway (inject as 'http')
-│   ├── scheduler/               # Cron jobs (inject as 'scheduler')
-│   ├── state/                   # In-memory key-value store (inject as 'state')
-│   └── logger/                  # Structured logging (inject as 'logger')
+│   ├── sqlite/                  # Default DB — swap to PostgreSQL with zero plugin changes
+│   ├── tts/                     # TTS router (edge_tts + Voicebox providers)
+│   ├── ai/                      # AI completions (OpenAI-compatible, local or cloud)
+│   ├── event_bus/               # Pub/Sub + async RPC
+│   ├── http_server/             # FastAPI gateway (REST + SSE + WebSocket)
+│   ├── scheduler/               # Cron jobs (APScheduler)
+│   ├── state/                   # In-memory key-value store
+│   └── logger/                  # Structured logging with sinks
 └── domains/
     ├── twitch_auth/             # OAuth flow + token storage + session restore
     ├── stream_state/            # Online/offline tracking + history
-    ├── chat_bot/                # IRC dispatch + commands + variables + chat stream SSE
+    ├── chat_bot/                # Chat dispatch + commands + variables + TTS + SSE
     ├── viewers/                 # Viewer profiles + points + regulars
-    ├── moderation/              # Auto-mod + manual ban/timeout/unban
+    ├── moderation/              # AI mod + word/link/caps/spam filters + manual controls
     ├── timers/                  # Recurring scheduled chat messages
-    ├── dashboard/               # Stats endpoint + real-time alerts SSE
+    ├── dashboard/               # Stats + real-time alerts SSE
+    ├── overlays/                # Overlay builder + AI generation + live SSE
+    ├── subscribers/             # Sub/bits/gifter tracking + leaderboards
+    ├── tts_chat/                # TTS listener + per-user voice assignment
+    ├── ai_config/               # AI provider configuration
     ├── system/                  # Observability — traces, events, health, SSE logs
     ├── twitch_redemptions/      # Channel point redemption handlers
-    └── ping/                    # Health check endpoint
+    └── ping/                    # Health check
 ```
 
 **One rule:** 1 file = 1 feature. Every plugin lives in `domains/{domain}/plugins/` and is auto-discovered. Never touch `main.py`.
@@ -111,356 +122,104 @@ StreamCoreOS/
 
 ### Environment Variables
 
+Copy `.env.example` to `.env` and fill in:
+
 ```env
 TWITCH_CLIENT_ID=your_client_id
 TWITCH_CLIENT_SECRET=your_client_secret
-TWITCH_REDIRECT_URI=http://localhost:8000/auth/twitch/callback
+
+# Dev
+TWITCH_REDIRECT_URI=http://localhost:5173/api/auth/twitch/callback
+# Prod
+# TWITCH_REDIRECT_URI=https://yourdomain.com/api/auth/twitch/callback
+
+FRONTEND_URL=http://localhost:5173   # dev  |  https://yourdomain.com  # prod
+AUTH_SECRET_KEY=change-me-in-production
 ```
 
-In your Twitch Developer Console, add `http://localhost:8000/auth/twitch/callback` as an OAuth redirect URI.
+In your Twitch Developer Console, add the redirect URI above as an OAuth redirect URL.
 
 ### Authentication Flow
 
-1. `GET /auth/twitch` — generates the OAuth URL with all accumulated scopes
-2. Click the link, authorize on Twitch
-3. Twitch redirects to `/auth/twitch/callback` with a code
-4. The callback plugin exchanges the code, saves the token to DB, and calls `twitch.connect()`
-5. EventSub WebSocket connects, all registered subscriptions are created, IRC chat connects
+1. Visit `/api/auth/twitch` — redirects to Twitch OAuth
+2. Authorize on Twitch
+3. Twitch redirects to `/api/auth/twitch/callback`
+4. Callback exchanges the code, saves the token, calls `twitch.connect()`
+5. EventSub WebSocket connects, all subscriptions created, IRC chat connects
 
-On restart, `restore_session_plugin.py` reads the token from DB and reconnects automatically.
-
----
-
-## How the Twitch Tool Works
-
-The `twitch` tool is the single entry point for everything Twitch-related. Internally it manages three connections:
-
-- **Helix API** — REST calls to `api.twitch.tv/helix`
-- **EventSub WebSocket** — persistent connection to `wss://eventsub.wss.twitch.tv/ws`, receives real-time events
-- **IRC WebSocket** — connection to `wss://irc-ws.chat.twitch.tv`, reads/writes chat
-
-### Lifecycle
-
-```
-on_boot()  → plugins call register() and on_event()   (declares what they need)
-             ↓
-User visits /auth/twitch → authenticates on Twitch
-             ↓
-/auth/twitch/callback → calls twitch.connect(access_token, broadcaster_id, login)
-             ↓
-EventSub WS connects → session_welcome → subscriptions created via Helix
-IRC WS connects → joins broadcaster channel
-             ↓
-Events arrive → dispatched to registered callbacks
-```
-
-### Subscription Deduplication
-
-Multiple plugins can register the same event type. Only **one** Twitch subscription is created per event type — `TwitchTool` deduplicates them internally. You don't need to coordinate across plugins.
-
-```python
-# Plugin A registers channel.follow
-self.twitch.register("channel.follow", "2", scopes=["moderator:read:followers"], condition={...})
-
-# Plugin B also registers channel.follow — no duplicate subscription created
-self.twitch.register("channel.follow", "2", scopes=["moderator:read:followers"], condition={...})
-```
-
-### Session Access
-
-Plugins that need the broadcaster's credentials call `get_session()`:
-
-```python
-session = self.twitch.get_session()
-if not session:
-    return {"success": False, "error": "Twitch session not active"}
-
-broadcaster_id = session["broadcaster_id"]
-access_token = session["access_token"]
-login = session["login"]
-```
+On restart, `restore_session_plugin` reads the token from DB and reconnects automatically.
 
 ---
 
-## Existing Domains
+## Domains
 
 ### `twitch_auth`
-
-Handles OAuth and token persistence.
-
-| Plugin | What it does |
-|---|---|
-| `twitch_oauth_start_plugin` | `GET /auth/twitch` — generates OAuth URL |
-| `twitch_oauth_callback_plugin` | `GET /auth/twitch/callback` — exchanges code, saves token, connects |
-| `twitch_token_refresh_plugin` | Cron `*/30 * * * *` — refreshes expiring tokens |
-| `restore_session_plugin` | `on_boot` — restores the saved session from DB on restart |
-
-DB table: `twitch_tokens` (twitch_id, login, access_token, refresh_token, scopes, expires_at)
-
----
+OAuth flow + token persistence + automatic session restore on boot.
 
 ### `stream_state`
-
-Tracks whether the stream is online and its history.
-
-| Plugin | What it does |
-|---|---|
-| `stream_status_plugin` | Listens to `stream.online` / `stream.offline` EventSub events |
-| `get_stream_status_plugin` | `GET /stream/status` — returns current state from state tool |
-| `stream_history_plugin` | `GET /stream/sessions?limit=20&offset=0` — paginated session history |
-| `stream_state_rpc_plugin` | RPC `stream.status.requested` — returns state to internal callers |
-
-State namespace `stream_state`: `online`, `session_id`, `started_at`, `broadcaster_login`
-
-Publishes: `stream.session.started`, `stream.session.ended`
-
----
+Tracks stream online/offline. Publishes `stream.session.started` / `stream.session.ended`.
 
 ### `chat_bot`
+IRC bridge, command system, stream variables, reminders, AI chat (`!ia`), real-time SSE stream.
 
-IRC chat bridge, command system, stream variables, and real-time chat stream.
+**Command response variables:** `{user}`, `{touser}`, `{count}`, `{random X-Y}`, `{uptime}`, `{game}`, `{viewers}`, `{followage}`, `{var:name}`
 
-| Plugin | What it does |
-|---|---|
-| `chat_message_dispatcher_plugin` | Receives all IRC messages, logs to DB, publishes events |
-| `chat_command_handler_plugin` | Listens to `chat.command.received`, resolves variables, sends response |
-| `chat_auto_response_plugin` | Sends auto-messages on follow, sub, resub, gift, raid |
-| `chat_stream_plugin` | `GET /chat/stream` — SSE stream of all chat messages |
-| `echo_reminder_plugin` | `!echo` / `!reminder` — schedule a delayed chat message (mod/VIP only) |
-| `ia_chat_plugin` | AI-powered chat responses via `!ia` command |
-| `create_command_plugin` | `POST /chat/commands` |
-| `list_commands_plugin` | `GET /chat/commands` |
-| `update_command_plugin` | `PUT /chat/commands/{id}` |
-| `delete_command_plugin` | `DELETE /chat/commands/{id}` |
-| `commands_list_plugin` | `!commands` — lists all enabled commands in chat |
-| `create_var_plugin` | `POST /chat/vars` |
-| `list_vars_plugin` | `GET /chat/vars` |
-| `update_var_plugin` | `PUT /chat/vars/{id}` |
-| `delete_var_plugin` | `DELETE /chat/vars/{id}` |
-| `var_command_plugin` | `!setvar` / `!deletevar` — manage variables from chat (mod/VIP only) |
-
-Publishes: `chat.message.received`, `chat.command.received`, `chat.command.executed`
-
-#### Command fields
-
-| Field | Default | Description |
-|---|---|---|
-| `name` | — | Command trigger, e.g. `!deaths`. Must start with `!`. |
-| `response` | — | Response template. Supports placeholders (see below). |
-| `userlevel` | `everyone` | Minimum permission required to trigger the command. |
-| `cooldown_s` | `30` | Per-user cooldown in seconds. |
-| `global_cooldown_s` | `0` | Global cooldown in seconds — blocks all users until it expires. |
-| `use_count` | `0` | How many times the command has been used. Read-only via API. |
-| `enabled` | `true` | Whether the command is active. |
-
-**Userlevels** (in order): `everyone` → `subscriber` → `vip` → `regular` → `moderator` → `broadcaster`
-
-#### Command response variables
-
-Use these placeholders in any command's `response` field:
-
-| Variable | Resolves to |
-|---|---|
-| `{user}` | Display name of the viewer who triggered the command |
-| `{touser}` | First word after the command (strips `@`), or `{user}` if no args |
-| `{channel}` | Channel name |
-| `{count}` | How many times this command has been used (including this trigger) |
-| `{random X-Y}` | Random integer between X and Y inclusive, e.g. `{random 1-100}` |
-| `{uptime}` | How long the stream has been live (e.g. `"1 hour, 20 minutes"`) |
-| `{game}` | Current game/category from Twitch |
-| `{viewers}` | Current viewer count |
-| `{followage}` | How long the triggering viewer has been following |
-| `{var:name}` | Value of a stream variable (see variables below) |
-
-#### Stream variables
-
-Stream variables are named key-value pairs stored in DB, usable in any command response via `{var:name}`.
-
+**Stream variables** — manage from API or chat:
 ```
-# From the API
-POST /chat/vars  { "name": "deaths", "value": "0" }
-
-# From chat (mod/VIP only)
-!setvar deaths 0          → creates or sets deaths = 0
-!setvar deaths +1         → increments (if numeric)
-!setvar deaths -1         → decrements (if numeric)
-!setvar deaths reset      → resets to 0
-!setvar boss "Margit"     → sets a text value
-!deletevar deaths         → deletes the variable
+!setvar deaths +1       # increment
+!setvar boss "Margit"   # set text
+!deletevar deaths       # delete
 ```
-
-Example — create a deaths counter visible in chat:
-
-```
-POST /chat/commands  { "name": "!deaths", "response": "💀 Deaths: {var:deaths}" }
-
-# In stream:
-!setvar deaths +1   → "deaths = 1"
-!deaths             → "💀 Deaths: 1"
-```
-
-#### `!echo` / `!reminder`
-
-Schedule a delayed message. Mod/VIP only. Maximum 3 concurrent echoes.
-
-```
-!echo 5m "Check out the new merch!"
-!reminder 1h "Time to take a break"
-```
-
-Supported time units: `s` (seconds), `m` (minutes), `h` (hours).
-
----
 
 ### `viewers`
-
-Viewer profiles and regulars management.
-
-A viewer is created automatically the first time they chat. Regulars are a trusted tier above subscribers/VIPs but below mods — they can be granted access to commands with `userlevel: regular`.
-
-| Plugin | What it does |
-|---|---|
-| `viewer_activity_plugin` | `chat.message.received` → upsert viewer (first_seen, last_seen, login, display_name) |
-| `get_viewer_plugin` | `GET /viewers/{twitch_id}` |
-| `leaderboard_plugin` | `GET /viewers/leaderboard?limit=10` — sorted by points |
-| `adjust_points_plugin` | `POST /viewers/{twitch_id}/points  { "delta": int }` — add or deduct points |
-| `list_regulars_plugin` | `GET /viewers/regulars` |
-| `add_regular_plugin` | `POST /viewers/regulars  { twitch_id, login, display_name }` |
-| `remove_regular_plugin` | `DELETE /viewers/regulars/{twitch_id}` |
-| `regulars_command_plugin` | `!regulars add/remove/list` from chat (mod only) |
-
-DB table: `viewers (twitch_id, login, display_name, points, total_earned, is_regular, first_seen, last_seen)`
-
-Publishes: `viewer.points.awarded`, `viewer.regular.added`, `viewer.regular.removed`
-
-#### `!regulars` chat command
-
-```
-!regulars add @username    — add to regulars list (looks up by login; falls back to Twitch API if not seen yet)
-!regulars remove @username — remove from regulars list
-!regulars list             — list all regulars in chat
-```
-
-Restricted to mods and broadcaster.
-
----
+Viewer profiles, points, regulars tier. Auto-created on first chat message.
 
 ### `moderation`
-
-Auto-moderation and manual controls.
-
-| Plugin | What it does |
-|---|---|
-| `auto_mod_plugin` | Listens to `chat.message.received`, evaluates rules, bans/timeouts |
-| `manual_ban_plugin` | `POST /moderation/ban` |
-| `manual_timeout_plugin` | `POST /moderation/timeout` |
-| `manual_unban_plugin` | `POST /moderation/unban` |
-| `create_mod_rule_plugin` | `POST /moderation/rules` |
-| `list_mod_rules_plugin` | `GET /moderation/rules` |
-| `update_mod_rule_plugin` | `PUT /moderation/rules/{id}` |
-| `delete_mod_rule_plugin` | `DELETE /moderation/rules/{id}` |
-| `mod_log_plugin` | `GET /moderation/log` |
-
-Rule types: `word_filter`, `link_filter`, `caps_filter`, `spam_filter`
-Actions: `ban`, `timeout` (with `duration_s`), `delete`
-
-Rules are cached in state (namespace `moderation_rules`). Cache invalidated via `moderation.rules.updated`.
-
-Publishes: `moderation.action.taken`, `moderation.rules.updated`
-
----
-
-### `dashboard`
-
-Aggregated stats and real-time alert stream.
-
-| Plugin | What it does |
-|---|---|
-| `dashboard_stats_plugin` | `GET /dashboard/stats` — stream info, top viewers, recent mod actions |
-| `dashboard_alerts_plugin` | `GET /dashboard/alerts` — SSE stream of all Twitch events + internal events |
-| `channel_stats_collector_plugin` | Cron `*/5 * * * *` — snapshots viewer/follower count to DB |
-| `channel_stats_history_plugin` | `GET /dashboard/stats/history` |
-
-`dashboard_alerts_plugin` uses the wildcard `twitch.on_event("*", ...)` — receives all EventSub events enriched with `_event_type`. Also subscribes to `stream.session.started/ended`, `viewer.regular.added/removed`, `moderation.action.taken`.
-
----
+Rule types: `word_filter`, `link_filter`, `caps_filter`, `spam_filter`, AI-powered filter.
+Actions: `ban`, `timeout`, `delete`.
 
 ### `timers`
+Recurring messages posted to chat on a cron schedule.
 
-Recurring scheduled messages posted to chat.
+### `dashboard`
+Aggregated stream stats + real-time SSE alert stream for all Twitch events.
 
-| Plugin | What it does |
-|---|---|
-| `create_timer_plugin` | `POST /timers` |
-| `get_timers_plugin` | `GET /timers` |
-| `update_timer_plugin` | `PUT /timers/{id}` |
-| `delete_timer_plugin` | `DELETE /timers/{id}` |
-| `timer_executor_plugin` | Schedules all enabled timers on boot; listens to create/update/delete events to add/remove jobs at runtime |
+### `overlays`
+Overlay builder with widgets (alert, stat, progress bar, chat highlight, banner).
+AI generation endpoint — describe the layout in text, get a configured overlay back.
+Live SSE endpoint for real-time widget updates.
 
-A timer has: `name`, `message` (sent to chat), `interval_s` (how often), `enabled`.
-The executor uses the `scheduler` tool internally and requires an active Twitch session to send messages.
+### `subscribers`
+Subscription, bits, and gifter tracking with leaderboards.
 
-Publishes: `timer.created`, `timer.updated`, `timer.deleted`
+### `tts_chat`
+TTS listener with per-viewer voice assignment. Supports edge_tts (always available) and Voicebox.
 
----
+### `ai_config`
+Configure the AI provider (Ollama, OpenAI, Groq, OpenRouter, etc.) via API.
 
 ### `system`
-
-Observability and health monitoring for the running system.
-
-| Plugin | What it does |
-|---|---|
-| `system_status_plugin` | `GET /system/status` — registry dump: tools + plugins + their statuses |
-| `system_events_plugin` | `GET /system/events` — last 500 event bus records |
-| `system_events_stream_plugin` | `GET /system/events/stream` — SSE of live event bus activity |
-| `system_logs_stream_plugin` | `GET /system/logs/stream` — SSE of live logger output |
-| `system_traces_plugin` | `GET /system/traces/flat` and `GET /system/traces/tree` — causality trace viewer |
-| `system_traces_stream_plugin` | `GET /system/traces/stream` — SSE of live trace records |
-| `event_delivery_monitor_plugin` | Subscribes to failed event deliveries, republishes as `event.delivery.failed` |
-| `tool_health_plugin` | Periodic health checks on all registered tools |
-
-Publishes: `event.delivery.failed`
-
----
-
-### `twitch_redemptions`
-
-Handlers for Twitch channel point redemptions.
-
-| Plugin | What it does |
-|---|---|
-| `hack_the_planet_plugin` | Example redemption handler — reacts to a specific channel point reward |
-
-Add new redemption handlers here by subscribing to `channel.channel_points_custom_reward_redemption.add` via `twitch.on_event(...)`.
-
----
-
-### `ping`
-
-| Plugin | What it does |
-|---|---|
-| `ping_plugin` | `GET /ping` — returns `{"success": true, "data": "pong"}` |
+Full observability: tool/plugin health, event bus traces, live log stream, metrics.
 
 ---
 
 ## Event Catalog
-
-All events published on the internal event bus:
 
 | Event | Published by | Payload keys |
 |---|---|---|
 | `stream.session.started` | `stream_status_plugin` | session_id, twitch_stream_id, started_at, broadcaster_login |
 | `stream.session.ended` | `stream_status_plugin` | session_id, ended_at |
 | `chat.message.received` | `chat_message_dispatcher_plugin` | channel, user_id, display_name, message, is_mod, is_sub, is_broadcaster, badges, timestamp |
-| `chat.command.received` | `chat_message_dispatcher_plugin` | (all of above) + command, args |
+| `chat.command.received` | `chat_message_dispatcher_plugin` | (above) + command, args |
 | `chat.command.executed` | `chat_command_handler_plugin` | command, user_id, display_name |
-| `loyalty.points.awarded` | `award_points_plugin`, `chat_activity_points_plugin` | twitch_id, display_name, amount, reason |
-| `loyalty.reward.redeemed` | `redeem_reward_plugin` | twitch_id, display_name, reward_id, reward_name, cost |
-| `moderation.action.taken` | `auto_mod_plugin` | twitch_id, display_name, action, reason, rule_id |
-| `moderation.rules.updated` | rule CRUD plugins | rule_id, action |
-| `timer.created` | `create_timer_plugin` | id, name, interval_s |
-| `timer.updated` | `update_timer_plugin` | id, name, interval_s, enabled |
-| `timer.deleted` | `delete_timer_plugin` | id |
+| `moderation.action.taken` | mod plugins | twitch_id, display_name, action, reason, rule_id |
+| `moderation.rules.updated` | rule CRUD plugins | rule_id |
+| `timer.created/updated/deleted` | timer plugins | id, name |
+| `dashboard.stats.updated` | `channel_stats_collector_plugin` | viewer_count, follower_count |
+| `tts.audio.ready` | `tts_listener_plugin` | audio_b64, text, username, voice_id |
+| `viewer.points.awarded` | points plugins | twitch_id, display_name, delta |
+| `viewer.regular.added/removed` | regulars plugins | twitch_id, display_name |
+| `subscriber.new/resub/gift/expired` | subscription plugins | twitch_id, display_name, tier |
 | `event.delivery.failed` | `event_delivery_monitor_plugin` | event, event_id, subscriber, error |
 
 ---
@@ -469,29 +228,21 @@ All events published on the internal event bus:
 
 ### 1. HTTP Endpoint
 
-Pattern for any REST endpoint. One file, one endpoint.
-
 ```python
 # domains/my_domain/plugins/my_feature_plugin.py
-
 from typing import Optional
 from pydantic import BaseModel, Field
 from core.base_plugin import BasePlugin
 
-
 class MyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-
 
 class MyResponse(BaseModel):
     success: bool
     data: Optional[dict] = None
     error: Optional[str] = None
 
-
 class MyFeaturePlugin(BasePlugin):
-    """POST /my-domain/things — creates a thing."""
-
     def __init__(self, http, db, event_bus, logger):
         self.http = http
         self.db = db
@@ -500,7 +251,7 @@ class MyFeaturePlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/my-domain/things", "POST", self.execute,
+            "/api/my-domain/things", "POST", self.execute,
             tags=["MyDomain"],
             request_model=MyRequest,
             response_model=MyResponse,
@@ -510,8 +261,7 @@ class MyFeaturePlugin(BasePlugin):
         try:
             req = MyRequest(**data)
             row_id = await self.db.execute(
-                "INSERT INTO things (name) VALUES ($1) RETURNING id",
-                [req.name],
+                "INSERT INTO things (name) VALUES ($1) RETURNING id", [req.name]
             )
             await self.bus.publish("my_domain.thing.created", {"id": row_id, "name": req.name})
             return {"success": True, "data": {"id": row_id}}
@@ -522,79 +272,30 @@ class MyFeaturePlugin(BasePlugin):
 
 Drop it in `domains/my_domain/plugins/` and restart. No other changes needed.
 
----
-
 ### 2. Twitch EventSub Listener
 
-For reacting to Twitch platform events (follows, subs, raids, etc).
-
 ```python
-# domains/my_domain/plugins/on_follow_plugin.py
-
-from core.base_plugin import BasePlugin
-
-
 class OnFollowPlugin(BasePlugin):
-    """Reacts to new Twitch followers."""
-
     def __init__(self, twitch, logger):
         self.twitch = twitch
         self.logger = logger
 
     async def on_boot(self):
-        # Declare the subscription and its required OAuth scope
         self.twitch.register(
             "channel.follow", "2",
             scopes=["moderator:read:followers"],
-            condition={
-                "broadcaster_user_id": "{broadcaster_id}",
-                "moderator_user_id": "{broadcaster_id}",
-            },
+            condition={"broadcaster_user_id": "{broadcaster_id}", "moderator_user_id": "{broadcaster_id}"},
         )
-        # Register your callback — deduplication is automatic
         self.twitch.on_event("channel.follow", self._on_follow)
 
     async def _on_follow(self, event: dict):
-        user = event.get("user_name", "someone")
-        self.logger.info(f"New follower: {user}")
+        self.logger.info(f"New follower: {event.get('user_name')}")
 ```
-
-**Key points:**
-- `{broadcaster_id}` in the condition is replaced automatically when `connect()` is called
-- If another plugin already registered `channel.follow`, only one Twitch subscription is created
-- The OAuth scope is accumulated globally across all plugins for the auth URL
-
-**Common EventSub event types:**
-
-| Event type | Version | Scopes required |
-|---|---|---|
-| `stream.online` | `1` | none |
-| `stream.offline` | `1` | none |
-| `channel.follow` | `2` | `moderator:read:followers` (needs moderator_user_id in condition) |
-| `channel.subscribe` | `1` | `channel:read:subscriptions` |
-| `channel.subscription.message` | `1` | `channel:read:subscriptions` |
-| `channel.subscription.gift` | `1` | `channel:read:subscriptions` |
-| `channel.cheer` | `1` | `bits:read` |
-| `channel.raid` | `1` | none (use `to_broadcaster_user_id` in condition) |
-| `channel.channel_points_custom_reward_redemption.add` | `1` | `channel:read:redemptions` |
-
-For the full list: https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/
-
----
 
 ### 3. Chat Listener
 
-Don't hook into the IRC tool directly. Subscribe to `chat.message.received` on the event bus — `ChatMessageDispatcherPlugin` already bridges IRC to the bus.
-
 ```python
-# domains/my_domain/plugins/chat_reaction_plugin.py
-
-from core.base_plugin import BasePlugin
-
-
 class ChatReactionPlugin(BasePlugin):
-    """Reacts to chat messages."""
-
     def __init__(self, event_bus, twitch, logger):
         self.bus = event_bus
         self.twitch = twitch
@@ -604,427 +305,166 @@ class ChatReactionPlugin(BasePlugin):
         await self.bus.subscribe("chat.message.received", self._on_message)
 
     async def _on_message(self, msg: dict):
-        # msg keys: channel, user_id, display_name, message,
-        #           is_mod, is_sub, is_broadcaster, badges, timestamp
         if "!hello" in msg["message"].lower():
             session = self.twitch.get_session()
             if session:
                 await self.twitch.send_message(session["login"], f"Hello, {msg['display_name']}!")
 ```
 
-For commands specifically, subscribe to `chat.command.received` — it includes `command` and `args` keys.
-
----
-
 ### 4. Scheduled Job
 
 ```python
-# domains/my_domain/plugins/hourly_cleanup_plugin.py
-
-from core.base_plugin import BasePlugin
-
-
 class HourlyCleanupPlugin(BasePlugin):
-    """Deletes old records every hour."""
-
     def __init__(self, scheduler, db, logger):
         self.scheduler = scheduler
         self.db = db
         self.logger = logger
 
     async def on_boot(self):
-        self.scheduler.add_job(
-            "0 * * * *",          # cron expression
-            self._cleanup,
-            job_id="hourly_cleanup",
-        )
+        self.scheduler.add_job("0 * * * *", self._cleanup, job_id="hourly_cleanup")
 
     async def _cleanup(self):
-        try:
-            await self.db.execute(
-                "DELETE FROM my_table WHERE created_at < datetime('now', '-7 days')"
-            )
-        except Exception as e:
-            self.logger.error(f"[HourlyCleanup] {e}")
+        await self.db.execute("DELETE FROM my_table WHERE created_at < datetime('now', '-7 days')")
 ```
 
----
-
-### 5. Event Bus Consumer
-
-```python
-# domains/my_domain/plugins/on_stream_start_plugin.py
-
-from core.base_plugin import BasePlugin
-
-
-class OnStreamStartPlugin(BasePlugin):
-    """Does something when the stream goes online."""
-
-    def __init__(self, event_bus, twitch, logger):
-        self.bus = event_bus
-        self.twitch = twitch
-        self.logger = logger
-
-    async def on_boot(self):
-        await self.bus.subscribe("stream.session.started", self._on_start)
-
-    async def _on_start(self, data: dict):
-        session = self.twitch.get_session()
-        if session:
-            await self.twitch.send_message(session["login"], "Stream is live! PogChamp")
-```
-
-See the [Event Catalog](#event-catalog) for all available events.
-
----
-
-### 6. Domain with DB Migration
-
-To add a new domain that needs its own table:
-
-**1. Create the migration:**
+### 5. Domain with DB Migration
 
 ```sql
 -- domains/my_domain/migrations/001_create_my_table.sql
 CREATE TABLE IF NOT EXISTS my_table (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    name      TEXT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
 );
 ```
 
-**2. Create the model (DB mirror only):**
-
-```python
-# domains/my_domain/models/my_entity.py
-from pydantic import BaseModel
-
-class MyEntity(BaseModel):
-    id: int
-    name: str
-    created_at: str
-```
-
-**3. Create plugins in `domains/my_domain/plugins/`**
-
-The kernel auto-discovers migrations and runs them in order on boot. No registration needed.
+The kernel auto-discovers and runs migrations on boot. No registration needed.
 
 ---
 
 ## Available Tools Reference
 
-Tools are injected by parameter name in `__init__`.
+Tools are injected by parameter name in `__init__`. See `AI_CONTEXT.md` for the full API reference.
 
-### `twitch`
-
-```python
-# Registration (call in on_boot)
-twitch.register(event_type, version, scopes, condition=None)
-twitch.require_scopes(scopes)           # for IRC scopes without EventSub
-twitch.on_event(event_type, callback)   # use '*' for all events
-twitch.on_chat_message(callback)
-twitch.on_chat_connect(callback)
-
-# OAuth
-url, state = twitch.get_auth_url()
-tokens = await twitch.exchange_code(code)
-tokens = await twitch.refresh_user_token(refresh_token)
-user   = await twitch.get_user_info(access_token)
-
-# Connection
-await twitch.connect(access_token, broadcaster_id, twitch_login)
-session = twitch.get_session()          # {access_token, broadcaster_id, login} or None
-
-# Chat
-await twitch.send_message(channel, message)
-
-# Helix API
-data = await twitch.get(endpoint, params=None, user_token=None)
-data = await twitch.post(endpoint, body=None, user_token=None)
-data = await twitch.delete(endpoint, params=None, user_token=None)
-```
-
-**Wildcard events:** When using `on_event("*", callback)`, the event data is enriched with `_event_type` key so you can distinguish the source:
-
-```python
-async def _on_any_event(self, event: dict):
-    event_type = event.pop("_event_type")   # e.g. "channel.follow"
-    # rest of event is the normal Twitch payload
-```
-
----
-
-### `db`
-
-```python
-rows    = await db.query("SELECT * FROM table WHERE x=$1", [val])
-row     = await db.query_one("SELECT * FROM table WHERE id=$1", [id])
-row_id  = await db.execute("INSERT INTO table (col) VALUES ($1) RETURNING id", [val])
-
-async with db.transaction() as tx:
-    await tx.execute(...)
-    await tx.query_one(...)
-```
-
-Always use `$1, $2` placeholders (works for both SQLite and PostgreSQL).
-
----
-
-### `event_bus`
-
-```python
-await event_bus.publish("domain.thing.happened", {"key": "value"})
-await event_bus.subscribe("domain.thing.happened", async_callback)
-result = await event_bus.request("some.rpc.topic", {"key": "value"}, timeout=5.0)
-```
-
----
-
-### `http`
-
-```python
-http.add_endpoint(
-    path,
-    method,            # "GET", "POST", "PUT", "DELETE"
-    handler,
-    tags=[],
-    request_model=None,
-    response_model=None,
-)
-```
-
-Handler signature: `async def execute(self, data: dict, context=None)`
-
----
-
-### `scheduler`
-
-```python
-scheduler.add_job(
-    "*/5 * * * *",    # cron expression
-    async_callable,
-    job_id="unique_id",
-)
-```
-
----
-
-### `state`
-
-In-memory key-value store. Use for volatile, non-persistent data (caches, flags, cooldowns).
-
-```python
-state.set("key", value, namespace="my_plugin")
-value = state.get("key", default=None, namespace="my_plugin")
-state.delete("key", namespace="my_plugin")
-```
-
----
-
-### `logger`
-
-```python
-logger.info("message")
-logger.error("message")
-logger.warning("message")
-logger.debug("message")
-```
+| Tool | Inject as | Purpose |
+|---|---|---|
+| TwitchTool | `twitch` | OAuth, EventSub, IRC, Helix API |
+| SQLiteTool | `db` | Async SQLite with PostgreSQL-compatible placeholders |
+| EventBusTool | `event_bus` | Pub/Sub + async RPC |
+| HttpServerTool | `http` | FastAPI REST + SSE + WebSocket |
+| SchedulerTool | `scheduler` | Cron + one-shot jobs |
+| StateTool | `state` | In-memory key-value store |
+| LoggerTool | `logger` | Structured logging |
+| AITool | `ai` | AI completions (OpenAI-compatible) |
+| TTSTool | `tts` | Text-to-speech with provider routing |
+| AuthTool | `auth` | JWT + bcrypt |
+| ConfigTool | `config` | Validated env var access |
+| TelemetryTool | `telemetry` | OpenTelemetry (optional) |
 
 ---
 
 ## Developing with AI
 
-Every plugin in this project follows the same pattern. Because the architecture is strict and predictable, you can describe a feature in plain language and an AI assistant will generate a working plugin with no additional context — as long as you give it the right files to read first.
+Every plugin follows the same pattern. Give the AI the right files and it will generate a working plugin with no additional context.
 
-### Reading path for the AI
-
-Always start your prompt with:
+**Reading path:**
 
 > Read `AI_CONTEXT.md` and `domains/{domain}/models/{model}.py`, then write the plugin.
 
-That's all the context needed. `AI_CONTEXT.md` contains the full tool reference and the plugin contract. The model file shows the DB schema.
+**Workflow:**
 
----
+1. Describe the feature, ask for a plan first
+2. Review the plan
+3. Say "go ahead"
 
-### The two-step workflow
+**Example:**
 
-Every feature starts with a plan, not code. This keeps you in control and avoids surprises.
-
-**Step 1 — Ask for a plan**
-
-Describe what you want in plain language. The AI reads the codebase and proposes exactly what it will create before touching any file.
-
-**Step 2 — Approve and execute**
-
-Review the plan. If it looks right, say "go ahead". If not, correct it before any code is written.
-
----
-
-### Example prompts
-
-**New endpoint (e.g. adjust points manually)**
-
-> Step 1 — Plan:
-> ```
-> Read AI_CONTEXT.md and domains/loyalty/models/viewer_points.py.
-> I want an endpoint to manually add or remove points from a viewer.
-> Propose a plan: what file you'll create, what the endpoint looks like,
-> what DB operation it does, and what event it publishes. Don't write code yet.
-> ```
-
-> Step 2 — Execute (after approving the plan):
-> ```
-> The plan looks good. Go ahead and implement it.
-> ```
-
----
-
-**React to a Twitch event (e.g. announce stream start in chat)**
-
-> Step 1 — Plan:
-> ```
-> Read AI_CONTEXT.md.
-> When the stream goes online I want the bot to send a welcome message in chat.
-> Propose a plan: what plugin you'll create, where it lives, what event it listens to,
-> and what message it sends. Don't write code yet.
-> ```
-
-> Step 2 — Execute:
-> ```
-> Perfect. Implement it.
-> ```
-
----
-
-**New auto-moderation rule type**
-
-> Step 1 — Plan:
-> ```
-> Read AI_CONTEXT.md and domains/moderation/plugins/auto_mod_plugin.py.
-> I want a new rule type that detects messages with too many emotes.
-> Propose a plan: how you'll detect it, where in the code you'll add it,
-> and what the rule value field would contain. Don't write code yet.
-> ```
-
-> Step 2 — Execute:
-> ```
-> Looks good. Go ahead.
-> ```
-
----
-
-**Scheduled job (e.g. log stream title changes)**
-
-> Step 1 — Plan:
-> ```
-> Read AI_CONTEXT.md.
-> I want a job that runs every 10 minutes and logs whenever the stream title changes.
-> Propose a plan: what plugin you'll create, how it detects the change,
-> what tool it uses to store the last seen title, and what it logs.
+> Read AI_CONTEXT.md. I want an endpoint to manually add or remove points from a viewer.
+> Propose a plan: what file you'll create, what the endpoint looks like, what DB operation it does.
 > Don't write code yet.
-> ```
-
-> Step 2 — Execute:
-> ```
-> Go ahead.
-> ```
-
----
-
-**New domain from scratch (e.g. quotes system)**
-
-> Step 1 — Plan:
-> ```
-> Read AI_CONTEXT.md.
-> I want a quotes system: viewers can add quotes in chat with !addquote,
-> and !quote shows a random one. Also a REST API to manage quotes.
-> Propose a complete plan: migration, model, and each plugin with its
-> responsibility. Don't write any files yet.
-> ```
-
-> Step 2 — Execute:
-> ```
-> The plan looks good, go ahead and create everything.
-> ```
-
----
-
-**Add real-time SSE output to an existing feature**
-
-> Step 1 — Plan:
-> ```
-> Read AI_CONTEXT.md and domains/dashboard/plugins/dashboard_alerts_plugin.py.
-> I want an SSE endpoint that streams loyalty events in real time
-> (points awarded and rewards redeemed).
-> Propose a plan following the same pattern as dashboard_alerts_plugin.
-> Don't write code yet.
-> ```
-
-> Step 2 — Execute:
-> ```
-> Perfect. Implement it.
-> ```
-
----
-
-### Tips for better results
-
-- **One feature per prompt** — the architecture enforces 1 file = 1 feature; prompts work best the same way.
-- **Always plan first** — reviewing a plan takes 10 seconds; reviewing broken code takes much longer.
-- **Reference existing plugins by name** — `"following the same pattern as dashboard_alerts_plugin"` is enough context.
-- **Correct the plan, not the code** — if the plan is wrong, fix it in the plan step before any file is touched.
 
 ---
 
 ## API Reference
 
-Full interactive docs at `http://localhost:8000/docs` when the server is running.
+Full interactive docs at `http://localhost:8000/docs`.
+
+All endpoints are prefixed with `/api/`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/ping` | Health check |
-| GET | `/auth/twitch` | Start OAuth flow |
-| GET | `/auth/twitch/callback` | OAuth callback (Twitch redirects here) |
-| GET | `/stream/status` | Current stream state |
-| GET | `/stream/sessions` | Session history |
-| GET | `/chat/stream` | SSE — live chat messages |
-| GET | `/chat/commands` | List chat commands |
-| POST | `/chat/commands` | Create chat command |
-| PUT | `/chat/commands/{id}` | Update chat command |
-| DELETE | `/chat/commands/{id}` | Delete chat command |
-| GET | `/chat/vars` | List stream variables |
-| POST | `/chat/vars` | Create stream variable |
-| PUT | `/chat/vars/{id}` | Update stream variable |
-| DELETE | `/chat/vars/{id}` | Delete stream variable |
-| GET | `/timers` | List timers |
-| POST | `/timers` | Create timer |
-| PUT | `/timers/{id}` | Update timer |
-| DELETE | `/timers/{id}` | Delete timer |
-| GET | `/loyalty/leaderboard` | Top viewers by points |
-| GET | `/loyalty/viewers/{twitch_id}` | Points for a viewer |
-| GET | `/loyalty/viewers/{twitch_id}/history` | Points transaction history |
-| GET | `/loyalty/rewards` | List rewards |
-| POST | `/loyalty/rewards` | Create reward |
-| POST | `/loyalty/redeem` | Redeem a reward |
-| GET | `/moderation/rules` | List mod rules |
-| POST | `/moderation/rules` | Create mod rule |
-| PUT | `/moderation/rules/{id}` | Update mod rule |
-| DELETE | `/moderation/rules/{id}` | Delete mod rule |
-| GET | `/moderation/log` | Mod action log |
-| POST | `/moderation/ban` | Manually ban a user |
-| POST | `/moderation/timeout` | Manually timeout a user |
-| POST | `/moderation/unban` | Manually unban a user |
-| GET | `/dashboard/stats` | Aggregated stream stats |
-| GET | `/dashboard/stats/history` | Viewer/follower count history |
-| GET | `/dashboard/alerts` | SSE — real-time event stream |
-| GET | `/system/status` | Tools and plugins health dump |
-| GET | `/system/events` | Last 500 internal event bus records |
-| GET | `/system/events/stream` | SSE — live event bus activity |
-| GET | `/system/logs/stream` | SSE — live logger output |
-| GET | `/system/traces/flat` | Event causality traces (flat) |
-| GET | `/system/traces/tree` | Event causality traces (tree) |
-| GET | `/system/traces/stream` | SSE — live trace records |
+| GET | `/api/ping` | Health check |
+| GET | `/api/auth/twitch` | Start OAuth flow |
+| GET | `/api/auth/twitch/callback` | OAuth callback |
+| GET | `/api/auth/twitch/status` | Session status |
+| POST | `/api/auth/twitch/logout` | Logout |
+| GET | `/api/stream/status` | Current stream state |
+| GET | `/api/stream/sessions` | Session history |
+| GET | `/api/chat/stream` | SSE — live chat messages |
+| GET | `/api/chat/commands` | List commands |
+| POST | `/api/chat/commands` | Create command |
+| PUT | `/api/chat/commands/{id}` | Update command |
+| DELETE | `/api/chat/commands/{id}` | Delete command |
+| GET | `/api/chat/vars` | List stream variables |
+| POST | `/api/chat/vars` | Create variable |
+| PUT | `/api/chat/vars/{id}` | Update variable |
+| DELETE | `/api/chat/vars/{id}` | Delete variable |
+| GET | `/api/chat/reminders` | List reminders |
+| GET | `/api/timers` | List timers |
+| POST | `/api/timers` | Create timer |
+| PUT | `/api/timers/{id}` | Update timer |
+| DELETE | `/api/timers/{id}` | Delete timer |
+| GET | `/api/viewers` | List viewers |
+| GET | `/api/viewers/{login}` | Get viewer |
+| GET | `/api/viewers/leaderboard` | Points leaderboard |
+| GET | `/api/viewers/regulars` | List regulars |
+| POST | `/api/viewers/regulars` | Add regular |
+| DELETE | `/api/viewers/regulars/{twitch_id}` | Remove regular |
+| POST | `/api/viewers/{twitch_id}/points` | Adjust points |
+| GET | `/api/moderation/rules` | List rules |
+| POST | `/api/moderation/rules` | Create rule |
+| PUT | `/api/moderation/rules/{id}` | Update rule |
+| DELETE | `/api/moderation/rules/{id}` | Delete rule |
+| GET | `/api/moderation/log` | Mod action log |
+| POST | `/api/moderation/ban` | Manual ban |
+| POST | `/api/moderation/timeout` | Manual timeout |
+| POST | `/api/moderation/unban` | Manual unban |
+| GET | `/api/overlays` | List overlays |
+| POST | `/api/overlays` | Create overlay |
+| GET | `/api/overlays/{id}` | Get overlay |
+| PUT | `/api/overlays/{id}` | Update overlay |
+| DELETE | `/api/overlays/{id}` | Delete overlay |
+| GET | `/api/overlays/{id}/config` | Get config (OBS use) |
+| POST | `/api/overlays/generate` | AI overlay generation |
+| GET | `/api/overlays/data` | Live stat values |
+| GET | `/api/overlays/stats` | SSE — real-time stat updates |
+| GET | `/api/subscribers/leaderboard` | Subscribers leaderboard |
+| GET | `/api/gifters/leaderboard` | Gifters leaderboard |
+| GET | `/api/bits/leaderboard` | Bits leaderboard |
+| POST | `/api/subscribers/sync` | Sync subscribers from Twitch |
+| POST | `/api/bits/sync` | Sync bits from Twitch |
+| GET | `/api/tts/voices` | List available voices |
+| GET | `/api/tts/settings` | TTS settings |
+| PUT | `/api/tts/settings` | Update TTS settings |
+| GET | `/api/tts/user-voices` | All user voice assignments |
+| GET | `/api/tts/user-voices/{login}` | Get user voice |
+| PUT | `/api/tts/user-voices` | Assign user voice |
+| DELETE | `/api/tts/user-voices/{login}` | Remove user voice |
+| GET | `/api/tts/overlay/stream` | SSE — TTS audio stream |
+| GET | `/api/ai/config` | AI provider config |
+| PUT | `/api/ai/config` | Update AI config |
+| POST | `/api/ai/test` | Test AI connection |
+| GET | `/api/dashboard/stats` | Stream stats |
+| GET | `/api/dashboard/stats/history` | Stats history |
+| GET | `/api/dashboard/alerts` | SSE — real-time events |
+| POST | `/api/dashboard/alerts/test` | Send test alert |
+| GET | `/api/system/status` | Tools + plugins health |
+| GET | `/api/system/events` | Last 500 event bus records |
+| GET | `/api/system/events/stream` | SSE — live event bus |
+| GET | `/api/system/logs/stream` | SSE — live logs |
+| GET | `/api/system/traces/flat` | Causality traces (flat) |
+| GET | `/api/system/traces/tree` | Causality traces (tree) |
+| GET | `/api/system/traces/stream` | SSE — live traces |
 
 ---
 
@@ -1035,8 +475,10 @@ uv run main.py                                              # Run
 uv run pytest                                               # All tests
 uv run pytest tests/test_file.py                            # Single test
 docker compose -f dev_infra/docker-compose.yml up -d        # Dev infra
+docker compose -f docker-compose.selfhost.yml up -d --build # Full stack from source
+docker compose -f docker-compose.prod.yml up -d             # Full stack from images
 ```
 
 ---
 
-**Built by Anibal Fernandez on [MicroCoreOS](https://github.com/theanibalos/MicroCoreOS)**
+**Built by [Anibal Fernandez](https://github.com/theanibalos) — licensed under AGPL-3.0**

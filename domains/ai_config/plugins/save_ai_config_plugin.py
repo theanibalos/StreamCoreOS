@@ -62,7 +62,7 @@ class SaveAIConfigPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/ai/config", "PUT", self.execute,
+            "/api/ai/config", "PUT", self.execute,
             tags=["AI Config"],
             request_model=SaveAIConfigRequest,
             response_model=SaveAIConfigResponse,

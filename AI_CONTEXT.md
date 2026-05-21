@@ -289,6 +289,29 @@ Twitch Tool (twitch):
           - await delete(endpoint, params?, user_token?): DELETE to Helix.
 ```
 
+### 🔧 Tool: `http_client` (Status: ✅)
+```text
+HTTP Client Tool (http_client):
+        - PURPOSE: Make outgoing HTTP requests from plugins. Async, backed by httpx.
+        - RESPONSE: All methods return a dict:
+            {
+              "status": int,       # HTTP status code (200, 404, ...)
+              "ok": bool,          # True if status < 400
+              "json": dict | None, # Parsed JSON body (None if not JSON)
+              "text": str,         # Raw response body
+              "headers": dict      # Response headers
+            }
+        - ERRORS:
+            TimeoutError      — request exceeded the timeout
+            ConnectionError   — could not reach the server
+        - CAPABILITIES:
+            - await get(url, params?, headers?, timeout=10) -> dict
+            - await post(url, json?, data?, headers?, timeout=10) -> dict
+            - await put(url, json?, data?, headers?, timeout=10) -> dict
+            - await delete(url, params?, headers?, timeout=10) -> dict
+        - USAGE IN PLUGIN __init__: def __init__(self, http_client, ...)
+```
+
 ### 🔧 Tool: `auth` (Status: ✅)
 ```text
 Authentication Tool (auth):
@@ -456,7 +479,7 @@ TTS Tool (tts):
 
 ### `ai_config`
 - **Table `ai_config`**: provider (str), endpoint_url (str), model (str), updated_at (str)
-- **Endpoints**: GET /ai/config, GET /ai/ia/enabled, POST /ai/test, PUT /ai/config, PUT /ai/ia/enabled
+- **Endpoints**: GET /api/ai/config, GET /api/ai/ia/enabled, POST /api/ai/test, PUT /api/ai/config, PUT /api/ai/ia/enabled
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: ai, db, http, logger, state
@@ -465,15 +488,15 @@ TTS Tool (tts):
 ### `chat_bot`
 - **Table `chat_command`**: name (str), response (str), cooldown_s (int), enabled (int), created_at (str), channel (str), user_id (str), display_name (str), message (str), is_command (int), timestamp (str)
 - **Table `chat_var`**: name (str), value (str), enabled (int), created_at (str)
-- **Endpoints**: DELETE /chat/commands/{id}, DELETE /chat/vars/{id}, GET /chat/commands, GET /chat/reminders, GET /chat/vars, POST /chat/commands, POST /chat/vars, PUT /chat/commands/{id}, PUT /chat/vars/{id}
+- **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}
 - **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command)
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch
-- **Plugins**: ChatAutoResponsePlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CommandsListPlugin, CreateCommandPlugin, CreateVarPlugin, DeleteCommandPlugin, DeleteVarPlugin, EchoReminderPlugin, IAChatPlugin, ListCommandsPlugin, ListRemindersPlugin, ListVarsPlugin, UpdateCommandPlugin, UpdateVarPlugin, VarCommandPlugin
+- **Plugins**: ChatAutoResponsePlugin, ChatBadgesPlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CommandsListPlugin, CreateCommandPlugin, CreateVarPlugin, DeleteCommandPlugin, DeleteVarPlugin, EchoReminderPlugin, IAChatPlugin, ListCommandsPlugin, ListRemindersPlugin, ListVarsPlugin, UpdateCommandPlugin, UpdateVarPlugin, VarCommandPlugin
 
 ### `dashboard`
 - **Table `channel_stats`**: recorded_at (str), viewer_count (int), follower_count (int)
-- **Endpoints**: GET /dashboard/stats, GET /dashboard/stats/history
+- **Endpoints**: GET /api/dashboard/stats, GET /api/dashboard/stats/history, POST /api/dashboard/alerts/test
 - **Events emitted**: `dashboard.stats.updated` (follower_count, viewer_count)
 - **Events consumed**: dashboard.stats.updated, moderation.action.taken, stream.session.ended, stream.session.started, viewer.regular.added, viewer.regular.removed
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
@@ -481,7 +504,7 @@ TTS Tool (tts):
 
 ### `moderation`
 - **Table `mod_rule`**: type (str       # word_filter | link_filter | caps_filter | spam_filter), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
-- **Endpoints**: DELETE /moderation/rules/{id}, GET /moderation/log, GET /moderation/rules, POST /moderation/ban, POST /moderation/rules, POST /moderation/timeout, POST /moderation/unban, PUT /moderation/rules/{id}
+- **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
 - **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
 - **Events consumed**: chat.message.received, moderation.rules.updated
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
@@ -489,15 +512,15 @@ TTS Tool (tts):
 
 ### `overlays`
 - **Table `overlay`**: name (str), config (str), created_at (datetime | None), updated_at (datetime | None)
-- **Endpoints**: DELETE /overlays/{id}, GET /overlays, GET /overlays/data, GET /overlays/{id}, GET /overlays/{id}/config, POST /overlays, POST /overlays/generate, PUT /overlays/{id}
+- **Endpoints**: DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/generate, PUT /api/overlays/{id}
 - **Events emitted**: none
-- **Events consumed**: none
-- **Dependencies**: ai, db, http, logger, state
-- **Plugins**: CreateOverlayPlugin, DeleteOverlayPlugin, GenerateOverlayPlugin, GetOverlayPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, UpdateOverlayPlugin
+- **Events consumed**: dashboard.stats.updated, stream.session.ended, stream.session.started, subscriber.expired, subscriber.gift, subscriber.new, subscriber.resub
+- **Dependencies**: ai, db, event_bus, http, logger, state, twitch
+- **Plugins**: CreateOverlayPlugin, DeleteOverlayPlugin, GenerateOverlayPlugin, GetOverlayPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, OverlayStatsSsePlugin, UpdateOverlayPlugin
 
 ### `ping`
 - **Tables**: none
-- **Endpoints**: GET /ping
+- **Endpoints**: GET /api/ping
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: http, logger
@@ -505,7 +528,7 @@ TTS Tool (tts):
 
 ### `stream_state`
 - **Table `stream_session`**: twitch_stream_id (Optional[str]), started_at (str       # ISO8601), ended_at (Optional[str]), title (Optional[str]), game_name (Optional[str]), peak_viewers (int)
-- **Endpoints**: GET /stream/sessions, GET /stream/status
+- **Endpoints**: GET /api/stream/sessions, GET /api/stream/status
 - **Events emitted**: `stream.session.ended` (ended_at, session_id), `stream.session.started` (broadcaster_login, session_id, started_at, twitch_stream_id)
 - **Events consumed**: stream.status.requested
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
@@ -513,7 +536,7 @@ TTS Tool (tts):
 
 ### `subscribers`
 - **Table `subscriber`**: twitch_id (str), login (str), display_name (str), tier (str), is_prime (bool), is_gift (bool), cumulative_months (int), streak_months (Optional[int]), subscribed_at (str), last_sub_at (str), is_active (bool), bits_total (int), last_cheer_at (str)
-- **Endpoints**: GET /bits/leaderboard, GET /gifters/leaderboard, GET /subscribers/leaderboard, POST /bits/sync, POST /subscribers/sync
+- **Endpoints**: GET /api/bits/leaderboard, GET /api/gifters/leaderboard, GET /api/subscribers/leaderboard, POST /api/bits/sync, POST /api/subscribers/sync
 - **Events emitted**: `subscriber.expired` (twitch_id), `subscriber.gift` (cumulative_total, gifter_id, gifter_name, total), `subscriber.new` (display_name, is_gift, tier, twitch_id), `subscriber.resub` (cumulative_months, display_name, streak_months, tier, twitch_id), `viewer.bits.received` (bits, display_name, twitch_id)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, twitch
@@ -521,7 +544,7 @@ TTS Tool (tts):
 
 ### `system`
 - **Tables**: none
-- **Endpoints**: GET /system/events, GET /system/status, GET /system/traces/flat, GET /system/traces/tree
+- **Endpoints**: GET /api/system/events, GET /api/system/status, GET /api/system/traces/flat, GET /api/system/traces/tree
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, registry
@@ -529,7 +552,7 @@ TTS Tool (tts):
 
 ### `timers`
 - **Table `timer`**: name (str), message (str), interval_minutes (int), min_lines (int), enabled (int), last_executed_at (datetime | None), created_at (datetime | None)
-- **Endpoints**: DELETE /timers/{id}, GET /timers, POST /timers, PUT /timers/{id}
+- **Endpoints**: DELETE /api/timers/{id}, GET /api/timers, POST /api/timers, PUT /api/timers/{id}
 - **Events emitted**: `timer.created` (id, name), `timer.deleted` (id), `timer.updated` (id)
 - **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
@@ -537,7 +560,7 @@ TTS Tool (tts):
 
 ### `tts_chat`
 - **Table `tts_voice_config`**: twitch_id (str), twitch_login (str), voice_id (str), voice_name (str), provider (str), created_at (str), updated_at (str), enabled (bool), host (str), port (int), timeout_s (int), max_message_length (int), skip_commands (bool), skip_links (bool), sub_only (bool), cooldown_seconds (int), blocked_words (str   # JSON array stored as text)
-- **Endpoints**: DELETE /tts/user-voices/{twitch_login}, GET /tts/settings, GET /tts/user-voices, GET /tts/user-voices/{twitch_login}, GET /tts/voices, PUT /tts/settings, PUT /tts/user-voices
+- **Endpoints**: DELETE /api/tts/user-voices/{twitch_login}, GET /api/tts/settings, GET /api/tts/user-voices, GET /api/tts/user-voices/{twitch_login}, GET /api/tts/voices, PUT /api/tts/settings, PUT /api/tts/user-voices
 - **Events emitted**: `tts.audio.ready` (audio_b64, text, username, voice_id)
 - **Events consumed**: chat.message.received, tts.audio.ready
 - **Dependencies**: db, event_bus, http, logger, tts, twitch
@@ -545,7 +568,7 @@ TTS Tool (tts):
 
 ### `twitch_auth`
 - **Table `twitch_token`**: twitch_id (str), login (str), display_name (str), access_token (str), refresh_token (str), scopes (str          # JSON array stored as TEXT), expires_at (str      # ISO8601), created_at (str), updated_at (str)
-- **Endpoints**: GET /auth/twitch, GET /auth/twitch/callback, GET /auth/twitch/scopes, GET /auth/twitch/status, POST /auth/twitch/logout
+- **Endpoints**: GET /api/auth/twitch, GET /api/auth/twitch/callback, GET /api/auth/twitch/scopes, GET /api/auth/twitch/status, POST /api/auth/twitch/logout
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, scheduler, twitch
@@ -556,12 +579,12 @@ TTS Tool (tts):
 - **Endpoints**: none
 - **Events emitted**: none
 - **Events consumed**: none
-- **Dependencies**: logger, twitch
+- **Dependencies**: http_client, logger, twitch
 - **Plugins**: HackThePlanetPlugin
 
 ### `viewers`
 - **Table `viewer`**: twitch_id (str), login (str), display_name (str), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
-- **Endpoints**: DELETE /viewers/regulars/{twitch_id}, GET /viewers, GET /viewers/leaderboard, GET /viewers/regulars, GET /viewers/{login}, POST /viewers/regulars, POST /viewers/{twitch_id}/points
+- **Endpoints**: DELETE /api/viewers/regulars/{twitch_id}, GET /api/viewers, GET /api/viewers/leaderboard, GET /api/viewers/regulars, GET /api/viewers/{login}, POST /api/viewers/regulars, POST /api/viewers/{twitch_id}/points
 - **Events emitted**: `viewer.points.awarded` (delta, display_name, twitch_id), `viewer.regular.added` (added_by, display_name, twitch_id), `viewer.regular.removed` (display_name, twitch_id)
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, twitch

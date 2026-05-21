@@ -35,7 +35,7 @@ class GetAIConfigPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/ai/config", "GET", self.execute,
+            "/api/ai/config", "GET", self.execute,
             tags=["AI Config"],
             response_model=GetAIConfigResponse,
         )

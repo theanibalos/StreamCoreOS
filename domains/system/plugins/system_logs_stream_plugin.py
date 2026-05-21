@@ -17,7 +17,7 @@ class SystemLogsStreamPlugin(BasePlugin):
     async def on_boot(self):
         self.logger.add_sink(self._on_log)
         self.http.add_sse_endpoint(
-            "/system/logs/stream",
+            "/api/system/logs/stream",
             generator=self._stream,
             tags=["System"],
         )

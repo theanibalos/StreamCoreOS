@@ -31,7 +31,7 @@ class ChannelStatsHistoryPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/dashboard/stats/history",
+            "/api/dashboard/stats/history",
             "GET",
             self.execute,
             tags=["Dashboard"],

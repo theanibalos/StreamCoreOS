@@ -19,7 +19,7 @@ class DeleteVarPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/chat/vars/{id}", "DELETE", self.execute,
+            "/api/chat/vars/{id}", "DELETE", self.execute,
             tags=["Chat"],
             response_model=DeleteVarResponse,
         )

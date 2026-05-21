@@ -45,7 +45,7 @@ class SubscribersLeaderboardPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/subscribers/leaderboard", "GET", self.execute,
+            "/api/subscribers/leaderboard", "GET", self.execute,
             tags=["Subscribers"],
             response_model=SubscribersLeaderboardResponse,
         )

@@ -8,6 +8,11 @@ class RestoreSessionPlugin(BasePlugin):
     This handles the case where the server restarts after the streamer has
     already authenticated. Without this plugin, the tool would start
     disconnected and require a manual re-authentication on every restart.
+
+    If the stored access token is expired, TwitchTokenRefreshPlugin handles
+    it automatically: the first 401 triggers a reactive refresh. If the
+    refresh token is also expired, that plugin disconnects and clears the
+    session so the frontend shows the login screen.
     """
 
     def __init__(self, twitch, db, logger):

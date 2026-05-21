@@ -26,7 +26,7 @@ class ManualTimeoutPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/moderation/timeout", "POST", self.execute,
+            "/api/moderation/timeout", "POST", self.execute,
             tags=["Moderation"],
             request_model=TimeoutRequest,
             response_model=TimeoutResponse,

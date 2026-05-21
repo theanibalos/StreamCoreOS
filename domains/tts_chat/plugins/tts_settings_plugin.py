@@ -52,12 +52,12 @@ class TtsSettingsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/tts/settings", "GET", self.get_settings,
+            "/api/tts/settings", "GET", self.get_settings,
             tags=["TTS"],
             response_model=TtsSettingsResponse,
         )
         self.http.add_endpoint(
-            "/tts/settings", "PUT", self.update_settings,
+            "/api/tts/settings", "PUT", self.update_settings,
             tags=["TTS"],
             request_model=UpdateTtsSettingsRequest,
             response_model=TtsSettingsResponse,

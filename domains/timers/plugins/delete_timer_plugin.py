@@ -15,7 +15,7 @@ class DeleteTimerPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/timers/{id}", "DELETE", self.execute,
+            "/api/timers/{id}", "DELETE", self.execute,
             tags=["Timers"],
             response_model=DeleteTimerResponse
         )

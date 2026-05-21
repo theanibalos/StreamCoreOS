@@ -53,7 +53,7 @@ class DashboardStatsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/dashboard/stats",
+            "/api/dashboard/stats",
             "GET",
             self.execute,
             tags=["Dashboard"],

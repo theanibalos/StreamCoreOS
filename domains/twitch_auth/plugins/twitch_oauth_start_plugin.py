@@ -25,7 +25,7 @@ class TwitchOAuthStartPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/auth/twitch",
+            "/api/auth/twitch",
             "GET",
             self.execute,
             tags=["Twitch Auth"],

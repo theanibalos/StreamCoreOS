@@ -27,7 +27,7 @@ class ListRegularsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers/regulars", "GET", self.execute,
+            "/api/viewers/regulars", "GET", self.execute,
             tags=["Viewers"],
             response_model=ListRegularsResponse,
         )

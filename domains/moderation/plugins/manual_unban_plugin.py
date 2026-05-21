@@ -24,7 +24,7 @@ class ManualUnbanPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/moderation/unban", "POST", self.execute,
+            "/api/moderation/unban", "POST", self.execute,
             tags=["Moderation"],
             request_model=UnbanRequest,
             response_model=UnbanResponse,

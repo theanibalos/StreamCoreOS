@@ -39,7 +39,7 @@ class SystemTracesStreamPlugin(BasePlugin):
     async def on_boot(self):
         self.event_bus.add_listener(self._on_event)
         self.http.add_sse_endpoint(
-            "/system/traces/stream",
+            "/api/system/traces/stream",
             generator=self._stream,
             tags=["System"],
         )

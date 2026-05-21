@@ -37,7 +37,7 @@ class AddRegularPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/viewers/regulars", "POST", self.execute,
+            "/api/viewers/regulars", "POST", self.execute,
             tags=["Viewers"],
             request_model=AddRegularRequest,
             response_model=AddRegularResponse,

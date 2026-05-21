@@ -27,7 +27,7 @@ class OverlayDataPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/overlays/data", "GET", self.execute,
+            "/api/overlays/data", "GET", self.execute,
             tags=["Overlays"],
             response_model=OverlayDataResponse,
         )
@@ -49,6 +49,17 @@ class OverlayDataPlugin(BasePlugin):
                 result["subscribers.active_total"] = int(row["n"]) if row else 0
             except Exception:
                 result["subscribers.active_total"] = 0
+
+            # Latest viewer + follower counts (from channel_stats collector, runs every 5 min)
+            try:
+                row = await self.db.query_one(
+                    "SELECT viewer_count, follower_count FROM channel_stats ORDER BY id DESC LIMIT 1", []
+                )
+                result["stream.viewer_count"] = int(row["viewer_count"]) if row else 0
+                result["followers.total"]      = int(row["follower_count"]) if row else 0
+            except Exception:
+                result["stream.viewer_count"] = 0
+                result["followers.total"]      = 0
 
             # All-time bits total
             try:

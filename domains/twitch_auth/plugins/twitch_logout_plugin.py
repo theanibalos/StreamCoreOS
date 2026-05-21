@@ -17,7 +17,7 @@ class TwitchLogoutPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/auth/twitch/logout",
+            "/api/auth/twitch/logout",
             "POST",
             self.execute,
             tags=["Twitch Auth"],
