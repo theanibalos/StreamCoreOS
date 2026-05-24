@@ -23,9 +23,10 @@ class UpdateOverlayResponse(BaseModel):
 
 
 class UpdateOverlayPlugin(BasePlugin):
-    def __init__(self, http, db, logger):
+    def __init__(self, http, db, event_bus, logger):
         self.http = http
         self.db = db
+        self.event_bus = event_bus
         self.logger = logger
 
     async def on_boot(self):
@@ -65,6 +66,7 @@ class UpdateOverlayPlugin(BasePlugin):
                 return {"success": False, "error": "Overlay not found"}
 
             row["config"] = json.loads(row["config"])
+            await self.event_bus.publish("overlay.config.updated", {"overlay_id": overlay_id})
             return {"success": True, "data": row}
         except Exception as e:
             self.logger.error(f"[UpdateOverlay] {e}")

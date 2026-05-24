@@ -513,8 +513,8 @@ TTS Tool (tts):
 ### `overlays`
 - **Table `overlay`**: name (str), config (str), created_at (datetime | None), updated_at (datetime | None)
 - **Endpoints**: DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/generate, PUT /api/overlays/{id}
-- **Events emitted**: none
-- **Events consumed**: dashboard.stats.updated, stream.session.ended, stream.session.started, subscriber.expired, subscriber.gift, subscriber.new, subscriber.resub
+- **Events emitted**: `overlay.config.updated` (overlay_id)
+- **Events consumed**: dashboard.stats.updated, overlay.config.updated, stream.session.ended, stream.session.started, subscriber.expired, subscriber.gift, subscriber.new, subscriber.resub
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
 - **Plugins**: CreateOverlayPlugin, DeleteOverlayPlugin, GenerateOverlayPlugin, GetOverlayPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, OverlayStatsSsePlugin, UpdateOverlayPlugin
 

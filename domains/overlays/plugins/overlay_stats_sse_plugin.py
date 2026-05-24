@@ -57,6 +57,9 @@ class OverlayStatsSsePlugin(BasePlugin):
         # Bits events — real-time bits total update
         self.twitch.on_event("channel.cheer", self._on_push_event)
 
+        # Overlay config saved — notify live pages to reload
+        await self.bus.subscribe("overlay.config.updated", self._on_config_updated)
+
         self.http.add_sse_endpoint(
             "/api/overlays/stats",
             self._stream,
@@ -118,6 +121,9 @@ class OverlayStatsSsePlugin(BasePlugin):
         self._follower_count += 1
         await self._broadcast(await self._current_stats())
 
+    async def _on_config_updated(self, data: dict):
+        await self._broadcast({"__type": "config_updated", "overlay_id": data.get("overlay_id")})
+
     async def _on_stats_updated(self, data: dict):
         # Stats collector provides authoritative follower count from Twitch API
         if "follower_count" in data:
@@ -133,7 +139,11 @@ class OverlayStatsSsePlugin(BasePlugin):
             # Send current stats immediately on connect
             yield f"data: {json.dumps(await self._current_stats())}\n\n"
             while True:
-                msg = await queue.get()
-                yield f"data: {msg}\n\n"
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    yield f"data: {msg}\n\n"
+                except asyncio.TimeoutError:
+                    # Heartbeat to keep OBS browser source connection alive
+                    yield ": ping\n\n"
         finally:
             self._queues.remove(queue)
