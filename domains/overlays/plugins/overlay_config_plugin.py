@@ -30,9 +30,19 @@ class OverlayConfigPlugin(BasePlugin):
 
     async def execute(self, data: dict, context=None):
         try:
+            if context:
+                context.set_header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+                context.set_header("Pragma", "no-cache")
+                context.set_header("Expires", "0")
+                
             overlay_id = data.get("id")
+            try:
+                oid = int(overlay_id) if overlay_id is not None else None
+            except (ValueError, TypeError):
+                oid = overlay_id
+
             row = await self.db.query_one(
-                "SELECT id, name, config FROM overlays WHERE id = $1", [overlay_id]
+                "SELECT id, name, config FROM overlays WHERE id = $1", [oid]
             )
             if not row:
                 return {"success": False, "error": "Overlay not found"}

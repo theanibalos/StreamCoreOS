@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Optional, Any
 from pydantic import BaseModel, Field
 from core.base_plugin import BasePlugin
@@ -40,6 +41,11 @@ class UpdateOverlayPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             overlay_id = data.get("id")
+            try:
+                oid = int(overlay_id) if overlay_id is not None else None
+            except (ValueError, TypeError):
+                oid = overlay_id
+
             req = UpdateOverlayRequest(**data)
 
             updates = ["updated_at = CURRENT_TIMESTAMP"]
@@ -48,25 +54,35 @@ class UpdateOverlayPlugin(BasePlugin):
             if req.name is not None:
                 updates.append(f"name = ${len(params)+1}")
                 params.append(req.name)
+            
             if req.config is not None:
+                # Inject a version timestamp to force reactivity
+                if isinstance(req.config, dict):
+                    req.config["_v"] = int(time.time() * 1000)
+                
+                self.logger.info(f"[UpdateOverlay] Saving config for overlay {oid}: {len(json.dumps(req.config))} bytes")
                 updates.append(f"config = ${len(params)+1}")
                 params.append(json.dumps(req.config))
 
-            params.append(overlay_id)
-            await self.db.execute(
+            params.append(oid)
+            affected = await self.db.execute(
                 f"UPDATE overlays SET {', '.join(updates)} WHERE id = ${len(params)}",
                 params,
             )
 
+            if affected == 0:
+                return {"success": False, "error": f"Overlay {oid} not found"}
+
             row = await self.db.query_one(
                 "SELECT id, name, config, updated_at FROM overlays WHERE id = $1",
-                [overlay_id],
+                [oid],
             )
             if not row:
-                return {"success": False, "error": "Overlay not found"}
+                return {"success": False, "error": "Overlay not found after update"}
 
             row["config"] = json.loads(row["config"])
-            await self.event_bus.publish("overlay.config.updated", {"overlay_id": overlay_id})
+            # Use the ID from the database row to ensure consistent type (int)
+            await self.event_bus.publish("overlay.config.updated", {"overlay_id": row["id"]})
             return {"success": True, "data": row}
         except Exception as e:
             self.logger.error(f"[UpdateOverlay] {e}")

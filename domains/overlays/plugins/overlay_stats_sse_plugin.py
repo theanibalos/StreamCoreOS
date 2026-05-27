@@ -122,7 +122,19 @@ class OverlayStatsSsePlugin(BasePlugin):
         await self._broadcast(await self._current_stats())
 
     async def _on_config_updated(self, data: dict):
-        await self._broadcast({"__type": "config_updated", "overlay_id": data.get("overlay_id")})
+        overlay_id = data.get("overlay_id")
+        try:
+            # Ensure overlay_id is int for consistent DB lookups
+            oid = int(overlay_id) if overlay_id is not None else None
+            row = await self.db.query_one(
+                "SELECT config FROM overlays WHERE id = $1", [oid]
+            )
+            config = json.loads(row["config"]) if row else {}
+            self.logger.info(f"[OverlayStatsSSE] Config updated for overlay {oid}")
+        except Exception as e:
+            self.logger.error(f"[OverlayStatsSSE] Error reloading config for {overlay_id}: {e}")
+            config = {}
+        await self._broadcast({"__type": "config_updated", "overlay_id": overlay_id, "config": config})
 
     async def _on_stats_updated(self, data: dict):
         # Stats collector provides authoritative follower count from Twitch API

@@ -21,7 +21,9 @@ PUBLIC CONTRACT (what plugins use):
     )
 
     # Serve static files from a directory
-    http.mount_static("/static", "./public")
+    # IMPORTANT: always use /api/ prefix so the frontend Vite proxy forwards correctly.
+    # Without it, requests from the frontend will 404 in dev (and likely in prod too).
+    http.mount_static("/api/static", "./public")
 
     # WebSocket endpoint
     http.add_ws_endpoint(
@@ -352,6 +354,8 @@ class HttpServerTool(BaseTool):
                   become Form fields. To use a file: file = data["_files"][0]; 
                   await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
             - mount_static(path, directory_path): Serve static files from a directory.
+                  ALWAYS use /api/ prefix (e.g. "/api/uploads") — the frontend proxy only
+                  forwards /api/* to the backend. Without it, requests will 404 in dev.
             - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
             - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
                 Server-Sent Events. generator yields formatted strings: "data: {...}\\n\\n".

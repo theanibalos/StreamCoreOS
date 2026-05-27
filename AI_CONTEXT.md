@@ -199,6 +199,8 @@ HTTP Server Tool (http):
                   become Form fields. To use a file: file = data["_files"][0]; 
                   await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
             - mount_static(path, directory_path): Serve static files from a directory.
+                  ALWAYS use /api/ prefix (e.g. "/api/uploads") — the frontend proxy only
+                  forwards /api/* to the backend. Without it, requests will 404 in dev.
             - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
             - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
                 Server-Sent Events. generator yields formatted strings: "data: {...}\n\n".
@@ -354,22 +356,6 @@ Logging Tool (logger):
                 Use it to attribute errors to specific plugins for health tracking.
 ```
 
-### 🔧 Tool: `state` (Status: ✅)
-```text
-In-Memory State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
-        - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
-            - has(key, namespace='default'): Returns True if key exists.
-            - keys(namespace='default'): Returns list of all keys in the namespace.
-            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
-            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
-            - delete(key, namespace='default'): Delete a key (no-op if missing).
-            - clear(namespace='default'): Remove all keys in the namespace.
-```
-
 ### 🔧 Tool: `registry` (Status: ✅)
 ```text
 Systems Registry Tool (registry):
@@ -404,6 +390,22 @@ Systems Registry Tool (registry):
             - update_tool_status(name, status, message=None): Manually override a tool's health status.
                 status: "OK" | "FAIL" | "DEAD".
                 Intended for health-check plugins that verify tools proactively.
+```
+
+### 🔧 Tool: `state` (Status: ✅)
+```text
+In-Memory State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
+        - CAPABILITIES:
+            - set(key, value, namespace='default'): Store a value.
+            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
+            - has(key, namespace='default'): Returns True if key exists.
+            - keys(namespace='default'): Returns list of all keys in the namespace.
+            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
+            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
+            - delete(key, namespace='default'): Delete a key (no-op if missing).
+            - clear(namespace='default'): Remove all keys in the namespace.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
@@ -512,11 +514,11 @@ TTS Tool (tts):
 
 ### `overlays`
 - **Table `overlay`**: name (str), config (str), created_at (datetime | None), updated_at (datetime | None)
-- **Endpoints**: DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/generate, PUT /api/overlays/{id}
+- **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/generate, POST /api/overlays/upload-background, PUT /api/overlays/{id}
 - **Events emitted**: `overlay.config.updated` (overlay_id)
 - **Events consumed**: dashboard.stats.updated, overlay.config.updated, stream.session.ended, stream.session.started, subscriber.expired, subscriber.gift, subscriber.new, subscriber.resub
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
-- **Plugins**: CreateOverlayPlugin, DeleteOverlayPlugin, GenerateOverlayPlugin, GetOverlayPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, OverlayStatsSsePlugin, UpdateOverlayPlugin
+- **Plugins**: CreateOverlayPlugin, DeleteBackgroundPlugin, DeleteOverlayPlugin, GenerateOverlayPlugin, GetOverlayPlugin, ListBackgroundsPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, OverlayStatsSsePlugin, UpdateOverlayPlugin, UploadBackgroundPlugin
 
 ### `ping`
 - **Tables**: none

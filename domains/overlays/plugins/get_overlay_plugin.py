@@ -34,8 +34,13 @@ class GetOverlayPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             overlay_id = data.get("id")
+            try:
+                oid = int(overlay_id) if overlay_id is not None else None
+            except (ValueError, TypeError):
+                oid = overlay_id
+
             row = await self.db.query_one(
-                "SELECT * FROM overlays WHERE id = $1", [overlay_id]
+                "SELECT * FROM overlays WHERE id = $1", [oid]
             )
             if not row:
                 return {"success": False, "error": "Overlay not found"}
