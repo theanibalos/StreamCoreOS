@@ -15,10 +15,10 @@ class OverlayConfigPlugin(BasePlugin):
     Public endpoint (no auth) — used by the OBS browser source renderer.
     Returns the overlay config JSON for a given overlay id.
     """
-
-    def __init__(self, http, db, logger):
+    def __init__(self, http, db, state, logger):
         self.http = http
         self.db = db
+        self.state = state
         self.logger = logger
 
     async def on_boot(self):
@@ -28,13 +28,38 @@ class OverlayConfigPlugin(BasePlugin):
             response_model=OverlayConfigResponse,
         )
 
+    async def _current_stats(self) -> dict:
+        stats: dict = {
+            "stream.online":   self.state.get("online", default=False, namespace="stream_state"),
+        }
+        try:
+            row = await self.db.query_one("SELECT viewer_count, follower_count FROM channel_stats ORDER BY id DESC LIMIT 1", [])
+            stats["followers.total"] = int(row["follower_count"]) if row else 0
+            stats["stream.viewer_count"] = int(row["viewer_count"]) if row else 0
+        except Exception:
+            stats["followers.total"] = 0
+            stats["stream.viewer_count"] = 0
+
+        try:
+            row = await self.db.query_one("SELECT COUNT(*) AS n FROM subscribers WHERE is_active=1", [])
+            stats["subscribers.active_total"] = int(row["n"]) if row else 0
+        except Exception:
+            stats["subscribers.active_total"] = 0
+
+        try:
+            row = await self.db.query_one("SELECT COALESCE(SUM(bits_total), 0) AS n FROM viewer_bits", [])
+            stats["bits.total"] = int(row["n"]) if row else 0
+        except Exception:
+            stats["bits.total"] = 0
+        return stats
+
     async def execute(self, data: dict, context=None):
         try:
             if context:
                 context.set_header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
                 context.set_header("Pragma", "no-cache")
                 context.set_header("Expires", "0")
-                
+
             overlay_id = data.get("id")
             try:
                 oid = int(overlay_id) if overlay_id is not None else None
@@ -48,6 +73,8 @@ class OverlayConfigPlugin(BasePlugin):
                 return {"success": False, "error": "Overlay not found"}
 
             row["config"] = json.loads(row["config"])
+            # Atomic: include stats in the config response
+            row["stats"] = await self._current_stats()
             return {"success": True, "data": row}
         except Exception as e:
             self.logger.error(f"[OverlayConfig] {e}")

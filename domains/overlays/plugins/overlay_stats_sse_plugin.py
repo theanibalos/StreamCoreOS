@@ -134,7 +134,16 @@ class OverlayStatsSsePlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"[OverlayStatsSSE] Error reloading config for {overlay_id}: {e}")
             config = {}
-        await self._broadcast({"__type": "config_updated", "overlay_id": overlay_id, "config": config})
+        
+        # We push BOTH the new config and the current stats so the frontend
+        # can map them to new element IDs instantly without flickering to "..."
+        stats = await self._current_stats()
+        await self._broadcast({
+            "__type": "config_updated", 
+            "overlay_id": overlay_id, 
+            "config": config,
+            "stats": stats
+        })
 
     async def _on_stats_updated(self, data: dict):
         # Stats collector provides authoritative follower count from Twitch API

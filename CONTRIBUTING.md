@@ -53,6 +53,27 @@ class MyPlugin(BasePlugin):
 
 Read `AI_CONTEXT.md` for the full plugin contract and available tools before writing any code.
 
+## How to add an Overlay Widget
+
+Overlay widgets are the core of the builder. Adding one involves four parts:
+
+### 1. The Component (Frontend)
+Create your widget in `StreamCoreOS-Front/src/lib/features/overlays/components/`. 
+- **Fidelity**: You can use standard pixel values (e.g., `font-size: 24px`) for a 1080p target resolution. The builder handles scaling automatically using CSS transforms, so your component will look identical in the builder and in OBS without any extra code.
+
+### 2. Registry (Frontend)
+Register your component in `StreamCoreOS-Front/src/lib/features/overlays/index.ts`. Add it to the `WIDGET_REGISTRY` object so the system knows which type maps to which Svelte file.
+
+### 3. Builder UI (Frontend)
+- Add a button for your widget in `Toolbar.svelte` to allow manual placement.
+- Add configuration fields (like Meta targets or Data Sources) in `PropertyEditor.svelte`.
+
+### 4. Data Sources (Backend/Optional)
+If your widget needs live data (like subscriber counts), add the logic in `StreamCoreOS/domains/overlays/plugins/overlay_data_plugin.py` and ensure the key matches what you use in the frontend selector.
+
+### 5. AI Awareness (Optional)
+Update the `SYSTEM_PROMPT` in `GenerateOverlayPlugin.py` so the AI assistant knows how to generate your new widget type when a user asks for it.
+
 ---
 
 ## Rules (Non-Negotiable)
