@@ -24,6 +24,12 @@ class ToolProxy:
         self._retries = retries
         self._wrapper_cache = {}
 
+    def __setattr__(self, name, value):
+        if name.startswith('_'):
+            super().__setattr__(name, value)
+        else:
+            setattr(self._tool, name, value)
+
     def __getattr__(self, name):
         if name in self._wrapper_cache:
             return self._wrapper_cache[name]

@@ -23,7 +23,7 @@ class RestoreSessionPlugin(BasePlugin):
     async def on_boot(self):
         try:
             token = await self.db.query_one(
-                "SELECT twitch_id, login, access_token FROM twitch_tokens LIMIT 1"
+                "SELECT twitch_id, login, access_token, refresh_token FROM twitch_tokens LIMIT 1"
             )
             if not token:
                 self.logger.info("[RestoreSession] No stored Twitch token found. Awaiting OAuth.")
@@ -31,7 +31,7 @@ class RestoreSessionPlugin(BasePlugin):
 
             self.logger.info(f"[RestoreSession] Restoring session for {token['login']}")
             await self.twitch.connect(
-                token["access_token"], token["twitch_id"], token["login"]
+                token["access_token"], token["refresh_token"], token["twitch_id"], token["login"]
             )
             self.logger.info(f"[RestoreSession] Session restored for {token['login']}")
         except Exception as e:

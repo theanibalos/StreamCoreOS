@@ -41,19 +41,26 @@ class TwitchTool(BaseTool):
         return "twitch"
 
     @property
-    def on_auth_fail(self):
-        """Getter for the auth failure hook."""
-        return self._api.on_auth_fail if self._api else None
+    def on_token_refreshed(self):
+        """Getter for the token refreshed callback."""
+        return self._api.on_token_refreshed if self._api else None
 
-    @on_auth_fail.setter
-    def on_auth_fail(self, callback):
-        """
-        Setter for the auth failure hook.
-        The callback should be: async def hook() -> str | None
-        It must return the new access_token or None if refresh failed.
-        """
+    @on_token_refreshed.setter
+    def on_token_refreshed(self, callback):
+        """Setter for the token refreshed callback."""
         if self._api:
-            self._api.on_auth_fail = callback
+            self._api.on_token_refreshed = callback
+
+    @property
+    def on_auth_failed(self):
+        """Getter for the auth failed callback."""
+        return self._api.on_auth_failed if self._api else None
+
+    @on_auth_failed.setter
+    def on_auth_failed(self, callback):
+        """Setter for the auth failed callback."""
+        if self._api:
+            self._api.on_auth_failed = callback
 
     def __init__(self) -> None:
         self._client_id: str | None = None
@@ -69,6 +76,7 @@ class TwitchTool(BaseTool):
         self._pending_states: set[str] = set()
         # Active session — populated on connect()
         self._access_token: str | None = None
+        self._refresh_token: str | None = None
         self._broadcaster_id: str | None = None
         self._login: str | None = None
         self._available = False
@@ -95,9 +103,13 @@ class TwitchTool(BaseTool):
         self._available = True
         print("[TwitchTool] Ready.")
 
-    async def update_access_token(self, new_token: str) -> None:
+    async def update_access_token(self, new_token: str, new_refresh: str | None = None) -> None:
         """Update the internal access token for the active session."""
         self._access_token = new_token
+        if new_refresh:
+            self._refresh_token = new_refresh
+            if self._api:
+                self._api._refresh_token = new_refresh
         # If EventSub is active, it might need the new token for reconnections
         if self._eventsub:
             self._eventsub._access_token = new_token
@@ -216,7 +228,7 @@ class TwitchTool(BaseTool):
     # ── Connection API ────────────────────────────────────────────────
 
     async def connect(
-        self, access_token: str, broadcaster_id: str, twitch_login: str
+        self, access_token: str, refresh_token: str, broadcaster_id: str, twitch_login: str
     ) -> None:
         """
         Connect the EventSub WebSocket and the IRC chat.
@@ -226,13 +238,17 @@ class TwitchTool(BaseTool):
         once the EventSub session is established.
 
         access_token:   User's OAuth access token.
+        refresh_token:  User's OAuth refresh token.
         broadcaster_id: Twitch user ID (numeric string) of the streamer.
         twitch_login:   Twitch login name (lowercase) — used as the IRC nick.
         """
         self._check_available()
         self._access_token = access_token
+        self._refresh_token = refresh_token
         self._broadcaster_id = broadcaster_id
         self._login = twitch_login
+        if self._api:
+            self._api._refresh_token = refresh_token
         await self._eventsub.connect(access_token, broadcaster_id)
 
     async def disconnect(self) -> None:
@@ -240,18 +256,22 @@ class TwitchTool(BaseTool):
         if self._eventsub:
             await self._eventsub.disconnect()
         self._access_token = None
+        self._refresh_token = None
         self._broadcaster_id = None
         self._login = None
+        if self._api:
+            self._api._refresh_token = None
 
     def get_session(self) -> dict | None:
         """
         Returns the current active session or None if not connected.
-        Keys: access_token, broadcaster_id, login
+        Keys: access_token, refresh_token, broadcaster_id, login
         """
         if not self._access_token:
             return None
         return {
             "access_token": self._access_token,
+            "refresh_token": self._refresh_token,
             "broadcaster_id": self._broadcaster_id,
             "login": self._login,
         }
@@ -361,8 +381,10 @@ class TwitchTool(BaseTool):
               Get the authenticated user's Twitch profile {id, login, display_name, ...}
 
         CONNECTION:
-          - await connect(access_token, broadcaster_id, twitch_login):
+          - await connect(access_token, refresh_token, broadcaster_id, twitch_login):
               Connect EventSub WebSocket + IRC chat. Creates all registered subscriptions.
+          - await update_access_token(new_token, new_refresh_token?):
+              Update the active session tokens in memory without disconnecting EventSub.
           - await disconnect(): Disconnect everything.
 
         CHAT:

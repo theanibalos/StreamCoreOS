@@ -67,8 +67,11 @@ class TwitchEventSubClient:
 
     # ── Internal WebSocket loop ───────────────────────────────────────
 
-    async def _run(self, url: str) -> None:
+    async def _run(self, initial_url: str) -> None:
+        url = initial_url
+        is_reconnect = False
         retry_delay = 1
+        
         while True:
             try:
                 async with websockets.connect(url) as ws:
@@ -81,10 +84,15 @@ class TwitchEventSubClient:
                             self._session_id = msg["payload"]["session"]["id"]
                             self._connected = True
                             print(f"[TwitchEventSub] Connected — session_id={self._session_id}")
-                            await self._create_subscriptions()
+                            
+                            if is_reconnect:
+                                print("[TwitchEventSub] Reconnected gracefully (subscriptions preserved by Twitch).")
+                                is_reconnect = False
+                            else:
+                                await self._create_subscriptions()
 
                         elif msg_type == "session_keepalive":
-                            pass  # connection is alive, nothing to do
+                            pass
 
                         elif msg_type == "notification":
                             await self._dispatch(msg["payload"])
@@ -92,23 +100,30 @@ class TwitchEventSubClient:
                         elif msg_type == "session_reconnect":
                             new_url = msg["payload"]["session"]["reconnect_url"]
                             print(f"[TwitchEventSub] Reconnecting to {new_url}")
-                            # Connect to new URL while old one is still open, then close old
-                            asyncio.create_task(self._run(new_url))
-                            return
+                            url = new_url
+                            is_reconnect = True
+                            # Breaking the async for closes the current WS and continues the while loop
+                            break
 
                         elif msg_type == "revocation":
                             sub_type = msg["payload"]["subscription"]["type"]
                             reason = msg["payload"]["subscription"]["status"]
                             print(f"[TwitchEventSub] Subscription revoked: {sub_type} ({reason})")
 
+                    # If we reached here without a break (e.g. WS closed normally), 
+                    # we should probably fall back to the default URL
+                    if not is_reconnect:
+                        url = EVENTSUB_WS_URL
+
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 self._connected = False
+                is_reconnect = False
                 print(f"[TwitchEventSub] Connection error: {e}. Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
-                url = EVENTSUB_WS_URL  # reconnect URLs are one-time use — always fall back
+                url = EVENTSUB_WS_URL
 
     async def _create_subscriptions(self) -> None:
         for sub in self._subscriptions:

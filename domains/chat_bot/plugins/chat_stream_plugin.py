@@ -40,7 +40,10 @@ class ChatStreamPlugin(BasePlugin):
         self._queues.append(queue)
         try:
             while True:
-                msg = await queue.get()
-                yield f"data: {json.dumps(msg)}\n\n"
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
         finally:
             self._queues.remove(queue)

@@ -4,7 +4,9 @@ from core.base_plugin import BasePlugin
 
 
 class AuthStatusData(BaseModel):
+    authenticated: bool
     connected: bool
+    connecting: bool
     login: Optional[str] = None
     broadcaster_id: Optional[str] = None
 
@@ -35,19 +37,29 @@ class TwitchAuthStatusPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             session = self.twitch.get_session()
-            if session and self.twitch.is_eventsub_connected():
+            if not session:
                 return {
                     "success": True,
                     "data": {
-                        "connected": True,
+                        "authenticated": False,
+                        "connected": False,
                         "connecting": False,
-                        "login": session["login"],
-                        "broadcaster_id": session["broadcaster_id"],
                     },
                 }
-            if self.twitch.is_connecting():
-                return {"success": True, "data": {"connected": False, "connecting": True}}
-            return {"success": True, "data": {"connected": False, "connecting": False}}
+
+            is_connected = self.twitch.is_eventsub_connected()
+            is_connecting = self.twitch.is_connecting()
+
+            return {
+                "success": True,
+                "data": {
+                    "authenticated": True,
+                    "connected": is_connected,
+                    "connecting": is_connecting,
+                    "login": session["login"],
+                    "broadcaster_id": session["broadcaster_id"],
+                },
+            }
         except Exception as e:
             self.logger.error(f"[TwitchAuthStatus] {e}")
             return {"success": False, "error": str(e)}

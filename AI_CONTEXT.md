@@ -278,8 +278,10 @@ Twitch Tool (twitch):
               Get the authenticated user's Twitch profile {id, login, display_name, ...}
 
         CONNECTION:
-          - await connect(access_token, broadcaster_id, twitch_login):
+          - await connect(access_token, refresh_token, broadcaster_id, twitch_login):
               Connect EventSub WebSocket + IRC chat. Creates all registered subscriptions.
+          - await update_access_token(new_token, new_refresh_token?):
+              Update the active session tokens in memory without disconnecting EventSub.
           - await disconnect(): Disconnect everything.
 
         CHAT:
@@ -356,6 +358,22 @@ Logging Tool (logger):
                 Use it to attribute errors to specific plugins for health tracking.
 ```
 
+### 🔧 Tool: `state` (Status: ✅)
+```text
+In-Memory State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
+        - CAPABILITIES:
+            - set(key, value, namespace='default'): Store a value.
+            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
+            - has(key, namespace='default'): Returns True if key exists.
+            - keys(namespace='default'): Returns list of all keys in the namespace.
+            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
+            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
+            - delete(key, namespace='default'): Delete a key (no-op if missing).
+            - clear(namespace='default'): Remove all keys in the namespace.
+```
+
 ### 🔧 Tool: `registry` (Status: ✅)
 ```text
 Systems Registry Tool (registry):
@@ -390,22 +408,6 @@ Systems Registry Tool (registry):
             - update_tool_status(name, status, message=None): Manually override a tool's health status.
                 status: "OK" | "FAIL" | "DEAD".
                 Intended for health-check plugins that verify tools proactively.
-```
-
-### 🔧 Tool: `state` (Status: ✅)
-```text
-In-Memory State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
-        - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
-            - has(key, namespace='default'): Returns True if key exists.
-            - keys(namespace='default'): Returns list of all keys in the namespace.
-            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
-            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
-            - delete(key, namespace='default'): Delete a key (no-op if missing).
-            - clear(namespace='default'): Remove all keys in the namespace.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
@@ -576,14 +578,6 @@ TTS Tool (tts):
 - **Dependencies**: config, db, event_bus, http, logger, scheduler, twitch
 - **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchLogoutPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchScopesPlugin, TwitchTokenRefreshPlugin
 
-### `twitch_redemptions`
-- **Table `redemption`**: reward_title (str), user_id (str), user_name (str), redeemed_at (datetime | None)
-- **Endpoints**: none
-- **Events emitted**: none
-- **Events consumed**: none
-- **Dependencies**: http_client, logger, twitch
-- **Plugins**: HackThePlanetPlugin
-
 ### `viewers`
 - **Table `viewer`**: twitch_id (str), login (str), display_name (str), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
 - **Endpoints**: DELETE /api/viewers/regulars/{twitch_id}, GET /api/viewers, GET /api/viewers/leaderboard, GET /api/viewers/regulars, GET /api/viewers/{login}, POST /api/viewers/regulars, POST /api/viewers/{twitch_id}/points
@@ -591,4 +585,12 @@ TTS Tool (tts):
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, twitch
 - **Plugins**: AddRegularPlugin, AdjustPointsPlugin, GetViewerPlugin, LeaderboardPlugin, ListRegularsPlugin, ListViewersPlugin, RegularsCommandPlugin, RemoveRegularPlugin, ViewerActivityPlugin
+
+### `webhooks`
+- **Table `webhook`**: name (str), url (str), method (str), headers (Optional[str]), body_template (Optional[str]), trigger_type (str  # "command" or "event"), trigger_value (str  # command name or event bus pattern), filter_field (Optional[str]), filter_value (Optional[str]), enabled (bool), created_at (Optional[str]), updated_at (Optional[str])
+- **Endpoints**: DELETE /api/webhooks/{webhook_id}, GET /api/webhooks, POST /api/webhooks, POST /api/webhooks/test, PUT /api/webhooks/{webhook_id}
+- **Events emitted**: none
+- **Events consumed**: *, chat.command.executed
+- **Dependencies**: db, event_bus, http, http_client, logger
+- **Plugins**: CreateWebhookPlugin, DeleteWebhookPlugin, ListWebhooksPlugin, TestWebhookPlugin, UpdateWebhookPlugin, WebhookExecutorPlugin
 

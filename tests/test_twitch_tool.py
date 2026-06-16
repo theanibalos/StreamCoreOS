@@ -124,21 +124,24 @@ class TestSessionManagement:
 
     def test_get_session_returns_data_after_connect(self, tool):
         tool._access_token = "tok123"
+        tool._refresh_token = "ref456"
         tool._broadcaster_id = "99999"
         tool._login = "streamer"
 
         session = tool.get_session()
         assert session == {
             "access_token": "tok123",
+            "refresh_token": "ref456",
             "broadcaster_id": "99999",
             "login": "streamer",
         }
 
     @pytest.mark.anyio
     async def test_connect_stores_session(self, tool):
-        await tool.connect("mytoken", "12345", "mylogin")
+        await tool.connect("mytoken", "myrefreshtoken", "12345", "mylogin")
 
         assert tool._access_token == "mytoken"
+        assert tool._refresh_token == "myrefreshtoken"
         assert tool._broadcaster_id == "12345"
         assert tool._login == "mylogin"
         tool._eventsub.connect.assert_called_once_with("mytoken", "12345")

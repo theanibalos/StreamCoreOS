@@ -97,9 +97,16 @@ class SubscriptionTrackerPlugin(BasePlugin):
         try:
             previous_tier = await self._current_tier(twitch_id)
             event_type = "tier_change" if (previous_tier and previous_tier != tier) else "subscribe"
+            
+            # Logic: If they sub at T2 or T3, they definitely aren't Prime anymore.
+            # If it's T1, we don't clear is_prime yet (could be a false negative from a future sync).
+            # The chat notification will set is_prime=1 if it truly is Prime.
+            is_prime_update = ""
+            if tier in ("2000", "3000"):
+                is_prime_update = ", is_prime = 0"
 
             await self.db.execute(
-                """INSERT INTO subscribers
+                f"""INSERT INTO subscribers
                        (twitch_id, login, display_name, tier, is_gift, cumulative_months, is_active)
                    VALUES ($1,$2,$3,$4,$5,1,1)
                    ON CONFLICT(twitch_id) DO UPDATE SET
@@ -108,7 +115,8 @@ class SubscriptionTrackerPlugin(BasePlugin):
                        tier         = excluded.tier,
                        is_gift      = excluded.is_gift,
                        is_active    = 1,
-                       last_sub_at  = datetime('now')""",
+                       last_sub_at  = datetime('now')
+                       {is_prime_update}""",
                 [twitch_id, login, display_name, tier, 1 if is_gift else 0],
             )
 
@@ -141,8 +149,13 @@ class SubscriptionTrackerPlugin(BasePlugin):
             previous_tier = await self._current_tier(twitch_id)
             event_type = "tier_change" if (previous_tier and previous_tier != tier) else "resub"
 
+            # Logic: If they resub at T2 or T3, they aren't Prime.
+            is_prime_update = ""
+            if tier in ("2000", "3000"):
+                is_prime_update = ", is_prime = 0"
+
             await self.db.execute(
-                """INSERT INTO subscribers
+                f"""INSERT INTO subscribers
                        (twitch_id, login, display_name, tier, cumulative_months, streak_months, is_active)
                    VALUES ($1,$2,$3,$4,$5,$6,1)
                    ON CONFLICT(twitch_id) DO UPDATE SET
@@ -152,7 +165,8 @@ class SubscriptionTrackerPlugin(BasePlugin):
                        cumulative_months = excluded.cumulative_months,
                        streak_months     = excluded.streak_months,
                        is_active         = 1,
-                       last_sub_at       = datetime('now')""",
+                       last_sub_at       = datetime('now')
+                       {is_prime_update}""",
                 [twitch_id, login, display_name, tier, cumulative_months, streak_months],
             )
 

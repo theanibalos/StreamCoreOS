@@ -160,9 +160,17 @@ class EventBusTool(BaseTool):
         all_callbacks = direct_cbs + wildcard_cbs
         self._record_trace(event_id, parent_id, event_name, emitter, data, all_callbacks)
 
-        for cb in all_callbacks:
+        for cb in direct_cbs:
             task = asyncio.create_task(
                 self._dispatch(cb, data, event_name, event_id)
+            )
+            self._monitor_task(task, event_name, cb)
+
+        # Wildcard callbacks get enriched data with _event_type
+        wildcard_data = {**data, "_event_type": event_name} if isinstance(data, dict) else data
+        for cb in wildcard_cbs:
+            task = asyncio.create_task(
+                self._dispatch(cb, wildcard_data, event_name, event_id)
             )
             self._monitor_task(task, event_name, cb)
 
@@ -198,9 +206,10 @@ class EventBusTool(BaseTool):
                 self._monitor_task(task, event_name, cb)
 
             # Wildcard subscribers observe only — their return value is ignored
+            wildcard_data = {**data, "_event_type": event_name} if isinstance(data, dict) else data
             for cb in wildcard_cbs:
                 task = asyncio.create_task(
-                    self._dispatch(cb, data, event_name, event_id)
+                    self._dispatch(cb, wildcard_data, event_name, event_id)
                 )
                 self._monitor_task(task, event_name, cb)
 

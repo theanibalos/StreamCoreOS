@@ -23,8 +23,9 @@ class TwitchApiClient:
         self._app_token: str | None = None
         self._app_token_expires: datetime | None = None
         self._http: httpx.AsyncClient | None = None
-        # Hook for reactive refresh: async def hook() -> str | None (returns new access_token)
-        self.on_auth_fail = None
+        self._refresh_token: str | None = None
+        self.on_token_refreshed = None
+        self.on_auth_failed = None
 
     async def start(self) -> None:
         self._http = httpx.AsyncClient(timeout=30.0)
@@ -145,13 +146,31 @@ class TwitchApiClient:
         url = f"{self.HELIX_BASE}{endpoint}"
         resp = await self._http.request(method, url, **kwargs)
 
-        if resp.status_code == 401 and user_token and self.on_auth_fail:
-            # Token expired? Ask the hook for a new one
-            new_token = await self.on_auth_fail()
-            if new_token:
+        if resp.status_code == 401 and user_token and self._refresh_token:
+            # Token expired? Try to refresh itself autonomously
+            try:
+                new_tokens = await self.refresh_user_token(self._refresh_token)
+                new_access = new_tokens["access_token"]
+                new_refresh = new_tokens["refresh_token"]
+                expires_in = new_tokens.get("expires_in", 14400)
+
+                # Update in-memory state
+                self._refresh_token = new_refresh
+
+                # Notify listeners to persist new tokens
+                if self.on_token_refreshed:
+                    await self.on_token_refreshed(new_access, new_refresh, expires_in)
+
                 # Update headers and retry once
-                kwargs["headers"] = self._user_headers(new_token)
+                kwargs["headers"] = self._user_headers(new_access)
                 resp = await self._http.request(method, url, **kwargs)
+            except Exception as e:
+                # If refresh fails terminally, notify failure
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status in (400, 401) or "invalid_grant" in str(e).lower():
+                    if self.on_auth_failed:
+                        await self.on_auth_failed()
+                raise e
 
         resp.raise_for_status()
         return resp

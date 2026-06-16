@@ -97,7 +97,10 @@ class DashboardAlertsPlugin(BasePlugin):
         self._queues.append(queue)
         try:
             while True:
-                alert = await queue.get()
-                yield f"data: {json.dumps(alert)}\n\n"
+                try:
+                    alert = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    yield f"data: {json.dumps(alert)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
         finally:
             self._queues.remove(queue)

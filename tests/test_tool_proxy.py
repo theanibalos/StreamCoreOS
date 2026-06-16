@@ -127,3 +127,21 @@ def test_container_metrics_sink():
     history = container.get_metrics()
     assert len(history) == 1
     assert history[0]["method"] == "do_work"
+
+
+def test_proxy_setattr_delegation(registry):
+    class SimpleTool:
+        name = "simple"
+        def __init__(self):
+            self.value = 42
+
+    tool = SimpleTool()
+    proxy = ToolProxy(tool, registry)
+
+    # Set attribute on proxy
+    proxy.value = 100
+
+    # Ensure it was set on the underlying tool instance
+    assert tool.value == 100
+    # Ensure getting the attribute via proxy also reflects the new value
+    assert proxy.value == 100

@@ -30,6 +30,9 @@ class SyncSubscribersPlugin(BasePlugin):
         access_token = session["access_token"]
 
         try:
+            # First, mark everyone as inactive. We will re-activate those found in the API.
+            await self.db.execute("UPDATE subscribers SET is_active = 0")
+            
             total = 0
             cursor = None
 
@@ -44,11 +47,11 @@ class SyncSubscribersPlugin(BasePlugin):
 
                 subs = resp.get("data", [])
                 for sub in subs:
-                    tier = sub.get("tier", "1000")
-                    is_gift = 1 if sub.get("is_gift", False) else 0
-                    is_prime = 1 if tier == "Prime" else 0
-                    if tier == "Prime":
-                        tier = "1000"
+                    # Helix API returns "Prime" in the tier field for Prime subs.
+                    # We normalize it to "1000" but set the is_prime flag.
+                    raw_tier = sub.get("tier", "1000")
+                    is_prime = 1 if raw_tier == "Prime" else 0
+                    tier = "1000" if raw_tier == "Prime" else raw_tier
 
                     await self.db.execute(
                         """INSERT INTO subscribers
@@ -58,6 +61,7 @@ class SyncSubscribersPlugin(BasePlugin):
                                login        = excluded.login,
                                display_name = excluded.display_name,
                                tier         = excluded.tier,
+                               is_prime     = CASE WHEN subscribers.is_prime = 1 THEN 1 ELSE excluded.is_prime END,
                                is_gift      = excluded.is_gift,
                                is_active    = 1""",
                         [
@@ -66,7 +70,7 @@ class SyncSubscribersPlugin(BasePlugin):
                             sub["user_name"],
                             tier,
                             is_prime,
-                            is_gift,
+                            1 if sub.get("is_gift") else 0,
                         ],
                     )
                     total += 1
@@ -76,9 +80,9 @@ class SyncSubscribersPlugin(BasePlugin):
                 if not cursor or not subs:
                     break
 
-            self.logger.info(f"[SyncSubscribers] synced {total} subscribers")
+            self.logger.info(f"[SyncSubscribers] Authoritative sync complete: {total} active subscribers.")
             return {"success": True, "data": {"synced": total}}
 
         except Exception as e:
-            self.logger.error(f"[SyncSubscribers] {e}")
+            self.logger.error(f"[SyncSubscribers] Sync failed: {e}")
             return {"success": False, "error": str(e)}

@@ -93,7 +93,7 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
                 )
 
             # Connect EventSub + IRC
-            await self.twitch.connect(access_token, twitch_id, login)
+            await self.twitch.connect(access_token, refresh_token, twitch_id, login)
             self.logger.info(f"[TwitchAuth] Connected as {display_name} ({login})")
 
             frontend_url = self.config.get("FRONTEND_URL", "/")
