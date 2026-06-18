@@ -19,5 +19,5 @@ class TwitchEventBridgePlugin(BasePlugin):
         event_type = event_data.get("_event_type", "twitch.event")
         # Extract the metadata tag and publish clean data
         clean_data = {k: v for k, v in event_data.items() if k != "_event_type"}
-        self.logger.debug(f"[TwitchEventBridge] Forwarding {event_type} to EventBus")
+        self.logger.info(f"[TwitchEventBridge] Forwarding {event_type} to EventBus")
         await self.bus.publish(event_type, clean_data)
