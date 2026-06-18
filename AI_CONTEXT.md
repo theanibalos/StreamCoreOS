@@ -576,7 +576,7 @@ TTS Tool (tts):
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, scheduler, twitch
-- **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchLogoutPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchScopesPlugin, TwitchTokenRefreshPlugin
+- **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchEventBridgePlugin, TwitchLogoutPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchScopesPlugin, TwitchTokenRefreshPlugin
 
 ### `viewers`
 - **Table `viewer`**: twitch_id (str), login (str), display_name (str), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
