@@ -27,7 +27,8 @@ class TtsListenerPlugin(BasePlugin):
         await self.bus.subscribe("chat.message.received", self.on_message)
         self.logger.info("[TTS] Listener ready — waiting for !tts commands.")
 
-    async def on_message(self, data: dict):
+    async def on_message(self, event):
+        data = event.payload
         text_raw: str = data.get("message", "")
         if not text_raw.lower().startswith("!tts "):
             return

@@ -69,7 +69,8 @@ class ChatCommandHandlerPlugin(BasePlugin):
         self.twitch.require_scopes(["moderator:read:followers"])
         await self.bus.subscribe("chat.command.received", self._handle)
 
-    async def _handle(self, data: dict):
+    async def _handle(self, event):
+        data = event.payload
         command_name = data.get("command", "").lower()
         user_id = data.get("user_id", "")
         display_name = data.get("display_name", "")
@@ -89,29 +90,21 @@ class ChatCommandHandlerPlugin(BasePlugin):
 
             # Check per-user cooldown
             user_cooldown_key = f"cmd_cooldown:{command_name}:{user_id}"
-            if self.state.get(user_cooldown_key, namespace="chat_bot"):
+            if await self.state.get(user_cooldown_key, namespace="chat_bot"):
                 return
 
             # Check global cooldown
             global_cooldown_key = f"cmd_global:{command_name}"
-            if self.state.get(global_cooldown_key, namespace="chat_bot"):
+            if await self.state.get(global_cooldown_key, namespace="chat_bot"):
                 return
 
-            # Arm cooldowns
-            import asyncio
-            loop = asyncio.get_event_loop()
+            # Arm cooldowns via native TTL (state tool now supports it) instead
+            # of call_later + lambda — the lambda would return an un-awaited
+            # coroutine now that state.set/delete are async.
             if cmd["cooldown_s"] > 0:
-                self.state.set(user_cooldown_key, True, namespace="chat_bot")
-                loop.call_later(
-                    cmd["cooldown_s"],
-                    lambda: self.state.delete(user_cooldown_key, namespace="chat_bot"),
-                )
+                await self.state.set(user_cooldown_key, True, namespace="chat_bot", ttl=cmd["cooldown_s"])
             if cmd["global_cooldown_s"] > 0:
-                self.state.set(global_cooldown_key, True, namespace="chat_bot")
-                loop.call_later(
-                    cmd["global_cooldown_s"],
-                    lambda: self.state.delete(global_cooldown_key, namespace="chat_bot"),
-                )
+                await self.state.set(global_cooldown_key, True, namespace="chat_bot", ttl=cmd["global_cooldown_s"])
 
             # Increment use_count and get the new value
             new_count = await self.db.execute(
@@ -159,7 +152,7 @@ class ChatCommandHandlerPlugin(BasePlugin):
             result = result.replace("{followage}", await self._get_followage(data))
 
         if "{uptime}" in result:
-            result = result.replace("{uptime}", self._get_uptime())
+            result = result.replace("{uptime}", await self._get_uptime())
 
         if "{game}" in result or "{viewers}" in result:
             stream_info = await self._get_stream_info()
@@ -242,9 +235,9 @@ class ChatCommandHandlerPlugin(BasePlugin):
             self.logger.error(f"[CommandHandler] Followage lookup failed: {e}")
             return "unknown"
 
-    def _get_uptime(self) -> str:
+    async def _get_uptime(self) -> str:
         try:
-            started_at = self.state.get("started_at", namespace="stream_state")
+            started_at = await self.state.get("started_at", namespace="stream_state")
             if not started_at:
                 return "offline"
             started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))

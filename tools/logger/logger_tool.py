@@ -1,3 +1,30 @@
+"""
+Logger Tool — Reference Implementation for Logging in MicroCoreOS
+==================================================================
+
+This is the REFERENCE IMPLEMENTATION for logging tools. Any replacement
+(structured JSON, Loki, Datadog, ...) MUST follow this contract and register
+under the same injection name: "logger".
+
+PUBLIC CONTRACT (what plugins use):
+────────────────────────────────────────────────────────────────────────────────
+    logger.info("message")      # sync, fire-and-forget
+    logger.error("message")
+    logger.warning("message")
+    logger.add_sink(callback)   # callback(level, message, timestamp, identity)
+
+REPLACEMENT STANDARD (plugins unaffected):
+────────────────────────────────────────────────────────────────────────────────
+    1. name = "logger".
+    2. info/error/warning MUST stay sync and MUST NOT block: logging is called
+       from hot paths. A remote backend (Loki, Datadog) must enqueue locally
+       and ship from a background task — never a network call per log line.
+    3. Attribute every record with current_identity_var (who logged it) —
+       health tracking and per-plugin error attribution depend on it.
+    4. Sinks: keep the add_sink() pattern with the same 4-arg signature.
+       Sink failures must be swallowed (never let observability crash business).
+"""
+
 from core.base_tool import BaseTool
 from core.context import current_identity_var
 import datetime

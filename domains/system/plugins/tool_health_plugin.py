@@ -11,8 +11,8 @@ class ToolHealthPlugin(BasePlugin):
     Interval is controlled by the HEALTH_CHECK_INTERVAL env var (default: 30s).
     """
 
-    def __init__(self, db, registry, logger, config):
-        self.db = db
+    def __init__(self, container, registry, logger, config):
+        self.container = container
         self.registry = registry
         self.logger = logger
         self.config = config
@@ -35,7 +35,10 @@ class ToolHealthPlugin(BasePlugin):
             await asyncio.sleep(interval)
 
     async def _check_all(self):
-        await self._check("db", self.db.health_check)
+        for tool_name in self.container.list_tools():
+            tool = self.container.get(tool_name)
+            if hasattr(tool, "health_check") and callable(tool.health_check):
+                await self._check(tool_name, tool.health_check)
 
     async def _check(self, tool_name: str, health_fn):
         try:

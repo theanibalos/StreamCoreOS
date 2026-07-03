@@ -41,7 +41,8 @@ class TtsVoiceCommandPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("chat.message.received", self.on_message)
 
-    async def on_message(self, data: dict):
+    async def on_message(self, event):
+        data = event.payload
         text: str = data.get("message", "").strip()
         if not text.lower().startswith("!voz"):
             return

@@ -5,8 +5,6 @@ from pydantic import BaseModel
 from core.base_plugin import BasePlugin
 
 
-# ── Modelos de Datos ─────────────────────────────────────────────────────────
-
 class EventEntry(BaseModel):
     event: str
     subscribers: list[str]
@@ -22,13 +20,10 @@ class SystemEventsResponse(BaseModel):
     error: Optional[str] = None
 
 
-# ── Plugin ───────────────────────────────────────────────────────────────────
-
 class SystemEventsPlugin(BasePlugin):
     """
     Exposes the system's event topology and execution statistics.
-    Returns a map of all known events, who subscribes to them, 
-    who emitted them last, and how many times they fired.
+    Returns a map of all known events, their subscribers, and firing frequency.
     """
 
     def __init__(self, http, event_bus):
@@ -65,23 +60,24 @@ class SystemEventsPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             subscribers = self.event_bus.get_subscribers()
-            trace = self.event_bus.get_trace_history()
+            history = self.event_bus.get_trace_history()
 
-            # Build per-event stats from trace history
             stats: dict[str, dict] = {}
-            for record in trace:
-                name = record["event"]
-                # Skip internal RPC reply channels
+            for record in history:
+                # The bus logs one "published" node plus one "delivered" node
+                # per subscriber; only publications count as firings.
+                if record.kind != "published":
+                    continue
+                name = record.envelope.event
                 if name.startswith("_reply."):
                     continue
 
                 if name not in stats:
                     stats[name] = {"emitters": set(), "count": 0}
 
-                stats[name]["emitters"].add(record["emitter"])
+                stats[name]["emitters"].add(record.envelope.emitter)
                 stats[name]["count"] += 1
 
-            # Merge: static scan + runtime subscribers + trace history
             all_events = self._scan_all_published_events() | set(subscribers.keys()) | set(stats.keys())
             
             events = [
@@ -99,4 +95,4 @@ class SystemEventsPlugin(BasePlugin):
             
         except Exception as e:
             print(f"[SystemEvents] Error: {e}")
-            return {"success": False, "error": "Internal error"}
+            return {"success": False, "error": "Could not retrieve events"}

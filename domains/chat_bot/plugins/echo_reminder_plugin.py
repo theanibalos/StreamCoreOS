@@ -23,7 +23,8 @@ class EchoReminderPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("chat.command.received", self._on_command)
 
-    async def _on_command(self, data: dict):
+    async def _on_command(self, event):
+        data = event.payload
         command = data.get("command", "").lower()
         if command not in ["!echo", "!reminder"]:
             return
@@ -37,7 +38,7 @@ class EchoReminderPlugin(BasePlugin):
         if not is_permitted:
             return
 
-        current_count = self.state.get("echo_count", 0, namespace="echo")
+        current_count = await self.state.get("echo_count", 0, namespace="echo")
         if current_count >= 3:
             await self.twitch.send_message(
                 data["channel"],
@@ -66,15 +67,15 @@ class EchoReminderPlugin(BasePlugin):
         job_id = f"echo_{datetime.now().timestamp()}"
 
         # Track in state so the list endpoint can expose it
-        active = self.state.get("active_reminders", {}, namespace="echo")
+        active = await self.state.get("active_reminders", {}, namespace="echo")
         active[job_id] = {
             "message": message,
             "run_at": run_at.isoformat(),
             "scheduled_by": display_name,
             "channel": channel,
         }
-        self.state.set("active_reminders", active, namespace="echo")
-        self.state.set("echo_count", current_count + 1, namespace="echo")
+        await self.state.set("active_reminders", active, namespace="echo")
+        await self.state.set("echo_count", current_count + 1, namespace="echo")
 
         async def _fire():
             await self._send_echo(channel, message, job_id)
@@ -93,11 +94,11 @@ class EchoReminderPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"[Echo] Error sending message: {e}")
         finally:
-            active = self.state.get("active_reminders", {}, namespace="echo")
+            active = await self.state.get("active_reminders", {}, namespace="echo")
             active.pop(job_id, None)
-            self.state.set("active_reminders", active, namespace="echo")
-            count = self.state.get("echo_count", 0, namespace="echo")
-            self.state.set("echo_count", max(0, count - 1), namespace="echo")
+            await self.state.set("active_reminders", active, namespace="echo")
+            count = await self.state.get("echo_count", 0, namespace="echo")
+            await self.state.set("echo_count", max(0, count - 1), namespace="echo")
 
     def _parse_duration(self, duration_str: str) -> Optional[int]:
         match = self._duration_regex.match(duration_str.lower())

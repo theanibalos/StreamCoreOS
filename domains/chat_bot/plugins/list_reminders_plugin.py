@@ -34,7 +34,7 @@ class ListRemindersPlugin(BasePlugin):
 
     async def execute(self, data: dict, context=None):
         try:
-            active = self.state.get("active_reminders", {}, namespace="echo")
+            active = await self.state.get("active_reminders", {}, namespace="echo")
             reminders = [
                 {"job_id": job_id, **info}
                 for job_id, info in active.items()

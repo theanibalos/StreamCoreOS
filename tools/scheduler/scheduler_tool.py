@@ -48,6 +48,38 @@ CRON EXPRESSION QUICK REFERENCE:
     "0 0 1 * *"         — midnight on the 1st of every month
 
 
+SCALING (Issue 19 — the Elastic Monolith singleton pattern):
+─────────────────────────────────────────────────────────────────────────
+
+    With N replicas, every replica would fire every job N times. The fix is
+    the Celery-beat pattern: the scheduler RUNS in exactly one replica.
+
+    SCHEDULER_ENABLED=true   (default) — single instance / the "beat" replica.
+    SCHEDULER_ENABLED=false  — worker replicas: plugins register their jobs
+        normally (identical code everywhere), but the scheduler never starts,
+        so nothing fires twice.
+
+    Jobs must NOT do heavy work: they publish an event and return —
+    the workers consume it with the bus's group semantics, so exactly ONE
+    worker across the fleet executes it:
+
+        # In the plugin (runs in every replica; fires only in the beat one):
+        self.scheduler.add_job("0 3 * * *", self.emit_nightly, job_id="nightly_report")
+
+        async def emit_nightly(self):
+            await self.bus.publish("jobs.nightly_report.due", {})
+
+        # Worker side (any replica — group derived automatically):
+        await self.bus.subscribe("jobs.nightly_report.due", self.run_report)
+
+    Cron jobs need NO persistence: they re-register on every boot via
+    on_boot() with a stable job_id (replace_existing avoids duplicates).
+    KNOWN LIMIT (by design): one-shots (add_one_shot) live in memory — an
+    arbitrary callable cannot survive a restart, and a tool never uses other
+    tools. Durable one-shots are composed in the PLUGIN layer (db + scheduler
+    + bus via DI): see domains/system/plugins/durable_one_shots_plugin.py,
+    usable from any domain via the bus ("system.one_shot.schedule").
+
 REPLACEMENT STANDARD (swap without changing plugins):
 ─────────────────────────────────────────────────────────────────────────
 
@@ -59,9 +91,11 @@ REPLACEMENT STANDARD (swap without changing plugins):
          add_one_shot(run_at, callback, job_id?) → str
          remove_job(job_id) → bool
          list_jobs() → list[dict]
+    4. Honor SCHEDULER_ENABLED (jobs register everywhere, fire in one place).
     Plugins do not change.
 """
 
+import os
 import uuid
 from datetime import datetime
 from typing import Callable, Optional
@@ -87,6 +121,8 @@ class SchedulerTool(BaseTool):
 
     def __init__(self) -> None:
         self._scheduler = None
+        # Issue 19: the scheduler fires in exactly ONE replica (beat role).
+        self._enabled: bool = os.getenv("SCHEDULER_ENABLED", "true").strip().lower() == "true"
 
     def setup(self) -> None:
         try:
@@ -101,8 +137,12 @@ class SchedulerTool(BaseTool):
 
     async def on_boot_complete(self, container) -> None:
         """Start the scheduler after all plugins have registered their jobs."""
-        self._scheduler.start()
         job_count = len(self._scheduler.get_jobs())
+        if not self._enabled:
+            print(f"[Scheduler] SCHEDULER_ENABLED=false — worker replica: "
+                  f"{job_count} job(s) registered but NOT started (the beat replica fires them).")
+            return
+        self._scheduler.start()
         print(f"[Scheduler] Started — {job_count} job(s) registered.")
 
     def shutdown(self) -> None:
@@ -202,7 +242,9 @@ class SchedulerTool(BaseTool):
         return [
             {
                 "id": job.id,
-                "next_run": str(job.next_run_time) if job.next_run_time else None,
+                # Jobs added before the scheduler starts (or in a worker
+                # replica, where it never starts) have no next_run_time yet.
+                "next_run": str(job.next_run_time) if getattr(job, "next_run_time", None) else None,
                 "trigger": str(job.trigger),
             }
             for job in self._scheduler.get_jobs()
@@ -224,13 +266,20 @@ class SchedulerTool(BaseTool):
                 Providing a stable job_id prevents duplicates on restart.
             - add_one_shot(run_at: datetime, callback, job_id?: str) -> str:
                 Schedule a one-time job at a specific datetime (timezone-aware).
-                Returns job_id.
+                Returns job_id. IN-MEMORY: lost if the process restarts before firing.
+                For one-shots that must survive restarts, publish to the bus:
+                "system.one_shot.schedule" (durable scheduling service, system domain).
             - remove_job(job_id: str) -> bool:
                 Remove a job by ID. Returns True if removed, False if not found.
             - list_jobs() -> list[dict]:
                 Snapshot of all scheduled jobs: [{id, next_run, trigger}].
         - REGISTER IN on_boot(): jobs are collected during on_boot(), scheduler starts
           in on_boot_complete() after all plugins have registered.
+        - SCALING (N replicas): set SCHEDULER_ENABLED=false in worker replicas — jobs
+          register everywhere but fire only in the single "beat" replica. Jobs should
+          publish an event to the bus and return; workers consume it (group semantics
+          guarantee exactly one execution across the fleet). Do heavy work in the
+          worker, never in the job callback.
         - SWAP: replace with Celery beat by creating a new tool with name = "scheduler"
           and the same 4-method API. Plugins do not change.
         """

@@ -21,7 +21,8 @@ class ViewerActivityPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("chat.message.received", self._on_message)
 
-    async def _on_message(self, data: dict):
+    async def _on_message(self, event):
+        data = event.payload
         twitch_id = data.get("user_id", "")
         login = data.get("nick", "")
         display_name = data.get("display_name", login)

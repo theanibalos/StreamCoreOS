@@ -31,12 +31,12 @@ class TtsStreamPlugin(BasePlugin):
         )
         self.logger.info("[TTS] SSE stream ready at /tts/overlay/stream")
 
-    async def _on_audio_ready(self, data: dict):
+    async def _on_audio_ready(self, event):
         """Fan-out: push the audio event to every connected SSE client."""
         dead = []
         for q in self._queues:
             try:
-                q.put_nowait(data)
+                q.put_nowait(event.payload)
             except asyncio.QueueFull:
                 dead.append(q)
         for q in dead:

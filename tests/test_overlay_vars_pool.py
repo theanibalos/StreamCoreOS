@@ -2,8 +2,14 @@
 import json
 import asyncio
 import pytest
+from types import SimpleNamespace
 
 from domains.overlays.plugins.overlay_stream_plugin import OverlayStreamPlugin
+
+
+def _event(payload):
+    """Minimal stand-in for the event_bus EventEnvelope: only .payload is used."""
+    return SimpleNamespace(payload=payload)
 
 
 class FakeDb:
@@ -27,7 +33,7 @@ class FakeDb:
 
 
 class FakeState:
-    def get(self, key, default=None, namespace="default"):
+    async def get(self, key, default=None, namespace="default"):
         return default
 
 
@@ -40,7 +46,7 @@ class FakeBus:
 
     async def publish(self, event, data):
         for cb in self.subs.get(event, []):
-            await cb(data)
+            await cb(_event(data))
 
 
 class FakeTwitch:
@@ -131,5 +137,5 @@ def test_resolve_needs_defaults_to_nothing_when_missing():
 @pytest.mark.anyio
 async def test_ignores_invalid_vars_payload():
     plugin = make_plugin()
-    await plugin._on_vars_set("not-a-dict")
+    await plugin._on_vars_set(_event("not-a-dict"))
     assert plugin._vars == {}

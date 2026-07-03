@@ -65,7 +65,7 @@ class DashboardStatsPlugin(BasePlugin):
             session = self.twitch.get_session()
             broadcaster_id = session["broadcaster_id"] if session else None
             access_token = session["access_token"] if session else None
-            online = self.state.get("online", default=False, namespace="stream_state")
+            online = await self.state.get("online", default=False, namespace="stream_state")
 
             viewer_count = None
             follower_count = None
@@ -110,7 +110,7 @@ class DashboardStatsPlugin(BasePlugin):
                 "data": {
                     "stream": {
                         "online": online,
-                        "started_at": self.state.get("started_at", namespace="stream_state"),
+                        "started_at": await self.state.get("started_at", namespace="stream_state"),
                         "viewer_count": viewer_count,
                         "follower_count": follower_count,
                     },

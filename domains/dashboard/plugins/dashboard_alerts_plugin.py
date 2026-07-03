@@ -68,8 +68,8 @@ class DashboardAlertsPlugin(BasePlugin):
         return {"success": True, "data": {"event_type": event_type}}
 
     def _make_bus_handler(self, event_name: str):
-        async def handler(data: dict):
-            await self._push(event_name, data)
+        async def handler(event):
+            await self._push(event_name, event.payload)
         return handler
 
     async def _on_twitch_event(self, event_data: dict):

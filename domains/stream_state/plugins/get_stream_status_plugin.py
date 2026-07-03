@@ -41,13 +41,13 @@ class GetStreamStatusPlugin(BasePlugin):
 
     async def execute(self, data: dict, context=None):
         try:
-            online = self.state.get("online", default=False, namespace="stream_state")
+            online = await self.state.get("online", default=False, namespace="stream_state")
             status_data = StreamStatusData(
                 online=online,
-                session_id=self.state.get("session_id", namespace="stream_state"),
-                started_at=self.state.get("started_at", namespace="stream_state"),
-                ended_at=self.state.get("ended_at", namespace="stream_state"),
-                broadcaster_login=self.state.get("broadcaster_login", namespace="stream_state"),
+                session_id=await self.state.get("session_id", namespace="stream_state"),
+                started_at=await self.state.get("started_at", namespace="stream_state"),
+                ended_at=await self.state.get("ended_at", namespace="stream_state"),
+                broadcaster_login=await self.state.get("broadcaster_login", namespace="stream_state"),
             )
             return {
                 "success": True,

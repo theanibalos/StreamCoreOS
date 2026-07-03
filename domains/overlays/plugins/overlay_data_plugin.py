@@ -38,7 +38,7 @@ class OverlayDataPlugin(BasePlugin):
             result = {}
 
             # Stream online state
-            result["stream.online"] = self.state.get(
+            result["stream.online"] = await self.state.get(
                 "online", default=False, namespace="stream_state"
             )
 

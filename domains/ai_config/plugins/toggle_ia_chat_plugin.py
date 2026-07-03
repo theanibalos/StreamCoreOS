@@ -41,12 +41,12 @@ class ToggleIAChatPlugin(BasePlugin):
                 "SELECT chat_ia_enabled FROM ai_config WHERE id = 1"
             )
             enabled = bool(row["chat_ia_enabled"]) if row else True
-            self.state.set(_KEY, enabled, namespace=_NS)
+            await self.state.set(_KEY, enabled, namespace=_NS)
         except Exception:
-            self.state.set(_KEY, True, namespace=_NS)
+            await self.state.set(_KEY, True, namespace=_NS)
 
     async def _get(self, data: dict, context=None):
-        enabled = self.state.get(_KEY, default=True, namespace=_NS)
+        enabled = await self.state.get(_KEY, default=True, namespace=_NS)
         return {"success": True, "data": {"enabled": enabled}}
 
     async def _set(self, data: dict, context=None):
@@ -56,7 +56,7 @@ class ToggleIAChatPlugin(BasePlugin):
                 "UPDATE ai_config SET chat_ia_enabled=$1 WHERE id=1",
                 [int(req.enabled)],
             )
-            self.state.set(_KEY, req.enabled, namespace=_NS)
+            await self.state.set(_KEY, req.enabled, namespace=_NS)
             self.logger.info(f"[ToggleIAChat] chat_ia_enabled={req.enabled}")
             return {"success": True, "data": {"enabled": req.enabled}}
         except Exception as e:

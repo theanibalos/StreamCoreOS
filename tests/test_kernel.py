@@ -16,7 +16,7 @@ class DummyTool(BaseTool):
         return "dummy"
     
     async def setup(self):
-        # Simulamos un proceso asíncrono para verificar paralelismo
+        # Simulate an async process to verify parallelism
         await asyncio.sleep(0.01)
         self.ready = True
         
@@ -53,7 +53,7 @@ def test_resolve_dependencies_success(kernel):
     
     assert "dummy" in deps
     assert not missing
-    # Debería inyectarse el proxy del tool, no la instancia cruda
+    # The tool's proxy should be injected, not the raw instance
     assert deps["dummy"]._tool is dummy_instance
 
 def test_resolve_dependencies_missing(kernel):
@@ -63,7 +63,7 @@ def test_resolve_dependencies_missing(kernel):
     assert "dummy" not in deps
     assert "dummy" in missing
 
-# ─── 2. Pruebas de Ejecución (Call Maybe Async) ──────────────────────────────
+# ─── 2. Execution Tests (Call Maybe Async) ───────────────────────────────────
 
 async def test_call_maybe_async(kernel):
     def sync_fn(): 
@@ -101,15 +101,16 @@ async def test_boot_success(kernel, monkeypatch):
     assert kernel.container.registry.get_tool_status("dummy") == "OK"
     
     # Verificamos plugin
-    assert "DummyPlugin" in kernel.plugins
-    assert kernel.plugins["DummyPlugin"].booted is True
-    assert kernel.container.registry.get_system_dump()["plugins"]["DummyPlugin"]["status"] == "READY"
+    p_name = "dummy_domain.DummyPlugin"
+    assert p_name in kernel.plugins
+    assert kernel.plugins[p_name].booted is True
+    assert kernel.container.registry.get_system_dump()["plugins"][p_name]["status"] == "READY"
 
 async def test_boot_missing_dependencies(kernel, monkeypatch):
-    """Prueba que si falta un tool requerido por un plugin, este último se marca DEAD y no bloquea el boot."""
+    """Verifies that when a tool required by a plugin is missing, the plugin is marked DEAD without blocking boot."""
     
     def fake_load_modules(directory, base_class):
-        # No cargamos tools, pero sí el plugin
+        # Load the plugin but no tools
         if base_class == BaseTool:
             return []
         elif base_class == BasePlugin:
@@ -120,10 +121,11 @@ async def test_boot_missing_dependencies(kernel, monkeypatch):
     
     await kernel.boot()
     
-    assert "DummyPlugin" not in kernel.plugins
-    status = kernel.container.registry.get_system_dump()["plugins"]["DummyPlugin"]["status"]
+    p_name = "dummy_domain.DummyPlugin"
+    assert p_name not in kernel.plugins
+    status = kernel.container.registry.get_system_dump()["plugins"][p_name]["status"]
     assert status == "DEAD"
     
-    # Debería haber un error registrado en el registry
+    # An error should be recorded in the registry
     dump = kernel.container.registry.get_system_dump()
-    assert "Missing tools: dummy" in dump["plugins"]["DummyPlugin"]["error"]
+    assert "Missing tools: dummy" in dump["plugins"][p_name]["error"]

@@ -20,10 +20,10 @@ class StreamStateRpcPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("stream.status.requested", self._handle)
 
-    async def _handle(self, data: dict) -> dict:
+    async def _handle(self, event) -> dict:
         return {
-            "online": self.state.get("online", default=False, namespace="stream_state"),
-            "session_id": self.state.get("session_id", namespace="stream_state"),
-            "started_at": self.state.get("started_at", namespace="stream_state"),
-            "broadcaster_login": self.state.get("broadcaster_login", namespace="stream_state"),
+            "online": await self.state.get("online", default=False, namespace="stream_state"),
+            "session_id": await self.state.get("session_id", namespace="stream_state"),
+            "started_at": await self.state.get("started_at", namespace="stream_state"),
+            "broadcaster_login": await self.state.get("broadcaster_login", namespace="stream_state"),
         }

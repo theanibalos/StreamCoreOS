@@ -5,30 +5,39 @@ SECRET = "test-secret-key-32chars-long-ok!"
 
 
 @pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
 def tool(monkeypatch):
     monkeypatch.setenv("AUTH_SECRET_KEY", SECRET)
     return AuthTool()
 
 
-def test_hash_password_differs_from_original(tool):
-    h = tool.hash_password("password123")
+@pytest.mark.anyio
+async def test_hash_password_differs_from_original(tool):
+    h = await tool.hash_password("password123")
     assert h != "password123"
 
 
-def test_hash_password_is_salted(tool):
-    h1 = tool.hash_password("password123")
-    h2 = tool.hash_password("password123")
+@pytest.mark.anyio
+async def test_hash_password_is_salted(tool):
+    h1 = await tool.hash_password("password123")
+    h2 = await tool.hash_password("password123")
     assert h1 != h2
 
 
-def test_verify_password_correct(tool):
-    h = tool.hash_password("password123")
-    assert tool.verify_password("password123", h) is True
+@pytest.mark.anyio
+async def test_verify_password_correct(tool):
+    h = await tool.hash_password("password123")
+    assert await tool.verify_password("password123", h) is True
 
 
-def test_verify_password_wrong(tool):
-    h = tool.hash_password("password123")
-    assert tool.verify_password("wrong", h) is False
+@pytest.mark.anyio
+async def test_verify_password_wrong(tool):
+    h = await tool.hash_password("password123")
+    assert await tool.verify_password("wrong", h) is False
 
 
 def test_create_token_returns_string(tool):
@@ -43,13 +52,15 @@ def test_decode_token_returns_payload(tool):
 
 
 def test_decode_invalid_token_raises(tool):
-    with pytest.raises(Exception, match="Invalid token"):
+    from tools.auth.auth_tool import InvalidTokenError
+    with pytest.raises(InvalidTokenError, match="Invalid token"):
         tool.decode_token("token_invalido")
 
 
 def test_decode_expired_token_raises(tool):
+    from tools.auth.auth_tool import TokenExpiredError
     token = tool.create_token({"sub": "1"}, expires_delta=-1)
-    with pytest.raises(Exception, match="expired"):
+    with pytest.raises(TokenExpiredError, match="expired"):
         tool.decode_token(token)
 
 
@@ -72,7 +83,8 @@ def test_decode_token_with_wrong_signature_raises(tool):
         "completamente-diferente-secret-key-32",
         algorithm="HS256",
     )
-    with pytest.raises(Exception, match="Invalid token"):
+    from tools.auth.auth_tool import InvalidTokenError
+    with pytest.raises(InvalidTokenError, match="Invalid token"):
         tool.decode_token(fake_token)
 
 

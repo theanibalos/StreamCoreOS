@@ -4,6 +4,10 @@ Tests for EventBusTool — the system's central nervous system.
 Covers: publish/subscribe, wildcard, RPC (request/response),
 RPC timeout, failure handling, auto-unsubscribe of dead handlers,
 failure listeners, and trace history.
+
+NOTE: subscribers now receive an EventEnvelope (event.payload holds the dict
+that used to be passed directly) — updated for the MicroCoreOS sync
+(Enterprise Event Bus rewrite: Pydantic envelopes, consumer groups, DLQ).
 """
 import asyncio
 import pytest
@@ -21,24 +25,24 @@ class TestPubSub:
     @pytest.mark.anyio
     async def test_subscriber_receives_event(self, bus):
         received = []
-        async def handler(data): received.append(data)
+        async def handler(event): received.append(event.payload)
 
         await bus.subscribe("user.created", handler)
         await bus.publish("user.created", {"id": 1})
-        await asyncio.sleep(0)  # allow tasks to run
+        await asyncio.sleep(0.01)  # allow tasks to run
 
         assert received == [{"id": 1}]
 
     @pytest.mark.anyio
     async def test_multiple_subscribers_all_receive(self, bus):
         calls = []
-        async def h1(data): calls.append("h1")
-        async def h2(data): calls.append("h2")
+        async def h1(event): calls.append("h1")
+        async def h2(event): calls.append("h2")
 
         await bus.subscribe("ev", h1)
         await bus.subscribe("ev", h2)
         await bus.publish("ev", {})
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
 
         assert "h1" in calls
         assert "h2" in calls
@@ -46,7 +50,7 @@ class TestPubSub:
     @pytest.mark.anyio
     async def test_unsubscribe_stops_delivery(self, bus):
         received = []
-        async def handler(data): received.append(data)
+        async def handler(event): received.append(event.payload)
 
         await bus.subscribe("ev", handler)
         await bus.unsubscribe("ev", handler)
@@ -64,7 +68,7 @@ class TestPubSub:
     @pytest.mark.anyio
     async def test_unrelated_event_not_delivered(self, bus):
         received = []
-        async def handler(data): received.append(data)
+        async def handler(event): received.append(event.payload)
 
         await bus.subscribe("ev.a", handler)
         await bus.publish("ev.b", {"x": 1})
@@ -79,12 +83,12 @@ class TestWildcard:
     @pytest.mark.anyio
     async def test_wildcard_receives_all_events(self, bus):
         seen = []
-        async def monitor(data): seen.append(data.get("_type"))
+        async def monitor(event): seen.append(event.payload.get("_type"))
 
         await bus.subscribe("*", monitor)
         await bus.publish("a", {"_type": "a"})
         await bus.publish("b", {"_type": "b"})
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
 
         assert "a" in seen
         assert "b" in seen
@@ -94,7 +98,7 @@ class TestWildcard:
         """Wildcard subscribers must not reply to request() calls."""
         rpc_replied = []
 
-        async def wildcard_handler(data):
+        async def wildcard_handler(event):
             rpc_replied.append(True)
             return {"reply": "from wildcard"}  # this should be ignored
 
@@ -113,8 +117,8 @@ class TestWildcard:
 class TestRPC:
     @pytest.mark.anyio
     async def test_request_returns_subscriber_response(self, bus):
-        async def responder(data):
-            return {"result": data["value"] * 2}
+        async def responder(event):
+            return {"result": event.payload["value"] * 2}
 
         await bus.subscribe("math.double", responder)
         response = await bus.request("math.double", {"value": 21}, timeout=1)
@@ -129,11 +133,11 @@ class TestRPC:
     @pytest.mark.anyio
     async def test_request_first_responder_wins(self, bus):
         """First subscriber to return a value wins the RPC."""
-        async def slow(data):
+        async def slow(event):
             await asyncio.sleep(10)
             return {"from": "slow"}
 
-        async def fast(data):
+        async def fast(event):
             return {"from": "fast"}
 
         await bus.subscribe("race", slow)
@@ -145,10 +149,10 @@ class TestRPC:
     @pytest.mark.anyio
     async def test_request_subscriber_returning_none_does_not_reply(self, bus):
         """A subscriber returning None should not satisfy the request."""
-        async def silent(data):
+        async def silent(event):
             return None  # no reply
 
-        async def real(data):
+        async def real(event):
             return {"ok": True}
 
         await bus.subscribe("ev", silent)
@@ -166,8 +170,8 @@ class TestFailureHandling:
         """A subscriber that raises must not prevent other subscribers from running."""
         good_received = []
 
-        async def bad(data): raise ValueError("boom")
-        async def good(data): good_received.append(data)
+        async def bad(event): raise ValueError("boom")
+        async def good(event): good_received.append(event.payload)
 
         await bus.subscribe("ev", bad)
         await bus.subscribe("ev", good)
@@ -180,7 +184,7 @@ class TestFailureHandling:
     async def test_failure_listener_is_called_on_subscriber_error(self, bus):
         failures = []
 
-        async def bad(data): raise RuntimeError("test error")
+        async def bad(event): raise RuntimeError("test error")
         bus.add_failure_listener(lambda record: failures.append(record))
 
         await bus.subscribe("ev", bad)
@@ -196,7 +200,7 @@ class TestFailureHandling:
         """A handler that fails 5 times in a row should be auto-unsubscribed."""
         call_count = []
 
-        async def always_fails(data):
+        async def always_fails(event):
             call_count.append(1)
             raise RuntimeError("permanent failure")
 
@@ -221,7 +225,7 @@ class TestObservability:
         await asyncio.sleep(0)
 
         history = bus.get_trace_history()
-        assert any(r["event"] == "trace.test" for r in history)
+        assert any(r.envelope.event == "trace.test" for r in history)
 
     @pytest.mark.anyio
     async def test_trace_history_max_500(self, bus):
@@ -233,7 +237,7 @@ class TestObservability:
 
     @pytest.mark.anyio
     async def test_get_subscribers_reflects_current_state(self, bus):
-        async def h(data): pass
+        async def h(event): pass
 
         await bus.subscribe("my.event", h)
         subs = bus.get_subscribers()
@@ -260,5 +264,5 @@ class TestObservability:
         await asyncio.sleep(0)
 
         history = bus.get_trace_history()
-        record = next(r for r in history if r["event"] == "data.event")
-        assert set(record["payload_keys"]) == {"foo", "bar"}
+        record = next(r for r in history if r.envelope.event == "data.event")
+        assert set(record.envelope.payload.keys()) == {"foo", "bar"}

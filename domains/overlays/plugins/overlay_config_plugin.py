@@ -30,7 +30,7 @@ class OverlayConfigPlugin(BasePlugin):
 
     async def _current_stats(self) -> dict:
         stats: dict = {
-            "stream.online":   self.state.get("online", default=False, namespace="stream_state"),
+            "stream.online":   await self.state.get("online", default=False, namespace="stream_state"),
         }
         try:
             row = await self.db.query_one("SELECT viewer_count, follower_count FROM channel_stats ORDER BY id DESC LIMIT 1", [])

@@ -28,10 +28,10 @@ class ChatStreamPlugin(BasePlugin):
             tags=["Chat"],
         )
 
-    async def _on_message(self, data: dict):
+    async def _on_message(self, event):
         for queue in self._queues:
             try:
-                queue.put_nowait(data)
+                queue.put_nowait(event.payload)
             except asyncio.QueueFull:
                 pass  # slow client — drop the message
 

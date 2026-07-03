@@ -17,7 +17,8 @@ class WebhookExecutorPlugin(BasePlugin):
         await self.bus.subscribe("chat.command.executed", self._on_command)
         await self.bus.subscribe("*", self._on_event)
 
-    async def _on_command(self, data: dict):
+    async def _on_command(self, event):
+        data = event.payload
         command_name = data.get("command", "").lower()
         webhooks = await self.db.query(
             "SELECT * FROM webhooks WHERE trigger_type='command' AND trigger_value=$1 AND enabled=1",
@@ -26,8 +27,11 @@ class WebhookExecutorPlugin(BasePlugin):
         for wh in webhooks:
             asyncio.create_task(self._evaluate_and_execute(wh, data))
 
-    async def _on_event(self, data: dict):
-        event_topic = data.get("_event_type") or data.get("event_type")
+    async def _on_event(self, event):
+        data = event.payload
+        # Wildcard subscription: the envelope's own `.event` field carries the
+        # topic name now (the bus no longer injects "_event_type" into payload).
+        event_topic = event.event or data.get("_event_type") or data.get("event_type")
         if not event_topic:
             return
 

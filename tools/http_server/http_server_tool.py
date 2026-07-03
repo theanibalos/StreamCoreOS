@@ -21,9 +21,7 @@ PUBLIC CONTRACT (what plugins use):
     )
 
     # Serve static files from a directory
-    # IMPORTANT: always use /api/ prefix so the frontend Vite proxy forwards correctly.
-    # Without it, requests from the frontend will 404 in dev (and likely in prod too).
-    http.mount_static("/api/static", "./public")
+    http.mount_static("/static", "./public")
 
     # WebSocket endpoint
     http.add_ws_endpoint(
@@ -134,6 +132,13 @@ import uvicorn
 from typing import Optional, Any, Callable
 from pydantic import BaseModel
 from fastapi.exceptions import RequestValidationError
+from core.base_tool import BaseTool
+from core.context import current_identity_var, current_event_id_var
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, File, UploadFile
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 
 def _serialize(obj):
@@ -145,13 +150,6 @@ def _serialize(obj):
     if isinstance(obj, list):
         return [_serialize(i) for i in obj]
     return obj
-from core.base_tool import BaseTool
-from core.context import current_identity_var, current_event_id_var
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, File, UploadFile, Form
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.concurrency import run_in_threadpool
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -190,10 +188,17 @@ class HttpContext:
         max_age: int = 3600,
         httponly: bool = True,
         samesite: str = "lax",
-        secure: bool = False,
+        secure: bool = True,
         path: str = "/",
     ) -> None:
-        """Set a cookie on the HTTP response."""
+        """
+        Set a cookie on the HTTP response.
+        
+        Defaults:
+            httponly=True: Prevents JavaScript access (XSS protection).
+            samesite="lax": Prevents most CSRF attacks.
+            secure=True: Cookie only sent over HTTPS. Set to False for local HTTP development.
+        """
         self._cookies.append({
             "key": key,
             "value": value,
@@ -270,6 +275,18 @@ class HttpServerTool(BaseTool):
     # ── Lifecycle ────────────────────────────────────────────────────────────────
 
     async def setup(self) -> None:
+        host = os.getenv("HTTP_HOST", "127.0.0.1")
+        cors_origins_raw = os.getenv("HTTP_CORS_ORIGINS", "*")
+        
+        if host == "0.0.0.0" and cors_origins_raw == "*":
+            print("[HttpServer] ⚠️  SECURITY WARNING: Server is exposed to 0.0.0.0 with CORS '*'. "
+                  "This is insecure for production.")
+
+        # Fail-fast for weak auth key if auth is present
+        secret = os.getenv("AUTH_SECRET_KEY", "")
+        if secret and len(secret) < 32:
+            print("[HttpServer] ⚠️  SECURITY WARNING: AUTH_SECRET_KEY is too short (< 32 chars).")
+
         print(f"[HttpServer] Configuring FastAPI on port {self._port}...")
 
         @self.app.exception_handler(RequestValidationError)
@@ -347,6 +364,9 @@ class HttpServerTool(BaseTool):
           Special keys in 'data':
             - data["_auth"]: contains the payload from auth_validator if successful.
             - data["_files"]: list of FastAPI UploadFile objects (only if has_files=True).
+        - SECURITY DEFAULTS:
+            - Cookies set via context.set_cookie are 'Secure=True', 'HttpOnly=True', 'SameSite=Lax'.
+            - CSRF Guard: Mutations (POST/PUT/DELETE) using cookie auth REQUIRE 'X-Requested-With' header.
         - CAPABILITIES:
             - add_endpoint(path, method, handler, tags=None, request_model=None,
                            response_model=None, auth_validator=None, has_files=False):
@@ -354,15 +374,13 @@ class HttpServerTool(BaseTool):
                   become Form fields. To use a file: file = data["_files"][0]; 
                   await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
             - mount_static(path, directory_path): Serve static files from a directory.
-                  ALWAYS use /api/ prefix (e.g. "/api/uploads") — the frontend proxy only
-                  forwards /api/* to the backend. Without it, requests will 404 in dev.
             - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
             - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
                 Server-Sent Events. generator yields formatted strings: "data: {...}\\n\\n".
         - HttpContext CAPABILITIES (inside handler):
             - context.set_status(code: int): Override HTTP status (default: 200).
             - context.redirect(url: str, status=302): Redirect to another URL.
-            - context.set_cookie(key, value, max_age=3600, httponly=True, samesite='lax'): Set cookie.
+            - context.set_cookie(key, value, max_age=3600, ...): Set secure response cookie.
             - context.set_header(key, value): Add custom response header.
             - context.set_binary_response(content: bytes, media_type: str): Return raw file.
         - RESPONSE CONTRACT:
@@ -515,7 +533,6 @@ class HttpServerTool(BaseTool):
         injected into the wrapper's signature so FastAPI generates proper OpenAPI docs.
         """
         import re
-        from fastapi import File, UploadFile
 
         path = ep["path"]
         method = ep["method"].upper()
@@ -622,9 +639,8 @@ class HttpServerTool(BaseTool):
         data: dict = {}
         # 1. Query parameters always come from the request object
         data.update(request.query_params)
-        # 2. Path parameters always come from the request object (path params are
-        #    injected by FastAPI into **kwargs but never forwarded to _process_request,
-        #    so we always pull them directly from request.path_params here)
+
+        # 2. Path parameters always included
         data.update(request.path_params)
 
         # 3. Body/Form data
@@ -638,8 +654,6 @@ class HttpServerTool(BaseTool):
                 data.update(body_data)
         else:
             # Fallback: manual extraction if no DI model was used
-            data.update(request.path_params)
-            
             content_type = request.headers.get("Content-Type", "")
             if "application/json" in content_type:
                 try:
@@ -663,11 +677,14 @@ class HttpServerTool(BaseTool):
         # so the entire cross-service call chain shares the same root event ID.
         # If absent (first hop or external client), generate a fresh UUID.
         request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        identity = (
-            f"{handler.__self__.__class__.__name__}.{handler.__name__}"
-            if hasattr(handler, "__self__")
-            else getattr(handler, "__name__", "unknown")
-        )
+        # Same identity scheme as the event bus: prefer the kernel-stamped
+        # "domain.ClassName" so emitters and subscribers share one format.
+        owner = getattr(handler, "__self__", None)
+        if owner is not None:
+            base = getattr(owner, "_identity", None) or owner.__class__.__name__
+            identity = f"{base}.{handler.__name__}"
+        else:
+            identity = getattr(handler, "__name__", "unknown")
         id_token = current_event_id_var.set(request_id)
         ident_token = current_identity_var.set(identity)
         print(
@@ -749,9 +766,26 @@ class HttpServerTool(BaseTool):
     def _extract_bearer_token(self, request: Request) -> Optional[str]:
         """
         Extracts the Bearer token from the request.
-        Priority: Authorization header > access_token cookie.
+        Priority: 
+          1. Authorization header (Bearer) -> Preferred for Apps/CLI, immune to CSRF.
+          2. access_token cookie -> Subject to CSRF, requires X-Requested-With guard.
         """
+        # 1. Bearer Token (Highest security, default for non-browser clients)
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             return auth_header[7:]
-        return request.cookies.get("access_token")
+
+        # 2. Cookie Auth (Web clients)
+        token = request.cookies.get("access_token")
+        if token:
+            # CSRF Guard: If it's a mutation method (POST/PUT/DELETE) and we are 
+            # using cookies, we MUST verify the request was initiated by our own 
+            # JavaScript. An attacker-controlled form cannot add custom headers.
+            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+                if not request.headers.get("X-Requested-With"):
+                    print(f"[HttpServer] 🛡️ CSRF block: Mutation {request.method} "
+                          f"via cookie missing X-Requested-With header.")
+                    return None
+            return token
+
+        return None

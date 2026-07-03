@@ -44,18 +44,19 @@ class AutoModPlugin(BasePlugin):
             rules = await self.db.query(
                 "SELECT * FROM mod_rules WHERE enabled=1 AND type != 'ai_filter'"
             )
-            self.state.set("rules", rules, namespace=_NS)
+            await self.state.set("rules", rules, namespace=_NS)
         except Exception as e:
             self.logger.error(f"[AutoMod] Failed to load rules: {e}")
 
-    async def _invalidate_cache(self, data: dict):
+    async def _invalidate_cache(self, event):
         await self._load_rules()
 
-    async def _on_message(self, msg: dict):
+    async def _on_message(self, event):
+        msg = event.payload
         if msg.get("is_broadcaster") or msg.get("is_mod"):
             return  # never moderate mods or broadcaster
 
-        rules = self.state.get("rules", default=[], namespace=_NS)
+        rules = await self.state.get("rules", default=[], namespace=_NS)
         message = msg.get("message", "")
         user_id = msg.get("user_id", "")
         display_name = msg.get("display_name", "")

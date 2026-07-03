@@ -1,397 +1,525 @@
 """
-In-Memory Event Bus — Reference Implementation for MicroCoreOS
-===============================================================
-
-This is the REFERENCE IMPLEMENTATION for event bus tools in MicroCoreOS.
-Any new event bus tool (Redis Streams, RabbitMQ, Kafka) MUST follow this contract.
+Enterprise Event Bus — Universal Elastic Monolith Core
+======================================================
+Definitive Version: Pydantic-native traceability and industrial drivers.
 
 PUBLIC CONTRACT (what plugins use):
 ────────────────────────────────────────────────────────────────────────────────
+    await bus.publish("user.created", {"id": 1}, key=None, priority=None,
+                      delay=None, ttl=None, correlation_id=None)
+    await bus.subscribe("user.created", self.on_event, group=None, retries=0,
+                        backoff=0.5, broadcast=False)
+    reply = await bus.request("user.lookup", {"id": 1}, timeout=5)
+    await bus.unsubscribe("user.created", self.on_event)
 
-    # Pub/Sub — fire-and-forget side effects
-    await bus.publish("user.created", {"id": 42, "email": "a@b.com"})
-    await bus.subscribe("user.created", self.on_user_created)
-    await bus.unsubscribe("user.created", self.on_user_created)
+    Subscribers ALWAYS receive an EventEnvelope: async def on_event(self, event: EventEnvelope)
 
-    # Request/Response — Async RPC for mandatory cross-domain queries
-    # WARNING: Abuse reintroduces coupling. Use only when a response is strictly required.
-    response = await bus.request("user.validate", {"email": "a@b.com"}, timeout=5)
+CONSUMER IDENTITY (how replicas are recognized — Elastic Monolith core rule):
+    group=None (default)  → the Bus derives a STABLE group from the callback
+        identity (e.g. "WelcomeServicePlugin.on_user_created"). Every replica
+        runs the same code, derives the same group, and the broker delivers
+        each event to exactly ONE replica. Distinct plugins derive distinct
+        groups, so each logical consumer still gets its own copy.
+    group="workers"       → explicit worker pool (exactly-one across the pool).
+    broadcast=True        → EVERY instance receives a copy. Only for
+        instance-local concerns (cache invalidation, local metrics).
+        Wildcard ("*") and RPC reply subscriptions are always broadcast.
 
-    # Observability
-    history = bus.get_trace_history()   # → list of last 500 event records
+UNIVERSAL HINTS (kwargs):
+- key: String. Strict ordering (Kafka/SQS).
+- priority: Integer (1-10). Importance (RabbitMQ).
+- delay: Integer (seconds). Delivery schedule.
+- ttl: Float (seconds). Message expiration (Broker-side).
+- correlation_id: String. RPC tracking.
 
-
-SUBSCRIBER SIGNATURE:
+REPLACEMENT STANDARD (swap the transport, not the tool):
 ────────────────────────────────────────────────────────────────────────────────
+Unlike other tools, you do NOT rewrite EventBusTool to go distributed.
+Retries, backoff, DLQ, RPC, tracing and auto-unsubscribe are broker-agnostic
+and live in the Bus. Only TRANSPORT is delegated, via the EventBusDriver
+interface below (reference implementation: InProcessDriver).
 
-    # For publish() — return value is ignored
-    async def on_user_created(self, data: dict) -> None:
-        user_id = data.get("id")
-        ...
+To swap to Kafka/RabbitMQ/Redis Streams:
+    1. Implement EventBusDriver (publish / subscribe / unsubscribe /
+       unsubscribe_all / get_status / setup / shutdown).
+    2. publish() is pure fire-and-forget: serialize the EventEnvelope
+       (envelope.model_dump_json()) and hand it to the broker. Map hints:
+       key → partition key (Kafka), priority → message priority (RabbitMQ),
+       delay → delayed delivery, ttl → broker-side expiration.
+    3. On message arrival, deserialize with self._envelope_cls (injected by
+       the Bus via bind() — do NOT import EventEnvelope yourself: the Kernel
+       loads modules by path, so an imported copy is a DIFFERENT class and
+       Pydantic tracing would reject it) and call
+       self._deliver_hook(envelope, callback, is_wildcard) — the Bus takes
+       over from there (retries, DLQ, tracing all still work).
+    4. Inject it: EventBusTool(driver=KafkaDriver()) — or, for the built-in
+       distributed driver, just set EVENT_BUS_DRIVER=redis_streams
+       (tools/event_bus/redis_streams_driver.py; zero code changes).
+    5. It MUST pass the parity suite: tests/tools/test_event_bus_broker_parity.py.
 
-    # For request() — subscriber MUST return a non-None value
-    async def on_user_validate(self, data: dict) -> dict:
-        exists = await self.db.query_one("SELECT 1 FROM users WHERE email = $1", [data["email"]])
-        return {"exists": exists is not None}
-
-    # Sync handlers are also supported — the bus offloads them to a thread pool
-    def on_user_created_sync(self, data: dict) -> None:
-        ...
-
-
-WILDCARD SUBSCRIPTION:
-────────────────────────────────────────────────────────────────────────────────
-
-    await bus.subscribe("*", self.monitor_all)
-
-    # Wildcard subscribers receive all events but do NOT participate in RPC replies.
-    # Intended for observability, logging, and monitoring plugins.
-    async def monitor_all(self, data: dict) -> None:
-        ...
-
-
-CAUSALITY TRACKING:
-────────────────────────────────────────────────────────────────────────────────
-
-    The bus automatically propagates ContextVars into each subscriber's execution context:
-        - current_event_id_var  → the ID of the triggering event
-        - current_identity_var  → the name of the subscriber class and method
-
-    No manual effort is required. The `logger` tool reads these automatically.
-
-
-REPLACEMENT STANDARD (implement this to swap the backend):
-────────────────────────────────────────────────────────────────────────────────
-
-    To create a Redis Streams implementation:
-
-    1. Create tools/redis_event_bus/redis_event_bus_tool.py
-    2. name = "event_bus"                         ← same injection key, plugins are unaffected
-    3. Implement the 4 public methods:
-          async publish(event_name, data)
-          async subscribe(event_name, callback)
-          async unsubscribe(event_name, callback)
-          async request(event_name, data, timeout)
-    4. Subscriber callback signature: async def handler(data: dict)
-    5. Causality: propagate context vars into the subscriber's asyncio context
-       (e.g., copy the current context with contextvars.copy_context())
-    6. For request/response: use a unique reply stream per call (e.g., XREAD with a temp key)
-
-    Plugins will NOT require any changes.
+Plugins are unaffected: same envelope, same API, same semantics.
 """
 
 import collections
-import time
 import uuid
 import asyncio
 import inspect
+import os
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional, Dict, List, Tuple, Set
+from pydantic import BaseModel, Field, ConfigDict
 from starlette.concurrency import run_in_threadpool
 from core.base_tool import BaseTool
 from core.context import current_event_id_var, current_identity_var
 
 
-class EventBusTool(BaseTool):
+class EventEnvelope(BaseModel):
+    """The Universal Contract for any message traveling through the system."""
+    model_config = ConfigDict(frozen=True)
 
-    _MAX_CONSECUTIVE_FAILURES = 5
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    event: str
+    payload: Dict[str, Any]
+    emitter: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    parent_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    reply_to: Optional[str] = None
+    
+    key: Optional[str] = None       
+    priority: Optional[int] = None  
+    delay: Optional[int] = None     
+    ttl: Optional[float] = None     
+    headers: Dict[str, Any] = Field(default_factory=dict)
 
+
+class TraceNode(BaseModel):
+    """Rich record for observability, capturing both publication and delivery events."""
+    kind: str  # "published" or "delivered"
+    envelope: EventEnvelope
+    subscribers: List[str] = Field(default_factory=list)
+    success: bool = True
+    error: Optional[str] = None
+    attempts: Optional[int] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TraceRecord(TraceNode):
+    """Legacy compatibility alias for TraceNode."""
+    pass
+
+
+class SubOptions(BaseModel):
+    """Configuration for a specific subscription."""
+    retries: int = 0
+    backoff: float = 0.5
+
+
+class EventBusDriver:
+    """Interface for all transport implementations (Translators)."""
+    async def setup(self): pass
+    def bind(self, deliver_hook: Callable, envelope_cls: Optional[type] = None):
+        """Injected by the Bus to handle message delivery.
+
+        envelope_cls is the Bus's OWN EventEnvelope class: drivers must
+        deserialize with it (self._envelope_cls.model_validate_json) instead
+        of importing EventEnvelope, so envelopes always validate against the
+        exact class the Bus uses for tracing.
+        """
+        self._deliver_hook = deliver_hook
+        self._envelope_cls = envelope_cls or EventEnvelope
+
+    async def publish(self, envelope: EventEnvelope) -> None: 
+        """Pure fire-and-forget transport. Returns nothing."""
+        raise NotImplementedError()
+
+    async def subscribe(self, event_name: str, group: Optional[str], callback: Callable): raise NotImplementedError()
+    async def unsubscribe(self, event_name: str, callback: Callable): raise NotImplementedError()
+    async def unsubscribe_all(self, callback: Callable): raise NotImplementedError()
+    def get_status(self, name_resolver: Callable) -> dict: return {"status": "abstract"}
+    async def shutdown(self): pass
+
+
+class InProcessDriver(EventBusDriver):
+    """Memory transport. Simulates groups and handles internal delays."""
     def __init__(self):
-        self._subscribers: dict[str, list] = {}
+        self._groups: Dict[str, Dict[Optional[str], List[Callable]]] = {}
+        self._indices: Dict[str, Dict[Optional[str], int]] = {}
         self._lock = asyncio.Lock()
+
+    async def publish(self, envelope: EventEnvelope) -> None:
+        # 1. Transport Delay (if any)
+        if envelope.delay and envelope.delay > 0:
+            await asyncio.sleep(envelope.delay)
+
+        # 2. Resolve Targets (Logic moved to Driver side)
+        targets = []
+        async with self._lock:
+            if envelope.event in self._groups:
+                for group_name, callbacks in self._groups[envelope.event].items():
+                    if not callbacks: continue
+                    if group_name is None:
+                        targets.extend([(cb, False) for cb in callbacks])
+                    else:
+                        idx = self._indices[envelope.event].get(group_name, 0)
+                        targets.append((callbacks[idx % len(callbacks)], False))
+                        self._indices[envelope.event][group_name] = (idx + 1) % len(callbacks)
+            
+            if "*" in self._groups:
+                for callbacks in self._groups["*"].values():
+                    targets.extend([(cb, True) for cb in callbacks])
+        
+        # 3. Trigger Delivery Hook (Inversion of Control)
+        for cb, is_wildcard in targets:
+            # We don't await here; the driver schedules the delivery
+            asyncio.create_task(self._deliver_hook(envelope, cb, is_wildcard))
+
+    async def subscribe(self, event_name: str, group: Optional[str], callback: Callable):
+        async with self._lock:
+            self._groups.setdefault(event_name, {}).setdefault(group, []).append(callback)
+            self._indices.setdefault(event_name, {}).setdefault(group, 0)
+
+    async def unsubscribe(self, event_name: str, callback: Callable):
+        async with self._lock:
+            self._remove_callback(event_name, callback)
+
+    async def unsubscribe_all(self, callback: Callable):
+        async with self._lock:
+            for event in list(self._groups.keys()):
+                self._remove_callback(event, callback)
+
+    def _remove_callback(self, event_name: str, callback: Callable):
+        group_map = self._groups.get(event_name)
+        if not group_map: return
+        for g_name in list(group_map.keys()):
+            group_map[g_name] = [cb for cb in group_map[g_name] if cb != callback]
+            if not group_map[g_name]:
+                del group_map[g_name]
+                if event_name in self._indices and g_name in self._indices[event_name]:
+                    del self._indices[event_name][g_name]
+        if not group_map:
+            del self._groups[event_name]
+
+    def get_status(self, name_resolver: Callable) -> dict:
+        return {
+            event: [name_resolver(cb) for g in groups.values() for cb in g] 
+            for event, groups in self._groups.items()
+        }
+
+
+class EventBusTool(BaseTool):
+    _MAX_CONSECUTIVE_FAILURES = 5
+    SUBSCRIBER_DROPPED_EVENT = "system.subscriber.dropped"
+
+    def __init__(self, driver: Optional[EventBusDriver] = None):
+        self._driver = driver or self._driver_from_env()
         self._trace_log: collections.deque = collections.deque(maxlen=500)
-        self._listeners: list = []          # sink: called with trace record on every event
-        self._failure_listeners: list = []  # sink: called when a subscriber raises
-        self._consecutive_failures: dict[str, int] = {}  # subscriber_name → consecutive failure count
+        self._listeners: list = []
+        self._failure_listeners: list = []
+        self._consecutive_failures: dict[tuple[str, str], int] = {}
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._sub_options: Dict[Tuple[str, Callable], SubOptions] = {}
+
+        # Bind the delivery hook (and OUR envelope class — see EventBusDriver.bind)
+        self._driver.bind(self._deliver, EventEnvelope)
+
+    @staticmethod
+    def _driver_from_env() -> EventBusDriver:
+        """Transport selection without touching code: EVENT_BUS_DRIVER env var."""
+        name = os.getenv("EVENT_BUS_DRIVER", "in_process").strip().lower()
+        if name in ("", "in_process", "inprocess", "memory"):
+            return InProcessDriver()
+        if name == "redis_streams":
+            from tools.event_bus.redis_streams_driver import RedisStreamsDriver
+            return RedisStreamsDriver()
+        raise ValueError(
+            f"Unknown EVENT_BUS_DRIVER '{name}' (expected 'in_process' or 'redis_streams')."
+        )
 
     @property
-    def name(self) -> str:
-        return "event_bus"
+    def name(self) -> str: return "event_bus"
 
     async def setup(self) -> None:
-        print("[System] EventBusTool: Online.")
+        await self._driver.setup()
+        print(f"[System] EventBusTool: Online (Universal Driver: {self._driver.__class__.__name__}).")
 
     def get_interface_description(self) -> str:
         return """
-        Async Event Bus Tool (event_bus):
-        - PURPOSE: Non-blocking communication between plugins. Pub/Sub and Async RPC.
-        - SUBSCRIBER SIGNATURE: async def handler(self, data: dict)
-        - CAPABILITIES:
-            - await publish(event_name, data): Fire-and-forget broadcast.
-            - await subscribe(event_name, callback): Register a subscriber.
-                Use event_name='*' for wildcard (observability only, no RPC).
-            - await unsubscribe(event_name, callback): Remove a subscriber.
-            - await request(event_name, data, timeout=5): Async RPC.
-                The subscriber must return a non-None dict.
-            - get_trace_history() -> list: Last 500 event records with causality data.
-            - get_subscribers() -> dict: Current subscriber map {event_name: [subscriber_names]}.
-            - add_listener(callback): Sink pattern — called with full trace record on every event.
-                Signature: callback(record: dict) — record has: id, event, emitter, subscribers, payload_keys, timestamp.
-                Use for real-time observability (e.g. WebSocket broadcast). Non-blocking.
-            - add_failure_listener(callback): Sink called when a subscriber raises during dispatch.
-                Signature: callback(record: dict) — record has: event, event_id, subscriber, error.
-                Use to implement dead-letter alerting. Non-blocking — keep it fast.
-        - WELL-KNOWN EVENTS:
-            - "overlay.vars.set" — publish a flat dict of variables to push them to all
-              live overlays (OBS browser sources). Persisted in the overlay_vars table,
-              broadcast instantly via SSE, readable in overlay JS as data.stats[key].
-              Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
+        Universal Event Bus (event_bus):
+        - publish(event_name, data, **kwargs): Broadcast an event.
+        - subscribe(event_name, callback, group=None, retries=0, backoff=0.5, broadcast=False):
+          Listen for events. group=None derives a STABLE group from the callback identity:
+          replicas of the same plugin consume each event exactly once across the fleet,
+          while distinct plugins each get their own copy. Use group="pool" for explicit
+          worker pools, broadcast=True ONLY for instance-local concerns (every replica
+          receives a copy — e.g. local cache invalidation).
+        - request(event_name, data, timeout=5): Async RPC (returns dict).
+        - unsubscribe(event_name, callback): Stop listening.
+        - get_trace_history() -> List[TraceNode]: Last 500 event records.
+        - get_subscribers() -> dict: Current subscriber map.
+        - add_listener(callback): Sink for all events (record: dict).
+        - add_failure_listener(callback): Sink for errors (record: dict).
+        
+        CRITICAL: Subscribing callbacks receive an 'EventEnvelope' object.
+        Example: async def on_event(self, event: EventEnvelope): print(event.payload)
+        
+        RETRIES & IDEMPOTENCY:
+        - If 'retries' > 0, the handler will be re-executed on failure with exponential backoff.
+        - Ensure handlers are idempotent as they may run multiple times.
+
+        DEAD-LETTER QUEUE (DLQ):
+        - Final failures are published to '_dlq.<original_event>'.
+        - Payload includes 'original' envelope, 'subscriber', 'error', and 'attempts'.
+        - Loop protection: '_dlq.*', '_reply.*', and wildcard events are never dead-lettered.
+        - Toggle via EVENT_BUS_DLQ_ENABLED (default: true).
+
+        UNIVERSAL CAPABILITIES (kwargs):
+        - key: String. For strict ordering (Kafka/SQS).
+        - priority: Integer (1-10). Importance (RabbitMQ).
+        - delay: Integer (seconds). Delivery schedule.
+        - ttl: Float (seconds). Message expiration hint.
+        - correlation_id: String. Cross-reference for RPC.
+
+        RESILIENCE:
+        - A subscriber that reaches 5 consecutive FINAL failures for a specific event is auto-unsubscribed.
+        - Each auto-unsubscribe publishes 'system.subscriber.dropped'
+          (payload: event, subscriber, error, consecutive_failures) so the drop
+          is observable — subscribe to it for alerting/monitoring.
+
+        WELL-KNOWN EVENTS:
+        - "overlay.vars.set" — publish a flat dict of variables to push them to all
+          live overlays (OBS browser sources). Persisted in the overlay_vars table,
+          broadcast instantly via SSE, readable in overlay JS as data.stats[key].
+          Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
+          Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
+          reads the variables from event.payload.
         """
 
-    # ── Public API ──────────────────────────────────────────────────────────────
+    async def subscribe(self, event_name: str, callback: Callable, group: Optional[str] = None,
+                        retries: int = 0, backoff: float = 0.5, broadcast: bool = False):
+        self._sub_options[(event_name, callback)] = SubOptions(retries=retries, backoff=backoff)
+        if group is None and not broadcast and event_name != "*" and not event_name.startswith("_reply."):
+            # Stable consumer identity: every replica runs the same code and
+            # derives the same group → the fleet consumes each event exactly
+            # once per logical consumer. Distinct plugins → distinct groups →
+            # each still receives its own copy. Within a single instance this
+            # is indistinguishable from the old broadcast behavior.
+            group = self._get_name(callback)
+        await self._driver.subscribe(event_name, group, callback)
 
-    async def subscribe(self, event_name: str, callback) -> None:
-        async with self._lock:
-            self._subscribers.setdefault(event_name, []).append(callback)
+    async def unsubscribe(self, event_name: str, callback: Callable):
+        for key in list(self._sub_options.keys()):
+            if key[1] == callback:
+                del self._sub_options[key]
+        await self._driver.unsubscribe(event_name, callback)
 
-    async def unsubscribe(self, event_name: str, callback) -> None:
-        async with self._lock:
-            if event_name in self._subscribers:
-                self._subscribers[event_name] = [
-                    cb for cb in self._subscribers[event_name] if cb is not callback
-                ]
-                if not self._subscribers[event_name]:
-                    del self._subscribers[event_name]
-
-    async def publish(self, event_name: str, data: dict) -> None:
-        """
-        Broadcasts an event to all subscribers. Non-blocking — returns immediately.
-        Each subscriber runs in its own asyncio Task and is monitored for failures.
-        """
-        emitter = current_identity_var.get()
-        direct_cbs, wildcard_cbs = await self._collect_callbacks(event_name)
-
-        event_id = str(uuid.uuid4())
-        parent_id = current_event_id_var.get()
-
-        all_callbacks = direct_cbs + wildcard_cbs
-        self._record_trace(event_id, parent_id, event_name, emitter, data, all_callbacks)
-
-        for cb in direct_cbs:
-            task = asyncio.create_task(
-                self._dispatch(cb, data, event_name, event_id)
-            )
-            self._monitor_task(task, event_name, cb)
-
-        # Wildcard callbacks get enriched data with _event_type
-        wildcard_data = {**data, "_event_type": event_name} if isinstance(data, dict) else data
-        for cb in wildcard_cbs:
-            task = asyncio.create_task(
-                self._dispatch(cb, wildcard_data, event_name, event_id)
-            )
-            self._monitor_task(task, event_name, cb)
-
-    async def request(self, event_name: str, data: dict, timeout: float = 5):
-        """
-        Async RPC: publishes an event and waits for the first subscriber to return a value.
-
-        The responding subscriber must return a non-None dict.
-        Wildcard ('*') subscribers observe the event but cannot reply.
-        Raises asyncio.TimeoutError if no response arrives within the timeout.
-        """
-        emitter = current_identity_var.get()
-        reply_channel = f"_reply.{event_name}.{uuid.uuid4().hex[:8]}"
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-
-        async def _reply_collector(reply_data: dict) -> None:
-            if not future.done():
-                future.set_result(reply_data)
-
-        await self.subscribe(reply_channel, _reply_collector)
-        try:
-            direct_cbs, wildcard_cbs = await self._collect_callbacks(event_name)
-
-            event_id = str(uuid.uuid4())
-            parent_id = current_event_id_var.get()
-            self._record_trace(event_id, parent_id, event_name, emitter, data, direct_cbs + wildcard_cbs)
-
-            # Direct subscribers participate in the RPC (can reply)
-            for cb in direct_cbs:
-                task = asyncio.create_task(
-                    self._dispatch(cb, data, event_name, event_id, reply_channel=reply_channel)
-                )
-                self._monitor_task(task, event_name, cb)
-
-            # Wildcard subscribers observe only — their return value is ignored
-            wildcard_data = {**data, "_event_type": event_name} if isinstance(data, dict) else data
-            for cb in wildcard_cbs:
-                task = asyncio.create_task(
-                    self._dispatch(cb, wildcard_data, event_name, event_id)
-                )
-                self._monitor_task(task, event_name, cb)
-
-            return await asyncio.wait_for(future, timeout=timeout)
-        finally:
-            await self.unsubscribe(reply_channel, _reply_collector)
-
-    def get_trace_history(self) -> list:
-        """Returns a snapshot of the last 500 event records (thread-safe copy)."""
-        return list(self._trace_log)
-
-    def add_listener(self, callback) -> None:
-        """
-        Registers a sink that receives the full trace record on every event.
-        Signature: callback(record: dict) where record = {id, event, emitter, subscribers, payload_keys, timestamp}
-        Intended for observability (e.g. WebSocket broadcast). Non-blocking.
-        """
-        if callback not in self._listeners:
-            self._listeners.append(callback)
-
-    def add_failure_listener(self, callback) -> None:
-        """
-        Registers a sink called when a subscriber raises an exception during dispatch.
-        Signature: callback(record: dict) where record = {event, subscriber, error, event_id}.
-        Use to implement dead-letter alerting or delivery guarantees.
-        Non-blocking — keep the callback fast.
-        """
-        if callback not in self._failure_listeners:
-            self._failure_listeners.append(callback)
-
-    def get_subscribers(self) -> dict:
-        """Returns the current subscriber map: {event_name: [subscriber_names]}."""
-        return {
-            event: [self._get_name(cb) for cb in cbs]
-            for event, cbs in self._subscribers.items()
-        }
-
-    # ── Internal dispatch pipeline ───────────────────────────────────────────────
-
-    async def _collect_callbacks(self, event_name: str) -> tuple[list, list]:
-        async with self._lock:
-            direct = list(self._subscribers.get(event_name, []))
-            wildcard = list(self._subscribers.get("*", []))
-        return direct, wildcard
-
-    async def _dispatch(
-        self,
-        callback,
-        data: dict,
-        event_name: str,
-        event_id: str,
-        reply_channel: str = None,
-    ) -> None:
-        """
-        Executes a single subscriber callback inside its own causality context.
-
-        - Sets current_event_id_var and current_identity_var for the duration of the call.
-        - Supports both async and sync callbacks (sync is offloaded to a thread pool).
-        - If reply_channel is set and the callback returns a value, the reply is dispatched.
-        """
-        subscriber_name = self._get_name(callback)
-        id_token = current_event_id_var.set(event_id)
-        ident_token = current_identity_var.set(subscriber_name)
-        try:
-            if inspect.iscoroutinefunction(callback):
-                result = await callback(data)
-            else:
-                result = await run_in_threadpool(callback, data)
-
-            if reply_channel is not None and result is not None:
-                await self._dispatch_reply(reply_channel, result, subscriber_name)
-
-            # Reset consecutive failure count on success
-            self._consecutive_failures.pop(subscriber_name, None)
-
-        except Exception as e:
-            count = self._consecutive_failures.get(subscriber_name, 0) + 1
-            self._consecutive_failures[subscriber_name] = count
-            print(f"[EventBus] ⚠️  '{subscriber_name}' failed handling '{event_name}': {e} (failure {count}/{self._MAX_CONSECUTIVE_FAILURES})")
-
-            if count >= self._MAX_CONSECUTIVE_FAILURES:
-                asyncio.create_task(self._auto_unsubscribe_dead(callback, subscriber_name))
-
-            failure_record = {
-                "event": event_name,
-                "event_id": event_id,
-                "subscriber": subscriber_name,
-                "error": str(e),
-            }
-            for fl in self._failure_listeners:
-                try:
-                    fl(failure_record)
-                except Exception as fe:
-                    print(f"[EventBus] Failure listener error: {fe}")
-        finally:
-            current_event_id_var.reset(id_token)
-            current_identity_var.reset(ident_token)
-
-    async def _dispatch_reply(self, reply_channel: str, result, emitter: str) -> None:
-        """Sends the subscriber's return value to the reply channel."""
-        reply_data = result if isinstance(result, dict) else {"result": result}
-        reply_cbs, _ = await self._collect_callbacks(reply_channel)
-        event_id = str(uuid.uuid4())
-        for cb in reply_cbs:
-            task = asyncio.create_task(
-                self._dispatch(cb, reply_data, reply_channel, event_id)
-            )
-            self._monitor_task(task, reply_channel, cb)
-
-    # ── Observability ────────────────────────────────────────────────────────────
-
-    def _record_trace(
-        self,
-        event_id: str,
-        parent_id,
-        event_name: str,
-        emitter,
-        data: dict,
-        callbacks: list,
-    ) -> None:
-        record = {
-            "id": event_id,
-            "parent_id": parent_id,
-            "timestamp": time.time(),
-            "event": event_name,
-            "emitter": emitter,
-            "subscribers": list({self._get_name(cb) for cb in callbacks}),
-            "payload_keys": list(data.keys()) if isinstance(data, dict) else [],
-        }
+    async def publish(self, event_name: str, data: dict, **kwargs):
+        kwargs.pop("emitter", None)
+        envelope = EventEnvelope(
+            event=event_name, payload=data,
+            emitter=current_identity_var.get() or "system",
+            parent_id=current_event_id_var.get(),
+            **kwargs
+        )
+        
+        # 1. Record Publication (Tracing)
+        # Note: In a distributed system, we don't know the subscribers yet.
+        record = TraceNode(kind="published", envelope=envelope)
         self._trace_log.append(record)
+        
+        raw_record = {
+            **envelope.model_dump(), 
+            "kind": "published",
+            "payload_keys": list(envelope.payload.keys()),
+            "timestamp": envelope.timestamp.timestamp()
+        }
         for listener in self._listeners:
             try:
-                listener(record)
-            except Exception as e:
-                print(f"[EventBus] Listener failure: {e}")
-        print(
-            f"[EventBus] 📣 {event_name}"
-            f"  id={event_id[:8]}"
-            f"  parent={str(parent_id)[:8] if parent_id else 'root'}"
-            f"  from={emitter}"
-        )
+                res = listener(raw_record)
+                if inspect.isawaitable(res):
+                    task = asyncio.create_task(res)
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
+            except Exception: pass
+        
+        print(f"[EventBus] 📣 {envelope.event} [{envelope.id[:8]}]")
 
-    async def _auto_unsubscribe_dead(self, callback, subscriber_name: str) -> None:
-        """Removes a consistently-failing handler from all events it is subscribed to."""
-        async with self._lock:
-            affected = [
-                event for event, cbs in self._subscribers.items()
-                if callback in cbs
-            ]
-            for event in affected:
-                self._subscribers[event] = [cb for cb in self._subscribers[event] if cb is not callback]
-                if not self._subscribers[event]:
-                    del self._subscribers[event]
-        self._consecutive_failures.pop(subscriber_name, None)
-        print(f"[EventBus] 🔇 Auto-unsubscribed dead handler '{subscriber_name}' from: {affected}")
+        # 2. Hand over to Driver (Fire and Forget)
+        task = asyncio.create_task(self._driver.publish(envelope))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
 
-    def _monitor_task(self, task: asyncio.Task, event_name: str, callback) -> None:
-        """Attaches a done-callback to report unhandled Task failures to stdout."""
-        name = self._get_name(callback)
-        def _on_done(t: asyncio.Task) -> None:
-            if not t.cancelled() and t.exception():
-                print(
-                    f"[EventBus] 💥 Unhandled Task failure"
-                    f"  subscriber='{name}'"
-                    f"  event='{event_name}'"
-                    f"  error={t.exception()}"
+    async def request(self, event_name: str, data: dict, timeout: float = 5):
+        correlation_id = str(uuid.uuid4())
+        reply_to = f"_reply.{event_name}.{uuid.uuid4().hex[:8]}"
+        future = asyncio.get_running_loop().create_future()
+        
+        async def _collector(env: EventEnvelope):
+            if env.correlation_id == correlation_id and not future.done():
+                future.set_result(env.payload)
+        
+        await self.subscribe(reply_to, _collector)
+        try:
+            await self.publish(event_name, data, reply_to=reply_to, correlation_id=correlation_id)
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            await self.unsubscribe(reply_to, _collector)
+
+    # ── Internal Engine ─────────────────────────────────────────────────────────
+
+    async def _deliver(self, envelope: EventEnvelope, callback: Callable, is_wildcard: bool):
+        """Entry point for message delivery, triggered by the Driver.
+
+        Returns the delivery task so distributed drivers can await handler
+        completion before acknowledging to the broker (crash-safe delivery).
+        """
+        task = asyncio.create_task(self._do_deliver(envelope, callback, is_wildcard))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
+
+    async def _do_deliver(self, envelope: EventEnvelope, callback: Callable, is_wildcard: bool):
+        sub_name = self._get_name(callback)
+        
+        # Feature 1: TTL Check
+        if envelope.ttl is not None:
+            age = (datetime.now(timezone.utc) - envelope.timestamp).total_seconds()
+            if age > envelope.ttl:
+                node = TraceNode(
+                    kind="delivered", envelope=envelope, subscribers=[sub_name],
+                    success=False, error="ttl_expired", attempts=0
                 )
-        task.add_done_callback(_on_done)
+                self._trace_log.append(node)
+                return
 
-    # ── Utilities ────────────────────────────────────────────────────────────────
+        # Feature 2: Resolve Subscription Options
+        options = self._sub_options.get((envelope.event, callback))
+        if not options and is_wildcard:
+            options = self._sub_options.get(("*", callback))
+        options = options or SubOptions()
 
-    def _get_name(self, callback) -> str:
-        if hasattr(callback, "__self__"):
-            return f"{callback.__self__.__class__.__name__}.{callback.__name__}"
-        if hasattr(callback, "__qualname__"):
-            return callback.__qualname__
-        return "anonymous"
+        t1 = current_event_id_var.set(envelope.id)
+        t2 = current_identity_var.set(sub_name)
+        
+        success = False
+        last_error = None
+        attempts = 0
+        
+        try:
+            # Retry Loop
+            while attempts <= options.retries:
+                attempts += 1
+                try:
+                    if inspect.iscoroutinefunction(callback):
+                        result = await callback(envelope)
+                    else:
+                        result = await run_in_threadpool(callback, envelope)
 
-    async def shutdown(self) -> None:
-        pass
+                    if not is_wildcard and envelope.reply_to and result is not None:
+                        await self.publish(
+                            envelope.reply_to, 
+                            result if isinstance(result, dict) else {"result": result},
+                            correlation_id=envelope.correlation_id
+                        )
+                    
+                    success = True
+                    self._consecutive_failures.pop((sub_name, envelope.event), None)
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempts <= options.retries:
+                        wait = options.backoff * (2 ** (attempts - 1))
+                        await asyncio.sleep(wait)
+            
+            # Record Trace Node (delivered)
+            node = TraceNode(
+                kind="delivered", envelope=envelope, subscribers=[sub_name],
+                success=success, error=str(last_error) if not success else None,
+                attempts=attempts
+            )
+            self._trace_log.append(node)
+
+            if not success:
+                await self._handle_final_failure(last_error, sub_name, envelope, callback, attempts, is_wildcard)
+
+        finally:
+            current_event_id_var.reset(t1)
+            current_identity_var.reset(t2)
+
+    async def _handle_final_failure(self, e, sub_name, envelope, callback, attempts, is_wildcard):
+        # Poisoned-handler logic
+        fail_key = (sub_name, envelope.event)
+        count = self._consecutive_failures.get(fail_key, 0) + 1
+        self._consecutive_failures[fail_key] = count
+        print(f"[EventBus] 💥 Final failure in {sub_name} for event {envelope.event}: {e} ({count}/{self._MAX_CONSECUTIVE_FAILURES})")
+        
+        if count >= self._MAX_CONSECUTIVE_FAILURES:
+            self._consecutive_failures.pop(fail_key, None)
+            await self._driver.unsubscribe(envelope.event, callback)
+            self._sub_options.pop((envelope.event, callback), None)
+            # Make the silent drop observable. Guard: a dropped subscriber OF
+            # this very event must not re-trigger it (self-reference loop).
+            if envelope.event != self.SUBSCRIBER_DROPPED_EVENT:
+                await self.publish(self.SUBSCRIBER_DROPPED_EVENT, {
+                    "event": envelope.event,
+                    "subscriber": sub_name,
+                    "error": str(e),
+                    "consecutive_failures": count,
+                })
+
+        # Notify failure listeners
+        failure_record = {"event": envelope.event, "event_id": envelope.id, "subscriber": sub_name, "error": str(e), "attempts": attempts}
+        for fl in self._failure_listeners:
+            try: 
+                res = fl(failure_record)
+                if inspect.isawaitable(res):
+                    task = asyncio.create_task(res)
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
+            except Exception: pass
+
+        # Feature 3: Dead-Letter Queue (DLQ)
+        if not envelope.event.startswith(("_dlq.", "_reply.")) and not is_wildcard:
+            if os.getenv("EVENT_BUS_DLQ_ENABLED", "true").lower() == "true":
+                dlq_payload = {
+                    "original": envelope.model_dump(mode="json"),
+                    "subscriber": sub_name,
+                    "error": str(e),
+                    "attempts": attempts,
+                    "failed_at": datetime.now(timezone.utc).isoformat()
+                }
+                await self.publish(f"_dlq.{envelope.event}", dlq_payload, correlation_id=envelope.correlation_id)
+
+    def get_trace_history(self) -> List[TraceNode]: return list(self._trace_log)
+    def add_listener(self, cb): self._listeners.append(cb)
+    def add_failure_listener(self, cb): self._failure_listeners.append(cb)
+
+    def _get_name(self, cb):
+        # This name doubles as the derived consumer group, so it must be
+        # stable across replicas AND unique across domains (two domains may
+        # declare same-named plugin classes — a bare "Class.method" would
+        # collide them into one group and split each other's events).
+        owner = getattr(cb, "__self__", None)
+        if owner is not None:
+            # Kernel-stamped identity ("users.WelcomeServicePlugin") when
+            # present; module-qualified fallback otherwise (both stable:
+            # domain and module are derived from the file path).
+            base = getattr(owner, "_identity", None)
+            if not base:
+                cls = owner.__class__
+                base = f"{cls.__module__}.{cls.__name__}"
+            return f"{base}.{cb.__name__}"
+        module = getattr(cb, "__module__", None) or "anonymous"
+        return f"{module}.{getattr(cb, '__qualname__', 'anonymous')}"
+
+    def get_subscribers(self) -> dict:
+        return self._driver.get_status(name_resolver=self._get_name)
+
+    async def shutdown(self):
+        if self._pending_tasks:
+            print(f"[EventBus] Cleaning up {len(self._pending_tasks)} pending tasks...")
+            for task in self._pending_tasks:
+                task.cancel()
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+        await self._driver.shutdown()

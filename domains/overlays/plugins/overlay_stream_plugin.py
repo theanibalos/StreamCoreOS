@@ -125,7 +125,8 @@ class OverlayStreamPlugin(BasePlugin):
 
     # ── Dynamic vars pool ─────────────────────────────────────────────
 
-    async def _on_vars_set(self, data: dict):
+    async def _on_vars_set(self, event):
+        data = event.payload
         if not isinstance(data, dict) or not data:
             return
         await self._set_vars(data)
@@ -147,23 +148,24 @@ class OverlayStreamPlugin(BasePlugin):
         self._broadcast_by_need("needs_stats", {"type": "stats", "data": new_vars})
 
     def _make_system_forwarder(self, event_type: str):
-        async def _forward(data: dict):
+        async def _forward(event):
             self._broadcast_by_need("needs_alerts", {
-                "type": "alert", "data": {"type": event_type, "data": data or {}}
+                "type": "alert", "data": {"type": event_type, "data": event.payload or {}}
             })
         return _forward
 
     # ── Event handlers ────────────────────────────────────────────────
 
-    async def _on_stats_updated(self, data: dict):
+    async def _on_stats_updated(self, event):
+        data = event.payload
         if "follower_count" in data:
             self._follower_count = int(data["follower_count"])
         self._broadcast_by_need("needs_stats", {
             "type": "stats", "data": await self._current_stats()
         })
 
-    async def _on_chat(self, data: dict):
-        self._broadcast_by_need("needs_chat", {"type": "chat", "data": data})
+    async def _on_chat(self, event):
+        self._broadcast_by_need("needs_chat", {"type": "chat", "data": event.payload})
 
     async def _on_twitch_event(self, event_data: dict):
         event_type = event_data.get("_event_type", "twitch.event")
@@ -189,7 +191,8 @@ class OverlayStreamPlugin(BasePlugin):
             "type": "alert", "data": {"type": event_type, "data": payload}
         })
 
-    async def _on_config_updated(self, data: dict):
+    async def _on_config_updated(self, event):
+        data = event.payload
         overlay_id = str(data.get("overlay_id", ""))
         entry = self._registry.get(overlay_id)
         if not entry:
@@ -269,7 +272,7 @@ class OverlayStreamPlugin(BasePlugin):
 
     async def _current_stats(self) -> dict:
         stats: dict = {
-            "stream.online":   self.state.get("online", default=False, namespace="stream_state"),
+            "stream.online":   await self.state.get("online", default=False, namespace="stream_state"),
             "followers.total": self._follower_count,
         }
         try:

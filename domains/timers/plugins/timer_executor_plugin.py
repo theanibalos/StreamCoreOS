@@ -52,30 +52,30 @@ class TimerExecutorPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"[TimerExecutor] Failed to load timers: {e}")
 
-    async def _refresh_timers(self, data: dict):
+    async def _refresh_timers(self, event):
         await self._load_timers()
 
-    async def _on_message(self, msg: dict):
+    async def _on_message(self, event):
         # Add current timestamp to the log
         now = time.time()
-        msg_log = self.state.get(MSG_LOG_KEY, default=[], namespace=NAMESPACE)
+        msg_log = await self.state.get(MSG_LOG_KEY, default=[], namespace=NAMESPACE)
         msg_log.append(now)
-        
+
         # Cleanup: only keep messages from the last 5 minutes
         five_min_ago = now - 300
         msg_log = [t for t in msg_log if t > five_min_ago]
-        
-        self.state.set(MSG_LOG_KEY, msg_log, namespace=NAMESPACE)
+
+        await self.state.set(MSG_LOG_KEY, msg_log, namespace=NAMESPACE)
 
     async def _check_timers(self):
         now_dt = datetime.now(timezone.utc)
         now_ts = now_dt.timestamp()
-        
+
         # Get message log and cleanup
-        msg_log = self.state.get(MSG_LOG_KEY, default=[], namespace=NAMESPACE)
+        msg_log = await self.state.get(MSG_LOG_KEY, default=[], namespace=NAMESPACE)
         five_min_ago = now_ts - 300
         msg_log = [t for t in msg_log if t > five_min_ago]
-        self.state.set(MSG_LOG_KEY, msg_log, namespace=NAMESPACE)
+        await self.state.set(MSG_LOG_KEY, msg_log, namespace=NAMESPACE)
         
         for timer in self.active_timers:
             last_exec = timer.get("last_executed_at")

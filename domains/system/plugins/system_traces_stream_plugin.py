@@ -18,8 +18,8 @@ class SystemTracesStreamPlugin(BasePlugin):
         "id": "uuid",
         "parent_id": "uuid | null",
         "event": "user.created",
-        "emitter": "CreateUserPlugin.execute",
-        "subscribers": ["WelcomeServicePlugin.on_user_created"],
+        "emitter": "users.CreateUserPlugin.execute",
+        "subscribers": ["users.WelcomeServicePlugin.on_user_created"],
         "payload_keys": ["id", "email"],
         "timestamp": 1234567890.0,
         "children": []        # only present in snapshot nodes
@@ -44,14 +44,50 @@ class SystemTracesStreamPlugin(BasePlugin):
             tags=["System"],
         )
 
+    def _get_merged_records(self) -> list[dict]:
+        history = self.event_bus.get_trace_history()
+        records = [r for r in history if not r.envelope.event.startswith("_reply.")]
+        
+        merged: dict[str, dict] = {}
+        for r in records:
+            eid = r.envelope.id
+            if eid not in merged:
+                env = r.envelope
+                merged[eid] = {
+                    "id": env.id,
+                    "parent_id": env.parent_id,
+                    "event": env.event,
+                    "emitter": env.emitter,
+                    "subscribers": list(r.subscribers) if r.subscribers else [],
+                    "payload_keys": list(env.payload.keys()),
+                    "timestamp": float(env.timestamp.timestamp()),
+                }
+            else:
+                if r.subscribers:
+                    for sub in r.subscribers:
+                        if sub not in merged[eid]["subscribers"]:
+                            merged[eid]["subscribers"].append(sub)
+        return list(merged.values())
+
     def _on_event(self, record: dict):
         if record["event"].startswith("_reply.") or not self._queues:
             return
+        
+        node = {
+            "id": record["id"],
+            "parent_id": record.get("parent_id"),
+            "event": record["event"],
+            "emitter": record["emitter"],
+            "subscribers": record.get("subscribers") or self.event_bus.get_subscribers().get(record["event"], []),
+            "payload_keys": record["payload_keys"],
+            "timestamp": record["timestamp"],
+        }
+        
         try:
             loop = asyncio.get_running_loop()
             for q in list(self._queues):
                 try:
-                    loop.call_soon_threadsafe(q.put_nowait, record)
+                    loop.call_soon_threadsafe(q.put_nowait, node)
                 except asyncio.QueueFull:
                     pass  # slow consumer — drop event rather than grow unbounded
         except RuntimeError:
@@ -61,7 +97,7 @@ class SystemTracesStreamPlugin(BasePlugin):
         queue = asyncio.Queue(maxsize=200)
         self._queues.add(queue)
         try:
-            history = [r for r in self.event_bus.get_trace_history() if not r["event"].startswith("_reply.")]
+            history = self._get_merged_records()
             yield f"data: {json.dumps({'type': 'snapshot', 'tree': self._build_tree(history)})}\n\n"
 
             while True:
@@ -77,7 +113,9 @@ class SystemTracesStreamPlugin(BasePlugin):
             node = nodes[r["id"]]
             parent_id = r.get("parent_id")
             if parent_id and parent_id in nodes:
-                nodes[parent_id]["children"].append(node)
+                if node not in nodes[parent_id]["children"]:
+                    nodes[parent_id]["children"].append(node)
             else:
-                roots.append(node)
+                if node not in roots:
+                    roots.append(node)
         return roots

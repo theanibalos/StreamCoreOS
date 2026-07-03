@@ -24,6 +24,17 @@ PUBLIC CONTRACT (what plugins use):
 
     # Access as a required value (raises EnvironmentError if missing)
     db_url = self.config.get("DATABASE_URL", required=True)
+
+REPLACEMENT STANDARD (e.g. Vault, Consul, AWS Parameter Store — plugins unaffected):
+────────────────────────────────────────────────────────────────────────────────
+    1. name = "config".
+    2. get() and require() MUST stay sync: they are called from hot paths and
+       on_boot(). A remote backend must fetch ALL values in setup() (async,
+       network allowed there) and serve get() from the local cache.
+    3. require() must keep fail-fast semantics: raise EnvironmentError at boot
+       with the names of the missing keys, never at request time.
+    4. Secret rotation, if supported, happens by refreshing the cache in the
+       background — never synchronously inside get().
 """
 
 import os

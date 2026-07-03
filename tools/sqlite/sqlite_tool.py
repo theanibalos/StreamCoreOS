@@ -35,8 +35,18 @@ PLACEHOLDERS: Plugins ALWAYS use $1, $2, $3... (PostgreSQL-style).
 import os
 import re
 import uuid
+import asyncio
 import aiosqlite
-from core.base_tool import BaseTool
+from contextvars import ContextVar
+from core.base_tool import BaseTool, ToolUnavailableError
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CONTEXT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Tracks if the current task holds the SQLite write lock to allow reentrancy
+_write_lock_held_var: ContextVar[bool] = ContextVar("sqlite_write_lock_held", default=False)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -48,8 +58,12 @@ class DatabaseError(Exception):
     pass
 
 
-class DatabaseConnectionError(DatabaseError):
-    """Connection error to the SQLite file."""
+class DatabaseConnectionError(DatabaseError, ToolUnavailableError):
+    """Connection error to the SQLite file.
+
+    Inherits ToolUnavailableError so ToolProxy marks the tool DEAD immediately
+    (infrastructure failure), unlike plain DatabaseError (likely business error).
+    """
     pass
 
 
@@ -122,16 +136,27 @@ class Transaction:
     3. ROLLBACK if an exception occurs.
     """
 
-    def __init__(self, db: aiosqlite.Connection) -> None:
+    def __init__(self, db: aiosqlite.Connection, lock: asyncio.Lock) -> None:
         self._db: aiosqlite.Connection = db
+        self._lock: asyncio.Lock = lock
         self._savepoint_name: str | None = None
+        self._acquired_lock: bool = False
 
     async def __aenter__(self) -> "Transaction":
         try:
+            # Check for reentrancy (nested transactions)
+            if not _write_lock_held_var.get():
+                await self._lock.acquire()
+                self._acquired_lock = True
+                _write_lock_held_var.set(True)
+
             # Use SAVEPOINTs to support nested transactions
             self._savepoint_name = f"sp_{uuid.uuid4().hex}"
             await self._db.execute(f"SAVEPOINT {self._savepoint_name}")
         except Exception as e:
+            if self._acquired_lock:
+                _write_lock_held_var.set(False)
+                self._lock.release()
             raise DatabaseConnectionError(f"Failed to start transaction: {e}") from e
         return self
 
@@ -144,9 +169,13 @@ class Transaction:
                 # Errors → ROLLBACK TO SAVEPOINT
                 await self._db.execute(f"ROLLBACK TO SAVEPOINT {self._savepoint_name}")
         except Exception:
-            # If rollback/release fails, don't suppress the original exception
             pass
-        # Don't suppress the exception (return False)
+        finally:
+            # Only the transaction that acquired the lock should release it
+            if self._acquired_lock:
+                _write_lock_held_var.set(False)
+                if self._lock.locked():
+                    self._lock.release()
         return False
 
     # ─── Transaction API ──────────────────────────────────
@@ -230,6 +259,7 @@ class SqliteTool(BaseTool):
     def __init__(self) -> None:
         self._db_path: str = os.getenv("SQLITE_DB_PATH", "database.db")
         self._db: aiosqlite.Connection | None = None
+        self._write_lock = asyncio.Lock()
 
     # ─── LIFECYCLE: setup() ───────────────────────────────
     #
@@ -266,7 +296,7 @@ class SqliteTool(BaseTool):
             )
         """)
 
-        print(f"[System] SqliteTool: Ready (WAL mode, FK enabled).")
+        print("[System] SqliteTool: Ready (WAL mode, FK enabled).")
 
     # ─── LIFECYCLE: on_boot_complete() ────────────────────
     #
@@ -280,6 +310,12 @@ class SqliteTool(BaseTool):
     #
 
     async def on_boot_complete(self, container) -> None:
+        # Issue 20: in production, replicas must NOT race to migrate at boot.
+        # Migrations run as a pipeline step instead:
+        #   DB_AUTO_MIGRATE=true uv run main.py --boot-tool db
+        if os.getenv("DB_AUTO_MIGRATE", "true").strip().lower() != "true":
+            print("[System] SqliteTool: DB_AUTO_MIGRATE=false — skipping migrations (pipeline runs `DB_AUTO_MIGRATE=true uv run main.py --boot-tool db`).")
+            return
         print("[System] SqliteTool: Checking for pending migrations...")
         domains_dir = os.path.abspath("domains")
         if not os.path.exists(domains_dir):
@@ -353,20 +389,24 @@ class SqliteTool(BaseTool):
                 sql_script = "\n".join(line for line in lines if not line.strip().startswith("--"))
 
             # Each migration in its own transaction
-            async with self.transaction() as tx:
-                # Execute each statement in the file
-                statements = [s.strip() for s in sql_script.split(";") if s.strip()]
-                for statement in statements:
-                    await tx.execute(statement)
-
-                # Record successful migration
-                await tx.execute(
-                    "INSERT INTO _migrations_history (domain, filename) VALUES ($1, $2)",
-                    [domain, filename],
-                )
-
-            # Commit after each successful migration
-            await self._db.commit()
+            try:
+                async with self.transaction():
+                    # Manually split and execute to ensure atomicity via our Transaction CM
+                    # This handles triggers if we are careful, but for now we split by ';'
+                    # which is what the user originally had but now inside our safe TX.
+                    statements = [s.strip() for s in sql_script.split(";") if s.strip()]
+                    for statement in statements:
+                        await self._db.execute(statement)
+                    
+                    # Register successful migration
+                    await self._db.execute(
+                        "INSERT INTO _migrations_history (domain, filename) VALUES (?, ?)",
+                        [domain, filename],
+                    )
+                    # transaction __aexit__ will COMMIT
+            except Exception as e:
+                # transaction __aexit__ will ROLLBACK
+                raise DatabaseError(f"Migration failed for {key}: {e}") from e
 
             print(f"  [Migration] ✅ Applied {key}")
 
@@ -400,13 +440,20 @@ class SqliteTool(BaseTool):
 
     async def query(self, sql: str, params: list | None = None) -> list[dict]:
         sql, params = _normalize_sql(sql, params)
-        try:
-            cursor = await self._db.execute(sql, params)
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            rows = await cursor.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
-        except Exception as e:
-            raise DatabaseError(f"Query failed: {e}") from e
+        for attempt in range(3):
+            try:
+                cursor = await self._db.execute(sql, params)
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                rows = await cursor.fetchall()
+                return [dict(zip(columns, row)) for row in rows]
+            except aiosqlite.OperationalError as e:
+                if "database is locked" in str(e) or "database is busy" in str(e):
+                    if attempt < 2:
+                        await asyncio.sleep(0.05 * (attempt + 1))
+                        continue
+                raise DatabaseError(f"Query failed: {e}") from e
+            except Exception as e:
+                raise DatabaseError(f"Query failed: {e}") from e
 
     # ─── PUBLIC API: query_one() ──────────────────────────
     #
@@ -427,13 +474,20 @@ class SqliteTool(BaseTool):
 
     async def query_one(self, sql: str, params: list | None = None) -> dict | None:
         sql, params = _normalize_sql(sql, params)
-        try:
-            cursor = await self._db.execute(sql, params)
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            row = await cursor.fetchone()
-            return dict(zip(columns, row)) if row is not None else None
-        except Exception as e:
-            raise DatabaseError(f"Query failed: {e}") from e
+        for attempt in range(3):
+            try:
+                cursor = await self._db.execute(sql, params)
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                row = await cursor.fetchone()
+                return dict(zip(columns, row)) if row is not None else None
+            except aiosqlite.OperationalError as e:
+                if "database is locked" in str(e) or "database is busy" in str(e):
+                    if attempt < 2:
+                        await asyncio.sleep(0.05 * (attempt + 1))
+                        continue
+                raise DatabaseError(f"Query failed: {e}") from e
+            except Exception as e:
+                raise DatabaseError(f"Query failed: {e}") from e
 
     # ─── PUBLIC API: execute() ────────────────────────────
     #
@@ -470,22 +524,43 @@ class SqliteTool(BaseTool):
 
     async def execute(self, sql: str, params: list | None = None) -> int | None:
         sql, params = _normalize_sql(sql, params)
-        try:
-            if "RETURNING" in sql.upper():
-                cursor = await self._db.execute(sql, params)
-                row = await cursor.fetchone()
-                await self._db.commit()
-                if row is not None:
-                    return row[0]
-                return None
-            else:
-                cursor = await self._db.execute(sql, params)
-                await self._db.commit()
-                if sql.strip().upper().startswith("INSERT"):
-                    return cursor.lastrowid
-                return cursor.rowcount
-        except Exception as e:
-            raise DatabaseError(f"Execute failed: {e}") from e
+        
+        # Reentrancy check: if the lock is already held by this task, don't acquire it again
+        if _write_lock_held_var.get():
+            return await self._do_execute(sql, params)
+
+        async with self._write_lock:
+            token = _write_lock_held_var.set(True)
+            try:
+                return await self._do_execute(sql, params)
+            finally:
+                _write_lock_held_var.reset(token)
+
+    async def _do_execute(self, sql: str, params: list | None) -> int | None:
+        """Internal execution logic with retry capability."""
+        for attempt in range(3):
+            try:
+                if re.search(r"\bRETURNING\b", sql.upper()):
+                    cursor = await self._db.execute(sql, params)
+                    row = await cursor.fetchone()
+                    await self._db.commit()
+                    if row is not None:
+                        return row[0]
+                    return None
+                else:
+                    cursor = await self._db.execute(sql, params)
+                    await self._db.commit()
+                    if sql.strip().upper().startswith("INSERT"):
+                        return cursor.lastrowid
+                    return cursor.rowcount
+            except aiosqlite.OperationalError as e:
+                if "database is locked" in str(e) or "database is busy" in str(e):
+                    if attempt < 2:
+                        await asyncio.sleep(0.05 * (attempt + 1))
+                        continue
+                raise DatabaseError(f"Execute failed: {e}") from e
+            except Exception as e:
+                raise DatabaseError(f"Execute failed: {e}") from e
 
     # ─── PUBLIC API: execute_many() ───────────────────────
     #
@@ -506,6 +581,21 @@ class SqliteTool(BaseTool):
 
     async def execute_many(self, sql: str, params_list: list[list]) -> None:
         sql, params_list = _normalize_sql_many(sql, params_list)
+        
+        # Reentrancy check
+        if _write_lock_held_var.get():
+            await self._do_execute_many(sql, params_list)
+            return
+
+        async with self._write_lock:
+            token = _write_lock_held_var.set(True)
+            try:
+                await self._do_execute_many(sql, params_list)
+            finally:
+                _write_lock_held_var.reset(token)
+
+    async def _do_execute_many(self, sql: str, params_list: list[list]) -> None:
+        """Internal batch execution logic."""
         try:
             await self._db.executemany(sql, params_list)
             await self._db.commit()
@@ -536,7 +626,7 @@ class SqliteTool(BaseTool):
     def transaction(self) -> Transaction:
         if self._db is None:
             raise DatabaseConnectionError("Cannot start transaction: connection is not initialized.")
-        return Transaction(self._db)
+        return Transaction(self._db, self._write_lock)
 
     # ─── PUBLIC API: health_check() ───────────────────────
     #
@@ -578,4 +668,9 @@ class SqliteTool(BaseTool):
               Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
             - await health_check() → bool: Verify database connectivity.
         - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
+          topological sort (alphabetical by default). To declare that one migration must
+          run before another, add as the first comment line:
+            "-- depends: other_domain/001_file.sql"
+          Works for same-domain or cross-domain dependencies. .sql extension is optional.
         """

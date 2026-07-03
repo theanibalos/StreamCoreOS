@@ -66,7 +66,7 @@ class StreamStatusPlugin(BasePlugin):
 
             streams = response.get("data", [])
             is_live = len(streams) > 0
-            currently_in_state = self.state.get("online", default=False, namespace="stream_state")
+            currently_in_state = await self.state.get("online", default=False, namespace="stream_state")
 
             if is_live and not currently_in_state:
                 # Stream is live but we thought it was offline (reboot or missed event)
@@ -90,7 +90,7 @@ class StreamStatusPlugin(BasePlugin):
             broadcaster_login = event.get("broadcaster_user_login", "")
 
             # Avoid duplicate sessions if already online in state
-            if self.state.get("online", default=False, namespace="stream_state"):
+            if await self.state.get("online", default=False, namespace="stream_state"):
                 return
 
             session_id = await self.db.execute(
@@ -100,11 +100,11 @@ class StreamStatusPlugin(BasePlugin):
             )
 
             # Update in-memory state
-            self.state.set("online", True, namespace="stream_state")
-            self.state.set("session_id", session_id, namespace="stream_state")
-            self.state.set("started_at", started_at, namespace="stream_state")
-            self.state.set("broadcaster_login", broadcaster_login, namespace="stream_state")
-            self.state.set("ended_at", None, namespace="stream_state")
+            await self.state.set("online", True, namespace="stream_state")
+            await self.state.set("session_id", session_id, namespace="stream_state")
+            await self.state.set("started_at", started_at, namespace="stream_state")
+            await self.state.set("broadcaster_login", broadcaster_login, namespace="stream_state")
+            await self.state.set("ended_at", None, namespace="stream_state")
 
             await self.bus.publish("stream.session.started", {
                 "session_id": session_id,
@@ -121,7 +121,7 @@ class StreamStatusPlugin(BasePlugin):
             from datetime import datetime, timezone
             ended_at = datetime.now(timezone.utc).isoformat()
 
-            session_id = self.state.get("session_id", namespace="stream_state")
+            session_id = await self.state.get("session_id", namespace="stream_state")
             if session_id:
                 await self.db.execute(
                     "UPDATE stream_sessions SET ended_at=$1 WHERE id=$2",
@@ -129,11 +129,11 @@ class StreamStatusPlugin(BasePlugin):
                 )
 
             # Clear in-memory state
-            self.state.set("online", False, namespace="stream_state")
-            self.state.set("session_id", None, namespace="stream_state")
-            self.state.set("ended_at", ended_at, namespace="stream_state")
-            self.state.set("started_at", None, namespace="stream_state")
-            self.state.set("broadcaster_login", None, namespace="stream_state")
+            await self.state.set("online", False, namespace="stream_state")
+            await self.state.set("session_id", None, namespace="stream_state")
+            await self.state.set("ended_at", ended_at, namespace="stream_state")
+            await self.state.set("started_at", None, namespace="stream_state")
+            await self.state.set("broadcaster_login", None, namespace="stream_state")
 
             await self.bus.publish("stream.session.ended", {
                 "session_id": session_id,

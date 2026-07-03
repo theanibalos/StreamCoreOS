@@ -1,4 +1,3 @@
-import asyncio
 import time
 from core.base_plugin import BasePlugin
 
@@ -22,14 +21,15 @@ class IAChatPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("chat.command.received", self._handle)
 
-    async def _handle(self, data: dict):
+    async def _handle(self, event):
+        data = event.payload
         if data.get("command", "").lower() != "!ia":
             return
 
         if not self.ai.is_configured():
             return
 
-        if not self.state.get("chat_ia_enabled", default=True, namespace="ia_config"):
+        if not await self.state.get("chat_ia_enabled", default=True, namespace="ia_config"):
             return
 
         question = data.get("args", "").strip()
@@ -46,7 +46,7 @@ class IAChatPlugin(BasePlugin):
         # Per-user cooldown
         user_id     = data.get("user_id", "")
         cooldown_key = f"ia_cooldown:{user_id}"
-        expires_at  = self.state.get(cooldown_key, namespace="ia_chat")
+        expires_at  = await self.state.get(cooldown_key, namespace="ia_chat")
         if expires_at:
             remaining = int(expires_at - time.time())
             if remaining > 0:
@@ -57,11 +57,10 @@ class IAChatPlugin(BasePlugin):
                 return
 
         cooldown_s = self.ai.get_chat_cooldown()
-        self.state.set(cooldown_key, time.time() + cooldown_s, namespace="ia_chat")
-        asyncio.get_event_loop().call_later(
-            cooldown_s,
-            lambda: self.state.delete(cooldown_key, namespace="ia_chat"),
-        )
+        # TTL-based expiry (state tool now supports it natively) instead of a
+        # call_later + lambda — the lambda would return an un-awaited
+        # coroutine now that state.set/delete are async.
+        await self.state.set(cooldown_key, time.time() + cooldown_s, namespace="ia_chat", ttl=cooldown_s)
 
         await self.twitch.send_message(channel, f"@{name} Pensando...")
 

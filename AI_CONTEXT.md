@@ -147,6 +147,26 @@ AI Tool (ai):
         OpenRouter: https://openrouter.ai/api/v1/chat/completions
 ```
 
+### 🔧 Tool: `auth` (Status: ✅)
+```text
+Authentication Tool (auth):
+        - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
+        - CAPABILITIES:
+            - await hash_password(password: str) -> str: Securely hashes a plain-text
+                password using bcrypt. Async — runs in a thread (bcrypt is CPU-bound).
+            - await verify_password(password: str, hashed_password: str) -> bool:
+                Verifies if a password matches its hash. Async — runs in a thread.
+            - create_token(data: dict, expires_delta: Optional[int] = None) -> str:
+                Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}).
+                'expires_delta' is optional minutes until expiration.
+            - decode_token(token: str) -> dict:
+                Verifies and decodes a JWT token. Returns the payload dictionary.
+                Raises TokenExpiredError / InvalidTokenError / AuthError on failure.
+            - validate_token(token: str) -> dict | None:
+                Safe, non-throwing token validation. Returns the decoded payload
+                if valid, or None if expired/invalid. Ideal for middleware guards.
+```
+
 ### 🔧 Tool: `config` (Status: ✅)
 ```text
 Configuration Tool (config):
@@ -164,29 +184,54 @@ Configuration Tool (config):
 
 ### 🔧 Tool: `event_bus` (Status: ✅)
 ```text
-Async Event Bus Tool (event_bus):
-        - PURPOSE: Non-blocking communication between plugins. Pub/Sub and Async RPC.
-        - SUBSCRIBER SIGNATURE: async def handler(self, data: dict)
-        - CAPABILITIES:
-            - await publish(event_name, data): Fire-and-forget broadcast.
-            - await subscribe(event_name, callback): Register a subscriber.
-                Use event_name='*' for wildcard (observability only, no RPC).
-            - await unsubscribe(event_name, callback): Remove a subscriber.
-            - await request(event_name, data, timeout=5): Async RPC.
-                The subscriber must return a non-None dict.
-            - get_trace_history() -> list: Last 500 event records with causality data.
-            - get_subscribers() -> dict: Current subscriber map {event_name: [subscriber_names]}.
-            - add_listener(callback): Sink pattern — called with full trace record on every event.
-                Signature: callback(record: dict) — record has: id, event, emitter, subscribers, payload_keys, timestamp.
-                Use for real-time observability (e.g. WebSocket broadcast). Non-blocking.
-            - add_failure_listener(callback): Sink called when a subscriber raises during dispatch.
-                Signature: callback(record: dict) — record has: event, event_id, subscriber, error.
-                Use to implement dead-letter alerting. Non-blocking — keep it fast.
-        - WELL-KNOWN EVENTS:
-            - "overlay.vars.set" — publish a flat dict of variables to push them to all
-              live overlays (OBS browser sources). Persisted in the overlay_vars table,
-              broadcast instantly via SSE, readable in overlay JS as data.stats[key].
-              Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
+Universal Event Bus (event_bus):
+        - publish(event_name, data, **kwargs): Broadcast an event.
+        - subscribe(event_name, callback, group=None, retries=0, backoff=0.5, broadcast=False):
+          Listen for events. group=None derives a STABLE group from the callback identity:
+          replicas of the same plugin consume each event exactly once across the fleet,
+          while distinct plugins each get their own copy. Use group="pool" for explicit
+          worker pools, broadcast=True ONLY for instance-local concerns (every replica
+          receives a copy — e.g. local cache invalidation).
+        - request(event_name, data, timeout=5): Async RPC (returns dict).
+        - unsubscribe(event_name, callback): Stop listening.
+        - get_trace_history() -> List[TraceNode]: Last 500 event records.
+        - get_subscribers() -> dict: Current subscriber map.
+        - add_listener(callback): Sink for all events (record: dict).
+        - add_failure_listener(callback): Sink for errors (record: dict).
+        
+        CRITICAL: Subscribing callbacks receive an 'EventEnvelope' object.
+        Example: async def on_event(self, event: EventEnvelope): print(event.payload)
+        
+        RETRIES & IDEMPOTENCY:
+        - If 'retries' > 0, the handler will be re-executed on failure with exponential backoff.
+        - Ensure handlers are idempotent as they may run multiple times.
+
+        DEAD-LETTER QUEUE (DLQ):
+        - Final failures are published to '_dlq.<original_event>'.
+        - Payload includes 'original' envelope, 'subscriber', 'error', and 'attempts'.
+        - Loop protection: '_dlq.*', '_reply.*', and wildcard events are never dead-lettered.
+        - Toggle via EVENT_BUS_DLQ_ENABLED (default: true).
+
+        UNIVERSAL CAPABILITIES (kwargs):
+        - key: String. For strict ordering (Kafka/SQS).
+        - priority: Integer (1-10). Importance (RabbitMQ).
+        - delay: Integer (seconds). Delivery schedule.
+        - ttl: Float (seconds). Message expiration hint.
+        - correlation_id: String. Cross-reference for RPC.
+
+        RESILIENCE:
+        - A subscriber that reaches 5 consecutive FINAL failures for a specific event is auto-unsubscribed.
+        - Each auto-unsubscribe publishes 'system.subscriber.dropped'
+          (payload: event, subscriber, error, consecutive_failures) so the drop
+          is observable — subscribe to it for alerting/monitoring.
+
+        WELL-KNOWN EVENTS:
+        - "overlay.vars.set" — publish a flat dict of variables to push them to all
+          live overlays (OBS browser sources). Persisted in the overlay_vars table,
+          broadcast instantly via SSE, readable in overlay JS as data.stats[key].
+          Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
+          Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
+          reads the variables from event.payload.
 ```
 
 ### 🔧 Tool: `http` (Status: ✅)
@@ -198,6 +243,9 @@ HTTP Server Tool (http):
           Special keys in 'data':
             - data["_auth"]: contains the payload from auth_validator if successful.
             - data["_files"]: list of FastAPI UploadFile objects (only if has_files=True).
+        - SECURITY DEFAULTS:
+            - Cookies set via context.set_cookie are 'Secure=True', 'HttpOnly=True', 'SameSite=Lax'.
+            - CSRF Guard: Mutations (POST/PUT/DELETE) using cookie auth REQUIRE 'X-Requested-With' header.
         - CAPABILITIES:
             - add_endpoint(path, method, handler, tags=None, request_model=None,
                            response_model=None, auth_validator=None, has_files=False):
@@ -205,15 +253,13 @@ HTTP Server Tool (http):
                   become Form fields. To use a file: file = data["_files"][0]; 
                   await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
             - mount_static(path, directory_path): Serve static files from a directory.
-                  ALWAYS use /api/ prefix (e.g. "/api/uploads") — the frontend proxy only
-                  forwards /api/* to the backend. Without it, requests will 404 in dev.
             - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
             - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
                 Server-Sent Events. generator yields formatted strings: "data: {...}\n\n".
         - HttpContext CAPABILITIES (inside handler):
             - context.set_status(code: int): Override HTTP status (default: 200).
             - context.redirect(url: str, status=302): Redirect to another URL.
-            - context.set_cookie(key, value, max_age=3600, httponly=True, samesite='lax'): Set cookie.
+            - context.set_cookie(key, value, max_age=3600, ...): Set secure response cookie.
             - context.set_header(key, value): Add custom response header.
             - context.set_binary_response(content: bytes, media_type: str): Return raw file.
         - RESPONSE CONTRACT:
@@ -276,6 +322,10 @@ Twitch Tool (twitch):
         OAUTH:
           - get_auth_url() -> tuple[str, str]:
               Returns (url, state). Save state for CSRF validation in the callback.
+          - consume_state(state) -> bool:
+              Validate and consume a CSRF state generated by get_auth_url().
+              Returns True once per state (second call with the same state returns False).
+              Use it in the OAuth callback before calling exchange_code().
           - await exchange_code(code) -> dict:
               Exchange OAuth code for tokens: {access_token, refresh_token, scope, expires_in}
           - await refresh_user_token(refresh_token) -> dict:
@@ -289,6 +339,16 @@ Twitch Tool (twitch):
           - await update_access_token(new_token, new_refresh_token?):
               Update the active session tokens in memory without disconnecting EventSub.
           - await disconnect(): Disconnect everything.
+          - get_session() -> dict | None:
+              Returns the current active session or None if not connected.
+              Keys: access_token, refresh_token, broadcaster_id, login.
+              Use it to check session state or read tokens without storing them elsewhere.
+          - is_eventsub_connected() -> bool:
+              Returns True only when the EventSub WebSocket session is established.
+              Use it to check if events are actually flowing.
+          - is_connecting() -> bool:
+              Returns True when a token is set but EventSub hasn't connected yet.
+              Use it to show a "connecting..." state between connect() and full readiness.
 
         CHAT:
           - await send_message(channel, message): Send a chat message.
@@ -322,24 +382,6 @@ HTTP Client Tool (http_client):
         - USAGE IN PLUGIN __init__: def __init__(self, http_client, ...)
 ```
 
-### 🔧 Tool: `auth` (Status: ✅)
-```text
-Authentication Tool (auth):
-        - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
-        - CAPABILITIES:
-            - hash_password(password: str) -> str: Securely hashes a plain-text password using bcrypt.
-            - verify_password(password: str, hashed_password: str) -> bool: Verifies if a password matches its hash.
-            - create_token(data: dict, expires_delta: Optional[int] = None) -> str: 
-                Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}). 
-                'expires_delta' is optional minutes until expiration.
-            - decode_token(token: str) -> dict: 
-                Verifies and decodes a JWT token. Returns the payload dictionary. 
-                Raises Exception if token is expired or invalid.
-            - validate_token(token: str) -> dict | None:
-                Safe, non-throwing token validation. Returns the decoded payload
-                if valid, or None if expired/invalid. Ideal for middleware guards.
-```
-
 ### 🔧 Tool: `context_manager` (Status: ✅)
 ```text
 Context Manager Tool (context_manager):
@@ -366,18 +408,23 @@ Logging Tool (logger):
 
 ### 🔧 Tool: `state` (Status: ✅)
 ```text
-In-Memory State Tool (state):
+Key-Value State Tool (state):
         - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
+        - IDEAL FOR: Counters, temporary caches, rate-limit windows, business semaphores.
+        - CONTRACT: All methods are async. Values must be JSON-serializable so the
+          tool can be swapped for a distributed store (Redis) without touching plugins.
+        - TTL: optional expiry in seconds. Expired keys behave like missing keys.
+          On increment(), the TTL only applies when the key is created (fixed window).
         - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
-            - has(key, namespace='default'): Returns True if key exists.
-            - keys(namespace='default'): Returns list of all keys in the namespace.
-            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
-            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
-            - delete(key, namespace='default'): Delete a key (no-op if missing).
-            - clear(namespace='default'): Remove all keys in the namespace.
+            - await set(key, value, namespace='default', ttl=None): Store a value.
+            - await get(key, default=None, namespace='default'): Retrieve a value (None if missing).
+            - await has(key, namespace='default'): Returns True if key exists.
+            - await keys(namespace='default'): Returns list of all live keys in the namespace.
+            - await get_all(namespace='default'): Returns a deep copy of all live key-value pairs.
+            - await increment(key, amount=1, namespace='default', ttl=None): Atomic increment.
+              Starts at 0. Returns the new value.
+            - await delete(key, namespace='default'): Delete a key (no-op if missing).
+            - await clear(namespace='default'): Remove all keys in the namespace.
 ```
 
 ### 🔧 Tool: `registry` (Status: ✅)
@@ -402,7 +449,9 @@ Systems Registry Tool (registry):
                   },
                   "domains": { ... }
                 }
-                NOTE: status is updated REACTIVELY (on exception via ToolProxy).
+                NOTE: status is updated REACTIVELY via ToolProxy (hybrid policy):
+                ToolUnavailableError -> DEAD immediately; any other exception ->
+                DEAD only after 5 consecutive failures (success resets the streak).
                 A tool that silently stopped responding may still show "OK".
             - get_domain_metadata() -> dict: Detailed analysis of models and schemas.
             - get_metrics() -> list[dict]: Last 1000 tool call records.
@@ -430,13 +479,20 @@ Scheduler Tool (scheduler):
                 Providing a stable job_id prevents duplicates on restart.
             - add_one_shot(run_at: datetime, callback, job_id?: str) -> str:
                 Schedule a one-time job at a specific datetime (timezone-aware).
-                Returns job_id.
+                Returns job_id. IN-MEMORY: lost if the process restarts before firing.
+                For one-shots that must survive restarts, publish to the bus:
+                "system.one_shot.schedule" (durable scheduling service, system domain).
             - remove_job(job_id: str) -> bool:
                 Remove a job by ID. Returns True if removed, False if not found.
             - list_jobs() -> list[dict]:
                 Snapshot of all scheduled jobs: [{id, next_run, trigger}].
         - REGISTER IN on_boot(): jobs are collected during on_boot(), scheduler starts
           in on_boot_complete() after all plugins have registered.
+        - SCALING (N replicas): set SCHEDULER_ENABLED=false in worker replicas — jobs
+          register everywhere but fire only in the single "beat" replica. Jobs should
+          publish an event to the bus and return; workers consume it (group semantics
+          guarantee exactly one execution across the fleet). Do heavy work in the
+          worker, never in the job callback.
         - SWAP: replace with Celery beat by creating a new tool with name = "scheduler"
           and the same 4-method API. Plugins do not change.
 ```
@@ -459,6 +515,11 @@ Async SQLite Persistence Tool (sqlite):
               Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
             - await health_check() → bool: Verify database connectivity.
         - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
+          topological sort (alphabetical by default). To declare that one migration must
+          run before another, add as the first comment line:
+            "-- depends: other_domain/001_file.sql"
+          Works for same-domain or cross-domain dependencies. .sql extension is optional.
 ```
 
 ### 🔧 Tool: `tts` (Status: ✅)
@@ -493,16 +554,16 @@ TTS Tool (tts):
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: ai, db, http, logger, state
-- **Plugins**: GetAIConfigPlugin, RestoreAIConfigPlugin, SaveAIConfigPlugin, TestAIConfigPlugin, ToggleIAChatPlugin
+- **Plugins**: ai_config.GetAIConfigPlugin, ai_config.RestoreAIConfigPlugin, ai_config.SaveAIConfigPlugin, ai_config.TestAIConfigPlugin, ai_config.ToggleIAChatPlugin
 
 ### `chat_bot`
 - **Table `chat_command`**: name (str), response (str), cooldown_s (int), enabled (int), created_at (str), channel (str), user_id (str), display_name (str), message (str), is_command (int), timestamp (str)
 - **Table `chat_var`**: name (str), value (str), enabled (int), created_at (str)
 - **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}, SSE /api/chat/stream
 - **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command), `chat.message.received` ()
-- **Events consumed**: none
+- **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch
-- **Plugins**: ChatAutoResponsePlugin, ChatBadgesPlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CommandsListPlugin, CreateCommandPlugin, CreateVarPlugin, DeleteCommandPlugin, DeleteVarPlugin, EchoReminderPlugin, IAChatPlugin, ListCommandsPlugin, ListRemindersPlugin, ListVarsPlugin, UpdateCommandPlugin, UpdateVarPlugin, VarCommandPlugin
+- **Plugins**: chat_bot.ChatAutoResponsePlugin, chat_bot.ChatBadgesPlugin, chat_bot.ChatCommandHandlerPlugin, chat_bot.ChatMessageDispatcherPlugin, chat_bot.ChatStreamPlugin, chat_bot.CommandsListPlugin, chat_bot.CreateCommandPlugin, chat_bot.CreateVarPlugin, chat_bot.DeleteCommandPlugin, chat_bot.DeleteVarPlugin, chat_bot.EchoReminderPlugin, chat_bot.IAChatPlugin, chat_bot.ListCommandsPlugin, chat_bot.ListRemindersPlugin, chat_bot.ListVarsPlugin, chat_bot.UpdateCommandPlugin, chat_bot.UpdateVarPlugin, chat_bot.VarCommandPlugin
 
 ### `dashboard`
 - **Table `channel_stats`**: recorded_at (str), viewer_count (int), follower_count (int)
@@ -510,23 +571,23 @@ TTS Tool (tts):
 - **Events emitted**: `dashboard.stats.updated` (follower_count, viewer_count)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
-- **Plugins**: ChannelStatsCollectorPlugin, ChannelStatsHistoryPlugin, DashboardAlertsPlugin, DashboardStatsPlugin
+- **Plugins**: dashboard.ChannelStatsCollectorPlugin, dashboard.ChannelStatsHistoryPlugin, dashboard.DashboardAlertsPlugin, dashboard.DashboardStatsPlugin
 
 ### `moderation`
 - **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
 - **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
-- **Events consumed**: none
+- **Events consumed**: chat.message.received, moderation.rules.updated
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
-- **Plugins**: AiModPlugin, AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
+- **Plugins**: moderation.AiModPlugin, moderation.AutoModPlugin, moderation.CreateModRulePlugin, moderation.DeleteModRulePlugin, moderation.ListModRulesPlugin, moderation.ManualBanPlugin, moderation.ManualTimeoutPlugin, moderation.ManualUnbanPlugin, moderation.ModLogPlugin, moderation.UpdateModRulePlugin
 
 ### `overlays`
 - **Table `overlay`**: name (str), config (str), created_at (any), updated_at (any)
 - **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/upload-background, PUT /api/overlays/{id}, SSE /api/overlays/stream/{id}
 - **Events emitted**: `overlay.config.updated` (overlay_id)
-- **Events consumed**: none
+- **Events consumed**: chat.message.received, dashboard.stats.updated, overlay.config.updated, overlay.vars.set
 - **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: CreateOverlayPlugin, DeleteBackgroundPlugin, DeleteOverlayPlugin, GetOverlayPlugin, ListBackgroundsPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, OverlayStreamPlugin, UpdateOverlayPlugin, UploadBackgroundPlugin
+- **Plugins**: overlays.CreateOverlayPlugin, overlays.DeleteBackgroundPlugin, overlays.DeleteOverlayPlugin, overlays.GetOverlayPlugin, overlays.ListBackgroundsPlugin, overlays.ListOverlaysPlugin, overlays.OverlayConfigPlugin, overlays.OverlayDataPlugin, overlays.OverlayStreamPlugin, overlays.UpdateOverlayPlugin, overlays.UploadBackgroundPlugin
 
 ### `ping`
 - **Tables**: none
@@ -534,15 +595,15 @@ TTS Tool (tts):
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: http, logger
-- **Plugins**: PingPlugin
+- **Plugins**: ping.PingPlugin
 
 ### `stream_state`
 - **Table `stream_session`**: twitch_stream_id (Optional[str]), started_at (str), ended_at (Optional[str]), title (Optional[str]), game_name (Optional[str]), peak_viewers (int)
 - **Endpoints**: GET /api/stream/sessions, GET /api/stream/status
 - **Events emitted**: `stream.session.ended` (ended_at, session_id), `stream.session.started` (broadcaster_login, session_id, started_at, twitch_stream_id)
-- **Events consumed**: none
+- **Events consumed**: stream.status.requested
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
-- **Plugins**: GetStreamStatusPlugin, StreamHistoryPlugin, StreamStateRpcPlugin, StreamStatusPlugin
+- **Plugins**: stream_state.GetStreamStatusPlugin, stream_state.StreamHistoryPlugin, stream_state.StreamStateRpcPlugin, stream_state.StreamStatusPlugin
 
 ### `subscribers`
 - **Table `subscriber`**: twitch_id (str), login (str), display_name (str), tier (str), is_prime (bool), is_gift (bool), cumulative_months (int), streak_months (Optional[int]), subscribed_at (str), last_sub_at (str), is_active (bool), bits_total (int), last_cheer_at (str)
@@ -550,31 +611,31 @@ TTS Tool (tts):
 - **Events emitted**: `subscriber.expired` (twitch_id), `subscriber.gift` (cumulative_total, gifter_id, gifter_name, total), `subscriber.new` (display_name, is_gift, tier, twitch_id), `subscriber.resub` (cumulative_months, display_name, streak_months, tier, twitch_id), `viewer.bits.received` (bits, display_name, twitch_id)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, twitch
-- **Plugins**: BitsLeaderboardPlugin, BitsTrackerPlugin, GiftersLeaderboardPlugin, SubscribersLeaderboardPlugin, SubscriptionTrackerPlugin, SyncBitsPlugin, SyncSubscribersPlugin
+- **Plugins**: subscribers.BitsLeaderboardPlugin, subscribers.BitsTrackerPlugin, subscribers.GiftersLeaderboardPlugin, subscribers.SubscribersLeaderboardPlugin, subscribers.SubscriptionTrackerPlugin, subscribers.SyncBitsPlugin, subscribers.SyncSubscribersPlugin
 
 ### `system`
-- **Tables**: none
-- **Endpoints**: GET /api/system/events, GET /api/system/status, GET /api/system/traces/flat, GET /api/system/traces/tree, SSE /api/system/events/stream, SSE /api/system/logs/stream, SSE /api/system/traces/stream
+- **Table `scheduler_one_shot`**: job_id (str), run_at_epoch (float), event (str), payload (str)
+- **Endpoints**: GET /api/system/events, GET /api/system/lint, GET /api/system/metrics, GET /api/system/status, GET /api/system/traces/flat, GET /api/system/traces/tree, SSE /api/system/events/stream, SSE /api/system/logs/stream, SSE /api/system/metrics/stream, SSE /api/system/traces/stream
 - **Events emitted**: `event.delivery.failed` ()
-- **Events consumed**: none
-- **Dependencies**: config, db, event_bus, http, logger, registry
-- **Plugins**: EventDeliveryMonitorPlugin, SystemEventsPlugin, SystemEventsStreamPlugin, SystemLogsStreamPlugin, SystemStatusPlugin, SystemTracesPlugin, SystemTracesStreamPlugin, ToolHealthPlugin
+- **Events consumed**: system.one_shot.cancel, system.one_shot.schedule
+- **Dependencies**: config, container, db, event_bus, http, logger, registry, scheduler
+- **Plugins**: system.ArchitectureLinterPlugin, system.DurableOneShotsPlugin, system.EventContractLinterPlugin, system.EventDeliveryMonitorPlugin, system.SystemEventsPlugin, system.SystemEventsStreamPlugin, system.SystemLogsStreamPlugin, system.SystemMetricsPlugin, system.SystemStatusPlugin, system.SystemTracesPlugin, system.SystemTracesStreamPlugin, system.ToolHealthPlugin
 
 ### `timers`
 - **Table `timer`**: name (str), message (str), interval_minutes (int), min_lines (int), enabled (int), last_executed_at (any), created_at (any)
 - **Endpoints**: DELETE /api/timers/{id}, GET /api/timers, POST /api/timers, PUT /api/timers/{id}
 - **Events emitted**: `timer.created` (id, name), `timer.deleted` (id), `timer.updated` (id)
-- **Events consumed**: none
+- **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
-- **Plugins**: CreateTimerPlugin, DeleteTimerPlugin, GetTimersPlugin, TimerExecutorPlugin, UpdateTimerPlugin
+- **Plugins**: timers.CreateTimerPlugin, timers.DeleteTimerPlugin, timers.GetTimersPlugin, timers.TimerExecutorPlugin, timers.UpdateTimerPlugin
 
 ### `tts_chat`
 - **Table `tts_voice_config`**: twitch_id (str), twitch_login (str), voice_id (str), voice_name (str), provider (str), created_at (str), updated_at (str), enabled (bool), host (str), port (int), default_voice (str), timeout_s (int), max_message_length (int), skip_commands (bool), skip_links (bool), sub_only (bool), cooldown_seconds (int), blocked_words (str)
 - **Endpoints**: DELETE /api/tts/user-voices/{twitch_login}, GET /api/tts/settings, GET /api/tts/user-voices, GET /api/tts/user-voices/{twitch_login}, GET /api/tts/voices, PUT /api/tts/settings, PUT /api/tts/user-voices, SSE /api/tts/overlay/stream
 - **Events emitted**: `tts.audio.ready` (audio_b64, text, username, voice_id)
-- **Events consumed**: none
+- **Events consumed**: chat.message.received, tts.audio.ready
 - **Dependencies**: db, event_bus, http, logger, tts, twitch
-- **Plugins**: TtsListenerPlugin, TtsRedemptionPlugin, TtsRestoreConfigPlugin, TtsSettingsPlugin, TtsStreamPlugin, TtsUserVoicesPlugin, TtsVoiceCommandPlugin, TtsVoiceListPlugin
+- **Plugins**: tts_chat.TtsListenerPlugin, tts_chat.TtsRedemptionPlugin, tts_chat.TtsRestoreConfigPlugin, tts_chat.TtsSettingsPlugin, tts_chat.TtsStreamPlugin, tts_chat.TtsUserVoicesPlugin, tts_chat.TtsVoiceCommandPlugin, tts_chat.TtsVoiceListPlugin
 
 ### `twitch_auth`
 - **Table `twitch_token`**: twitch_id (str), login (str), display_name (str), access_token (str), refresh_token (str), scopes (str), expires_at (str), created_at (str), updated_at (str)
@@ -582,21 +643,21 @@ TTS Tool (tts):
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, scheduler, twitch
-- **Plugins**: RestoreSessionPlugin, TwitchAuthStatusPlugin, TwitchEventBridgePlugin, TwitchLogoutPlugin, TwitchOAuthCallbackPlugin, TwitchOAuthStartPlugin, TwitchScopesPlugin, TwitchTokenRefreshPlugin
+- **Plugins**: twitch_auth.RestoreSessionPlugin, twitch_auth.TwitchAuthStatusPlugin, twitch_auth.TwitchEventBridgePlugin, twitch_auth.TwitchLogoutPlugin, twitch_auth.TwitchOAuthCallbackPlugin, twitch_auth.TwitchOAuthStartPlugin, twitch_auth.TwitchScopesPlugin, twitch_auth.TwitchTokenRefreshPlugin
 
 ### `viewers`
 - **Table `viewer`**: twitch_id (str), login (str), display_name (str), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
 - **Endpoints**: DELETE /api/viewers/regulars/{twitch_id}, GET /api/viewers, GET /api/viewers/leaderboard, GET /api/viewers/regulars, GET /api/viewers/{login}, POST /api/viewers/regulars, POST /api/viewers/{twitch_id}/points
 - **Events emitted**: `viewer.points.awarded` (delta, display_name, twitch_id), `viewer.regular.added` (added_by, display_name, twitch_id), `viewer.regular.removed` (display_name, twitch_id)
-- **Events consumed**: none
+- **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, twitch
-- **Plugins**: AddRegularPlugin, AdjustPointsPlugin, GetViewerPlugin, LeaderboardPlugin, ListRegularsPlugin, ListViewersPlugin, RegularsCommandPlugin, RemoveRegularPlugin, ViewerActivityPlugin
+- **Plugins**: viewers.AddRegularPlugin, viewers.AdjustPointsPlugin, viewers.GetViewerPlugin, viewers.LeaderboardPlugin, viewers.ListRegularsPlugin, viewers.ListViewersPlugin, viewers.RegularsCommandPlugin, viewers.RemoveRegularPlugin, viewers.ViewerActivityPlugin
 
 ### `webhooks`
 - **Table `webhook`**: name (str), url (str), method (str), headers (Optional[str]), body_template (Optional[str]), trigger_type (str), trigger_value (str), filter_field (Optional[str]), filter_value (Optional[str]), enabled (bool), created_at (Optional[str]), updated_at (Optional[str])
 - **Endpoints**: DELETE /api/webhooks/{webhook_id}, GET /api/webhooks, POST /api/webhooks, POST /api/webhooks/test, PUT /api/webhooks/{webhook_id}
 - **Events emitted**: none
-- **Events consumed**: none
+- **Events consumed**: *, chat.command.executed
 - **Dependencies**: db, event_bus, http, http_client, logger
-- **Plugins**: CreateWebhookPlugin, DeleteWebhookPlugin, ListWebhooksPlugin, TestWebhookPlugin, UpdateWebhookPlugin, WebhookExecutorPlugin
+- **Plugins**: webhooks.CreateWebhookPlugin, webhooks.DeleteWebhookPlugin, webhooks.ListWebhooksPlugin, webhooks.TestWebhookPlugin, webhooks.UpdateWebhookPlugin, webhooks.WebhookExecutorPlugin
 

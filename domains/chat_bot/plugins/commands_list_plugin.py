@@ -22,7 +22,8 @@ class CommandsListPlugin(BasePlugin):
     async def on_boot(self):
         await self.bus.subscribe("chat.command.received", self._on_command)
 
-    async def _on_command(self, data: dict):
+    async def _on_command(self, event):
+        data = event.payload
         if data.get("command", "").lower() != "!commands":
             return
 

@@ -36,6 +36,7 @@ class Kernel:
             return found_classes
 
         abs_dir = os.path.abspath(directory)
+        is_domains_dir = os.path.basename(abs_dir) == "domains"
         for root, _, files in os.walk(abs_dir):
             for file in sorted(files):
                 if not file.endswith(".py") or file == "__init__.py":
@@ -51,7 +52,7 @@ class Kernel:
                         spec.loader.exec_module(module)
 
                     domain_name = None
-                    if "domains" in path:
+                    if is_domains_dir:
                         domain_name = os.path.relpath(path, abs_dir).split(os.sep)[0]
 
                     for _, obj in inspect.getmembers(module):
@@ -107,14 +108,15 @@ class Kernel:
         # 2. Boot Plugins
         boot_tasks = []
         for plugin_cls, domain in self._load_modules_from_dir("domains", BasePlugin):
-            p_name = plugin_cls.__name__
+            class_name = plugin_cls.__name__
+            p_name = f"{domain}.{class_name}" if domain else class_name
             try:
                 deps, missing = self._resolve_plugin_dependencies(plugin_cls)
                 
                 self.container.registry.register_plugin(p_name, {
                     "dependencies": list(deps.keys()),
                     "domain": domain,
-                    "class": p_name
+                    "class": class_name
                 })
 
                 if missing:
@@ -124,6 +126,9 @@ class Kernel:
                     continue
 
                 instance = plugin_cls(**deps)
+                # Stamp the registered identity so infrastructure names this
+                # plugin exactly like the registry does ("domain.ClassName").
+                instance._identity = p_name
                 self.plugins[p_name] = instance
                 self.container.registry.update_plugin_status(p_name, "RUNNING")
 
@@ -157,6 +162,28 @@ class Kernel:
                 print(f"[Kernel] Post-boot error in {name}: {e}")
 
         print("--- [Kernel] System Ready ---")
+
+    async def boot_tool(self, tool_name: str):
+        """Pipeline entry point: boot ONE tool in isolation, then exit.
+
+        Runs the tool's full lifecycle (setup → on_boot_complete → shutdown)
+        with no plugins and no other infrastructure. Deployment pipelines use
+        this to trigger a tool's boot-time maintenance work offline; which
+        tool and with which env vars is deployment configuration, not code.
+        """
+        print(f"--- [Kernel] Single-tool boot: '{tool_name}' ---")
+        for tool_cls, _ in self._load_modules_from_dir("tools", BaseTool):
+            instance = tool_cls()
+            if instance.name != tool_name:
+                continue
+            await self._call_maybe_async(instance.setup)
+            try:
+                await self._call_maybe_async(instance.on_boot_complete, self.container)
+            finally:
+                await self._call_maybe_async(instance.shutdown)
+            print(f"--- [Kernel] '{tool_name}' boot complete ---")
+            return
+        raise RuntimeError(f"No tool named '{tool_name}' found.")
 
     async def shutdown(self):
         print("\n--- [Kernel] Shutting down ---")

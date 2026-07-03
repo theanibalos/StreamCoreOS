@@ -48,7 +48,9 @@ class RegistryTool(BaseTool):
                   },
                   "domains": { ... }
                 }
-                NOTE: status is updated REACTIVELY (on exception via ToolProxy).
+                NOTE: status is updated REACTIVELY via ToolProxy (hybrid policy):
+                ToolUnavailableError -> DEAD immediately; any other exception ->
+                DEAD only after 5 consecutive failures (success resets the streak).
                 A tool that silently stopped responding may still show "OK".
             - get_domain_metadata() -> dict: Detailed analysis of models and schemas.
             - get_metrics() -> list[dict]: Last 1000 tool call records.
