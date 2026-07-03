@@ -1,5 +1,5 @@
+import ast
 import os
-import re
 from core.base_tool import BaseTool
 
 
@@ -18,7 +18,7 @@ class ContextTool(BaseTool):
         - CAPABILITIES:
             - Reads the system registry.
             - Exports active tools, health status, and domain models to AI_CONTEXT.md.
-            - Generates per-domain AI_CONTEXT.md files inside each domain folder.
+            - Regenerates AI_CONTEXT.md on every boot — always up to date with the live system.
         """
 
     def _scan_domain_models(self, registry):
@@ -180,8 +180,9 @@ class CreateThingPlugin(BasePlugin):
             await self.bus.publish("thing.created", {"id": thing_id})
             return {"success": True, "data": {"id": thing_id, "name": req.name}}
         except Exception as e:
-            self.logger.error(f"Failed: {e}")
-            return {"success": False, "error": str(e)}
+            # Technical error logged server-side, safe message for client
+            self.logger.error(f"Failed to create thing: {e}")
+            return {"success": False, "error": "Database error"}
 ```
 
 ### New Domain Structure
@@ -213,34 +214,60 @@ domains/{name}/
 
     def _get_domain_endpoints(self, domain: str) -> list[str]:
         """
-        Static analysis of plugin source files — same approach as _scan_published_events.
-        Handles both call styles:
-          positional: add_endpoint("/path", "METHOD", ...)
-          keyword:    add_endpoint(path="/path", method="METHOD", ...)
+        AST analysis of plugin source files to extract endpoints.
+        More robust than regex.
         """
         endpoints: set[str] = set()
         plugins_dir = os.path.join("domains", domain, "plugins")
         if not os.path.isdir(plugins_dir):
             return []
+
         for filename in os.listdir(plugins_dir):
             if not filename.endswith(".py"):
                 continue
+            filepath = os.path.join(plugins_dir, filename)
             try:
-                with open(os.path.join(plugins_dir, filename), "r", encoding="utf-8") as f:
-                    content = f.read()
-                # Positional: add_endpoint("/path", "METHOD", ...)
-                for m in re.finditer(
-                    r'add_endpoint\(\s*["\']([^"\']+)["\'],\s*["\']([A-Z]+)["\']', content
-                ):
-                    endpoints.add(f"{m.group(2)} {m.group(1)}")
-                # Keyword: add_endpoint(path="/path", ..., method="METHOD", ...)
-                for call in re.findall(r'add_endpoint\(([^)]+)\)', content, re.DOTALL):
-                    path_m = re.search(r'path\s*=\s*["\']([^"\']+)["\']', call)
-                    method_m = re.search(r'method\s*=\s*["\']([A-Z]+)["\']', call)
-                    if path_m and method_m:
-                        endpoints.add(f"{method_m.group(1)} {path_m.group(1)}")
-            except Exception:
-                pass
+                with open(filepath, "r", encoding="utf-8") as f:
+                    tree = ast.parse(f.read())
+                
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                        method_name = node.func.attr
+                        
+                        # 1. add_endpoint
+                        if method_name == "add_endpoint":
+                            path, method = None, None
+                            # Positional args
+                            if len(node.args) >= 2:
+                                if isinstance(node.args[0], ast.Constant): path = node.args[0].value
+                                if isinstance(node.args[1], ast.Constant): method = node.args[1].value
+                            # Keyword args
+                            for kw in node.keywords:
+                                if kw.arg == "path" and isinstance(kw.value, ast.Constant): path = kw.value.value
+                                if kw.arg == "method" and isinstance(kw.value, ast.Constant): method = kw.value.value
+                            
+                            if path and method:
+                                endpoints.add(f"{method.upper()} {path}")
+
+                        # 2. SSE
+                        elif method_name == "add_sse_endpoint":
+                            path = None
+                            if node.args and isinstance(node.args[0], ast.Constant): path = node.args[0].value
+                            for kw in node.keywords:
+                                if kw.arg == "path" and isinstance(kw.value, ast.Constant): path = kw.value.value
+                            if path: endpoints.add(f"SSE {path}")
+
+                        # 3. WS
+                        elif method_name == "add_ws_endpoint":
+                            path = None
+                            if node.args and isinstance(node.args[0], ast.Constant): path = node.args[0].value
+                            for kw in node.keywords:
+                                if kw.arg == "path" and isinstance(kw.value, ast.Constant): path = kw.value.value
+                            if path: endpoints.add(f"WS {path}")
+
+            except Exception as e:
+                print(f"[ContextTool] Error parsing AST for {filepath}: {e}")
+        
         return sorted(endpoints)
 
     def _get_consumed_events(self, plugin_names: list[str], container) -> set[str]:
@@ -251,7 +278,14 @@ domains/{name}/
                 if event.startswith("_reply."):
                     continue
                 for sub in subs:
-                    if sub.split(".")[0] in plugin_names:
+                    # sub is "module.ClassName.method_name" (module-qualified
+                    # so derived consumer groups never collide across domains)
+                    parts = sub.split(".")
+                    if len(parts) < 3:
+                        continue  # plain-function subscriber, not a plugin method
+                    sub_class = parts[-2]
+                    # plugin_names contains "domain.ClassName"
+                    if any(p.endswith(f".{sub_class}") or p == sub_class for p in plugin_names):
                         consumed.add(event)
                         break
             return consumed
@@ -260,31 +294,42 @@ domains/{name}/
 
     def _scan_published_events(self, domain: str) -> dict[str, set[str]]:
         """
-        Scans plugin files to find published events and their payload keys.
+        AST analysis to find .publish() calls.
         Returns a dict: { "event.name": {"key1", "key2", ...} }
         """
         event_map: dict[str, set[str]] = {}
         plugins_dir = os.path.join("domains", domain, "plugins")
         if not os.path.isdir(plugins_dir):
             return event_map
-        
-        # Regex to find: .publish("event.name", {"key": val, 'key2': val2})
-        # This is a basic extractor for simple dict literals.
-        publish_pattern = re.compile(r'\.publish\(\s*["\']([^"\']+)["\']\s*,\s*(\{.*?\})', re.DOTALL)
-        
+
         for filename in os.listdir(plugins_dir):
             if not filename.endswith(".py"):
                 continue
+            filepath = os.path.join(plugins_dir, filename)
             try:
-                with open(os.path.join(plugins_dir, filename), "r", encoding="utf-8") as f:
-                    content = f.read()
+                with open(filepath, "r", encoding="utf-8") as f:
+                    tree = ast.parse(f.read())
                 
-                for event_name, payload_str in publish_pattern.findall(content):
-                    keys = set(re.findall(r'["\']([^"\']+)["\']\s*:', payload_str))
-                    if event_name not in event_map:
-                        event_map[event_name] = keys
-                    else:
-                        event_map[event_name].update(keys)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                        if node.func.attr == "publish":
+                            event_name, keys = None, set()
+                            
+                            # First arg is event name
+                            if node.args and isinstance(node.args[0], ast.Constant):
+                                event_name = node.args[0].value
+                            
+                            # Second arg is payload (dict)
+                            if len(node.args) >= 2 and isinstance(node.args[1], ast.Dict):
+                                for k in node.args[1].keys:
+                                    if isinstance(k, ast.Constant):
+                                        keys.add(str(k.value))
+                            
+                            if event_name:
+                                if event_name not in event_map:
+                                    event_map[event_name] = keys
+                                else:
+                                    event_map[event_name].update(keys)
             except Exception:
                 pass
         return event_map
@@ -301,8 +346,7 @@ domains/{name}/
 
     def _get_model_fields(self, domain: str, table: str) -> dict[str, str]:
         """
-        Parses the model file to extract fields and their types.
-        Simple regex-based parsing for MicroCoreOS models.
+        AST parsing for models to extract Pydantic fields accurately.
         """
         model_path = os.path.join("domains", domain, "models", f"{table}.py")
         if not os.path.exists(model_path):
@@ -311,19 +355,22 @@ domains/{name}/
         fields = {}
         try:
             with open(model_path, "r", encoding="utf-8") as f:
-                content = f.read()
+                tree = ast.parse(f.read())
             
-            # Match fields in Pydantic model (e.g. name: str, price: float = 0.0)
-            # We skip 'id' as it's auto-generated.
-            for line in content.split("\n"):
-                line = line.strip()
-                if ":" in line and not line.startswith("class") and not line.startswith("def"):
-                    parts = line.split(":")
-                    name = parts[0].strip()
-                    if name == "id":
-                        continue
-                    type_part = parts[1].split("=")[0].strip()
-                    fields[name] = type_part
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    for item in node.body:
+                        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                            name = item.target.id
+                            if name == "id": continue
+                            # Simplified type extraction
+                            type_str = "any"
+                            if isinstance(item.annotation, ast.Name):
+                                type_str = item.annotation.id
+                            elif isinstance(item.annotation, ast.Subscript):
+                                # Handle Optional[str], etc.
+                                type_str = ast.unparse(item.annotation)
+                            fields[name] = type_str
         except Exception:
             pass
         return fields

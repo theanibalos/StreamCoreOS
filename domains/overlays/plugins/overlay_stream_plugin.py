@@ -20,6 +20,14 @@ class OverlayStreamPlugin(BasePlugin):
       {"type": "alert",          "data": { "type": event_type, "data": {...} }}
       {"type": "config_updated", "data": { overlay_id, config, stats }}
       {"__type": "heartbeat"}    — filtered client-side by the SSE watchdog
+
+    Dynamic vars pool:
+      Any plugin can push arbitrary variables to every overlay by publishing
+      the bus event "overlay.vars.set" with a flat dict payload, e.g.:
+          await self.bus.publish("overlay.vars.set", {"my.custom_var": 42})
+      Vars are persisted in the overlay_vars table (survive restarts), merged
+      into the stats snapshot, and broadcast to overlays as a "stats" message.
+      Overlays read them as data.stats["my.custom_var"].
     """
 
     def __init__(self, http, db, state, event_bus, twitch, logger):
@@ -30,6 +38,8 @@ class OverlayStreamPlugin(BasePlugin):
         self.twitch = twitch
         self.logger = logger
         self._follower_count: int = 0
+        # Dynamic vars pool: merged into stats snapshots, persisted in DB.
+        self._vars: dict = {}
         # overlay_id (str) → {"needs_stats", "needs_chat", "needs_alerts", "queues"}
         self._registry: dict[str, dict] = {}
 
@@ -43,9 +53,25 @@ class OverlayStreamPlugin(BasePlugin):
         except Exception:
             pass
 
+        try:
+            rows = await self.db.query("SELECT key, value FROM overlay_vars", [])
+            for r in rows:
+                try:
+                    self._vars[r["key"]] = json.loads(r["value"])
+                except (json.JSONDecodeError, TypeError):
+                    self._vars[r["key"]] = r["value"]
+        except Exception as e:
+            self.logger.error(f"[OverlayStream] Vars pool load error: {e}")
+
         await self.bus.subscribe("chat.message.received",   self._on_chat)
         await self.bus.subscribe("dashboard.stats.updated", self._on_stats_updated)
         await self.bus.subscribe("overlay.config.updated",  self._on_config_updated)
+        await self.bus.subscribe("overlay.vars.set",        self._on_vars_set)
+
+        # System (non-Twitch) bus events forwarded to overlays as alerts
+        for bus_event in ("stream.session.started", "stream.session.ended",
+                          "moderation.action.taken", "viewer.points.awarded"):
+            await self.bus.subscribe(bus_event, self._make_system_forwarder(bus_event))
 
         # All Twitch events — alerts go straight to the overlay unprocessed.
         # Stats-relevant events (follows, subs, etc.) are handled via the
@@ -60,17 +86,19 @@ class OverlayStreamPlugin(BasePlugin):
 
     # ── Needs detection ───────────────────────────────────────────────
 
-    def _detect_needs(self, elements: list) -> dict:
-        needs = {"needs_stats": False, "needs_chat": False, "needs_alerts": False}
-        for el in elements:
-            t = el.get("type")
-            if t in ("stat", "progress_bar"):
-                needs["needs_stats"] = True
-            elif t in ("chat_highlight", "custom_code"):
-                needs["needs_chat"] = True
-            elif t == "alert":
-                needs["needs_alerts"] = True
-        return needs
+    def _resolve_needs(self, config: dict) -> dict:
+        """
+        Reads the `needs` summary the frontend saves alongside the config
+        (derived from each widget's declared data needs — see
+        overlays/dataSource.svelte.ts computeOverlayNeeds). Overlays without
+        the field receive no channels — re-save them in the builder.
+        """
+        explicit = config.get("needs") or {}
+        return {
+            "needs_stats": bool(explicit.get("stats", False)),
+            "needs_chat": bool(explicit.get("chat", False)),
+            "needs_alerts": bool(explicit.get("alerts", False)),
+        }
 
     # ── Broadcast helpers ─────────────────────────────────────────────
 
@@ -94,6 +122,36 @@ class OverlayStreamPlugin(BasePlugin):
         msg = json.dumps(message)
         for q in entry["queues"]:
             self._enqueue(q, msg)
+
+    # ── Dynamic vars pool ─────────────────────────────────────────────
+
+    async def _on_vars_set(self, data: dict):
+        if not isinstance(data, dict) or not data:
+            return
+        await self._set_vars(data)
+
+    async def _set_vars(self, new_vars: dict):
+        """Merge vars into the pool, persist them and broadcast the delta."""
+        self._vars.update(new_vars)
+        for key, value in new_vars.items():
+            try:
+                await self.db.execute(
+                    "INSERT INTO overlay_vars (key, value, updated_at) "
+                    "VALUES ($1, $2, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(key) DO UPDATE SET "
+                    "value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+                    [str(key), json.dumps(value)],
+                )
+            except Exception as e:
+                self.logger.error(f"[OverlayStream] Var persist error ({key}): {e}")
+        self._broadcast_by_need("needs_stats", {"type": "stats", "data": new_vars})
+
+    def _make_system_forwarder(self, event_type: str):
+        async def _forward(data: dict):
+            self._broadcast_by_need("needs_alerts", {
+                "type": "alert", "data": {"type": event_type, "data": data or {}}
+            })
+        return _forward
 
     # ── Event handlers ────────────────────────────────────────────────
 
@@ -121,6 +179,11 @@ class OverlayStreamPlugin(BasePlugin):
                 "type": "stats", "data": await self._current_stats()
             })
 
+        # Built-in "latest event" vars (readable as stats["followers.latest_name"], etc.)
+        latest = self._latest_event_vars(event_type, payload)
+        if latest:
+            await self._set_vars(latest)
+
         # All events go to alert overlays
         self._broadcast_by_need("needs_alerts", {
             "type": "alert", "data": {"type": event_type, "data": payload}
@@ -140,11 +203,28 @@ class OverlayStreamPlugin(BasePlugin):
             self.logger.error(f"[OverlayStream] Config reload error: {e}")
             config = {}
 
-        entry.update(self._detect_needs(config.get("elements", [])))
+        entry.update(self._resolve_needs(config))
         self._broadcast_to_overlay(overlay_id, {
             "type": "config_updated",
             "data": {"overlay_id": overlay_id, "config": config, "stats": await self._current_stats()}
         })
+
+    def _latest_event_vars(self, event_type: str, payload: dict) -> dict:
+        name = payload.get("user_name") or payload.get("user_login") or ""
+        if event_type == "channel.follow" and name:
+            return {"followers.latest_name": name}
+        if event_type in ("channel.subscribe", "channel.subscription.message") and name:
+            return {"subscribers.latest_name": name,
+                    "subscribers.latest_tier": payload.get("tier", "")}
+        if event_type == "channel.cheer":
+            return {"cheers.latest_name": name or "Anónimo",
+                    "cheers.latest_bits": payload.get("bits", "")}
+        if event_type == "channel.raid":
+            raider = name or payload.get("from_broadcaster_user_name", "")
+            if raider:
+                return {"raids.latest_name": raider,
+                        "raids.latest_viewers": payload.get("viewers", "")}
+        return {}
 
     # ── SSE stream ────────────────────────────────────────────────────
 
@@ -160,7 +240,7 @@ class OverlayStreamPlugin(BasePlugin):
         except Exception:
             config = {}
 
-        needs = self._detect_needs(config.get("elements", []))
+        needs = self._resolve_needs(config)
 
         if overlay_id not in self._registry:
             self._registry[overlay_id] = {**needs, "queues": []}
@@ -216,4 +296,6 @@ class OverlayStreamPlugin(BasePlugin):
         except Exception:
             stats["bits.total"] = 0
 
+        # Dynamic vars pool on top (may override base keys intentionally)
+        stats.update(self._vars)
         return stats

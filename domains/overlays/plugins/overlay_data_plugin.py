@@ -1,3 +1,4 @@
+import json
 from typing import Optional, Any
 from pydantic import BaseModel
 from core.base_plugin import BasePlugin
@@ -69,6 +70,17 @@ class OverlayDataPlugin(BasePlugin):
                 result["bits.total"] = int(row["n"]) if row else 0
             except Exception:
                 result["bits.total"] = 0
+
+            # Dynamic vars pool (published via the "overlay.vars.set" bus event)
+            try:
+                rows = await self.db.query("SELECT key, value FROM overlay_vars", [])
+                for r in rows:
+                    try:
+                        result[r["key"]] = json.loads(r["value"])
+                    except (json.JSONDecodeError, TypeError):
+                        result[r["key"]] = r["value"]
+            except Exception:
+                pass
 
             return {"success": True, "data": result}
         except Exception as e:

@@ -129,6 +129,11 @@ class EventBusTool(BaseTool):
             - add_failure_listener(callback): Sink called when a subscriber raises during dispatch.
                 Signature: callback(record: dict) — record has: event, event_id, subscriber, error.
                 Use to implement dead-letter alerting. Non-blocking — keep it fast.
+        - WELL-KNOWN EVENTS:
+            - "overlay.vars.set" — publish a flat dict of variables to push them to all
+              live overlays (OBS browser sources). Persisted in the overlay_vars table,
+              broadcast instantly via SSE, readable in overlay JS as data.stats[key].
+              Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
         """
 
     # ── Public API ──────────────────────────────────────────────────────────────

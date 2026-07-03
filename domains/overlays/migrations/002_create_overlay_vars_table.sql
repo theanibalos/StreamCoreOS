@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS overlay_vars (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

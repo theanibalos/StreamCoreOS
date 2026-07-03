@@ -50,8 +50,9 @@ class CreateThingPlugin(BasePlugin):
             await self.bus.publish("thing.created", {"id": thing_id})
             return {"success": True, "data": {"id": thing_id, "name": req.name}}
         except Exception as e:
-            self.logger.error(f"Failed: {e}")
-            return {"success": False, "error": str(e)}
+            # Technical error logged server-side, safe message for client
+            self.logger.error(f"Failed to create thing: {e}")
+            return {"success": False, "error": "Database error"}
 ```
 
 ### New Domain Structure
@@ -181,6 +182,11 @@ Async Event Bus Tool (event_bus):
             - add_failure_listener(callback): Sink called when a subscriber raises during dispatch.
                 Signature: callback(record: dict) — record has: event, event_id, subscriber, error.
                 Use to implement dead-letter alerting. Non-blocking — keep it fast.
+        - WELL-KNOWN EVENTS:
+            - "overlay.vars.set" — publish a flat dict of variables to push them to all
+              live overlays (OBS browser sources). Persisted in the overlay_vars table,
+              broadcast instantly via SSE, readable in overlay JS as data.stats[key].
+              Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
 ```
 
 ### 🔧 Tool: `http` (Status: ✅)
@@ -341,7 +347,7 @@ Context Manager Tool (context_manager):
         - CAPABILITIES:
             - Reads the system registry.
             - Exports active tools, health status, and domain models to AI_CONTEXT.md.
-            - Generates per-domain AI_CONTEXT.md files inside each domain folder.
+            - Regenerates AI_CONTEXT.md on every boot — always up to date with the live system.
 ```
 
 ### 🔧 Tool: `logger` (Status: ✅)
@@ -356,6 +362,22 @@ Logging Tool (logger):
                 Sink signature: callback(level: str, message: str, timestamp: str, identity: str)
                 'identity' is the current plugin/tool context (from current_identity_var).
                 Use it to attribute errors to specific plugins for health tracking.
+```
+
+### 🔧 Tool: `state` (Status: ✅)
+```text
+In-Memory State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
+        - CAPABILITIES:
+            - set(key, value, namespace='default'): Store a value.
+            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
+            - has(key, namespace='default'): Returns True if key exists.
+            - keys(namespace='default'): Returns list of all keys in the namespace.
+            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
+            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
+            - delete(key, namespace='default'): Delete a key (no-op if missing).
+            - clear(namespace='default'): Remove all keys in the namespace.
 ```
 
 ### 🔧 Tool: `registry` (Status: ✅)
@@ -392,22 +414,6 @@ Systems Registry Tool (registry):
             - update_tool_status(name, status, message=None): Manually override a tool's health status.
                 status: "OK" | "FAIL" | "DEAD".
                 Intended for health-check plugins that verify tools proactively.
-```
-
-### 🔧 Tool: `state` (Status: ✅)
-```text
-In-Memory State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, and shared business semaphores.
-        - CAPABILITIES:
-            - set(key, value, namespace='default'): Store a value.
-            - get(key, default=None, namespace='default'): Retrieve a value (None if missing).
-            - has(key, namespace='default'): Returns True if key exists.
-            - keys(namespace='default'): Returns list of all keys in the namespace.
-            - get_all(namespace='default'): Returns a shallow copy of all key-value pairs.
-            - increment(key, amount=1, namespace='default'): Atomic increment. Starts at 0.
-            - delete(key, namespace='default'): Delete a key (no-op if missing).
-            - clear(namespace='default'): Remove all keys in the namespace.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
@@ -492,33 +498,33 @@ TTS Tool (tts):
 ### `chat_bot`
 - **Table `chat_command`**: name (str), response (str), cooldown_s (int), enabled (int), created_at (str), channel (str), user_id (str), display_name (str), message (str), is_command (int), timestamp (str)
 - **Table `chat_var`**: name (str), value (str), enabled (int), created_at (str)
-- **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}
-- **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command)
-- **Events consumed**: chat.command.received, chat.message.received
+- **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}, SSE /api/chat/stream
+- **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command), `chat.message.received` ()
+- **Events consumed**: none
 - **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: ChatAutoResponsePlugin, ChatBadgesPlugin, ChatCommandHandlerPlugin, ChatMessageDispatcherPlugin, ChatStreamPlugin, CommandsListPlugin, CreateCommandPlugin, CreateVarPlugin, DeleteCommandPlugin, DeleteVarPlugin, EchoReminderPlugin, IAChatPlugin, ListCommandsPlugin, ListRemindersPlugin, ListVarsPlugin, UpdateCommandPlugin, UpdateVarPlugin, VarCommandPlugin
 
 ### `dashboard`
 - **Table `channel_stats`**: recorded_at (str), viewer_count (int), follower_count (int)
-- **Endpoints**: GET /api/dashboard/stats, GET /api/dashboard/stats/history, POST /api/dashboard/alerts/test
+- **Endpoints**: GET /api/dashboard/stats, GET /api/dashboard/stats/history, POST /api/dashboard/alerts/test, SSE /api/dashboard/alerts
 - **Events emitted**: `dashboard.stats.updated` (follower_count, viewer_count)
-- **Events consumed**: dashboard.stats.updated, moderation.action.taken, stream.session.ended, stream.session.started, viewer.regular.added, viewer.regular.removed
+- **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: ChannelStatsCollectorPlugin, ChannelStatsHistoryPlugin, DashboardAlertsPlugin, DashboardStatsPlugin
 
 ### `moderation`
-- **Table `mod_rule`**: type (str       # word_filter | link_filter | caps_filter | spam_filter), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
+- **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
 - **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
-- **Events consumed**: chat.message.received, moderation.rules.updated
+- **Events consumed**: none
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
 - **Plugins**: AiModPlugin, AutoModPlugin, CreateModRulePlugin, DeleteModRulePlugin, ListModRulesPlugin, ManualBanPlugin, ManualTimeoutPlugin, ManualUnbanPlugin, ModLogPlugin, UpdateModRulePlugin
 
 ### `overlays`
-- **Table `overlay`**: name (str), config (str), created_at (datetime | None), updated_at (datetime | None)
-- **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/upload-background, PUT /api/overlays/{id}
+- **Table `overlay`**: name (str), config (str), created_at (any), updated_at (any)
+- **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/upload-background, PUT /api/overlays/{id}, SSE /api/overlays/stream/{id}
 - **Events emitted**: `overlay.config.updated` (overlay_id)
-- **Events consumed**: chat.message.received, dashboard.stats.updated, overlay.config.updated
+- **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, state, twitch
 - **Plugins**: CreateOverlayPlugin, DeleteBackgroundPlugin, DeleteOverlayPlugin, GetOverlayPlugin, ListBackgroundsPlugin, ListOverlaysPlugin, OverlayConfigPlugin, OverlayDataPlugin, OverlayStreamPlugin, UpdateOverlayPlugin, UploadBackgroundPlugin
 
@@ -531,10 +537,10 @@ TTS Tool (tts):
 - **Plugins**: PingPlugin
 
 ### `stream_state`
-- **Table `stream_session`**: twitch_stream_id (Optional[str]), started_at (str       # ISO8601), ended_at (Optional[str]), title (Optional[str]), game_name (Optional[str]), peak_viewers (int)
+- **Table `stream_session`**: twitch_stream_id (Optional[str]), started_at (str), ended_at (Optional[str]), title (Optional[str]), game_name (Optional[str]), peak_viewers (int)
 - **Endpoints**: GET /api/stream/sessions, GET /api/stream/status
 - **Events emitted**: `stream.session.ended` (ended_at, session_id), `stream.session.started` (broadcaster_login, session_id, started_at, twitch_stream_id)
-- **Events consumed**: stream.status.requested
+- **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: GetStreamStatusPlugin, StreamHistoryPlugin, StreamStateRpcPlugin, StreamStatusPlugin
 
@@ -548,30 +554,30 @@ TTS Tool (tts):
 
 ### `system`
 - **Tables**: none
-- **Endpoints**: GET /api/system/events, GET /api/system/status, GET /api/system/traces/flat, GET /api/system/traces/tree
-- **Events emitted**: none
+- **Endpoints**: GET /api/system/events, GET /api/system/status, GET /api/system/traces/flat, GET /api/system/traces/tree, SSE /api/system/events/stream, SSE /api/system/logs/stream, SSE /api/system/traces/stream
+- **Events emitted**: `event.delivery.failed` ()
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, registry
 - **Plugins**: EventDeliveryMonitorPlugin, SystemEventsPlugin, SystemEventsStreamPlugin, SystemLogsStreamPlugin, SystemStatusPlugin, SystemTracesPlugin, SystemTracesStreamPlugin, ToolHealthPlugin
 
 ### `timers`
-- **Table `timer`**: name (str), message (str), interval_minutes (int), min_lines (int), enabled (int), last_executed_at (datetime | None), created_at (datetime | None)
+- **Table `timer`**: name (str), message (str), interval_minutes (int), min_lines (int), enabled (int), last_executed_at (any), created_at (any)
 - **Endpoints**: DELETE /api/timers/{id}, GET /api/timers, POST /api/timers, PUT /api/timers/{id}
 - **Events emitted**: `timer.created` (id, name), `timer.deleted` (id), `timer.updated` (id)
-- **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
+- **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: CreateTimerPlugin, DeleteTimerPlugin, GetTimersPlugin, TimerExecutorPlugin, UpdateTimerPlugin
 
 ### `tts_chat`
-- **Table `tts_voice_config`**: twitch_id (str), twitch_login (str), voice_id (str), voice_name (str), provider (str), created_at (str), updated_at (str), enabled (bool), host (str), port (int), timeout_s (int), max_message_length (int), skip_commands (bool), skip_links (bool), sub_only (bool), cooldown_seconds (int), blocked_words (str   # JSON array stored as text)
-- **Endpoints**: DELETE /api/tts/user-voices/{twitch_login}, GET /api/tts/settings, GET /api/tts/user-voices, GET /api/tts/user-voices/{twitch_login}, GET /api/tts/voices, PUT /api/tts/settings, PUT /api/tts/user-voices
+- **Table `tts_voice_config`**: twitch_id (str), twitch_login (str), voice_id (str), voice_name (str), provider (str), created_at (str), updated_at (str), enabled (bool), host (str), port (int), default_voice (str), timeout_s (int), max_message_length (int), skip_commands (bool), skip_links (bool), sub_only (bool), cooldown_seconds (int), blocked_words (str)
+- **Endpoints**: DELETE /api/tts/user-voices/{twitch_login}, GET /api/tts/settings, GET /api/tts/user-voices, GET /api/tts/user-voices/{twitch_login}, GET /api/tts/voices, PUT /api/tts/settings, PUT /api/tts/user-voices, SSE /api/tts/overlay/stream
 - **Events emitted**: `tts.audio.ready` (audio_b64, text, username, voice_id)
-- **Events consumed**: chat.message.received, tts.audio.ready
+- **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, tts, twitch
 - **Plugins**: TtsListenerPlugin, TtsRedemptionPlugin, TtsRestoreConfigPlugin, TtsSettingsPlugin, TtsStreamPlugin, TtsUserVoicesPlugin, TtsVoiceCommandPlugin, TtsVoiceListPlugin
 
 ### `twitch_auth`
-- **Table `twitch_token`**: twitch_id (str), login (str), display_name (str), access_token (str), refresh_token (str), scopes (str          # JSON array stored as TEXT), expires_at (str      # ISO8601), created_at (str), updated_at (str)
+- **Table `twitch_token`**: twitch_id (str), login (str), display_name (str), access_token (str), refresh_token (str), scopes (str), expires_at (str), created_at (str), updated_at (str)
 - **Endpoints**: GET /api/auth/twitch, GET /api/auth/twitch/callback, GET /api/auth/twitch/scopes, GET /api/auth/twitch/status, POST /api/auth/twitch/logout
 - **Events emitted**: none
 - **Events consumed**: none
@@ -582,15 +588,15 @@ TTS Tool (tts):
 - **Table `viewer`**: twitch_id (str), login (str), display_name (str), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
 - **Endpoints**: DELETE /api/viewers/regulars/{twitch_id}, GET /api/viewers, GET /api/viewers/leaderboard, GET /api/viewers/regulars, GET /api/viewers/{login}, POST /api/viewers/regulars, POST /api/viewers/{twitch_id}/points
 - **Events emitted**: `viewer.points.awarded` (delta, display_name, twitch_id), `viewer.regular.added` (added_by, display_name, twitch_id), `viewer.regular.removed` (display_name, twitch_id)
-- **Events consumed**: chat.command.received, chat.message.received
+- **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, twitch
 - **Plugins**: AddRegularPlugin, AdjustPointsPlugin, GetViewerPlugin, LeaderboardPlugin, ListRegularsPlugin, ListViewersPlugin, RegularsCommandPlugin, RemoveRegularPlugin, ViewerActivityPlugin
 
 ### `webhooks`
-- **Table `webhook`**: name (str), url (str), method (str), headers (Optional[str]), body_template (Optional[str]), trigger_type (str  # "command" or "event"), trigger_value (str  # command name or event bus pattern), filter_field (Optional[str]), filter_value (Optional[str]), enabled (bool), created_at (Optional[str]), updated_at (Optional[str])
+- **Table `webhook`**: name (str), url (str), method (str), headers (Optional[str]), body_template (Optional[str]), trigger_type (str), trigger_value (str), filter_field (Optional[str]), filter_value (Optional[str]), enabled (bool), created_at (Optional[str]), updated_at (Optional[str])
 - **Endpoints**: DELETE /api/webhooks/{webhook_id}, GET /api/webhooks, POST /api/webhooks, POST /api/webhooks/test, PUT /api/webhooks/{webhook_id}
 - **Events emitted**: none
-- **Events consumed**: *, chat.command.executed
+- **Events consumed**: none
 - **Dependencies**: db, event_bus, http, http_client, logger
 - **Plugins**: CreateWebhookPlugin, DeleteWebhookPlugin, ListWebhooksPlugin, TestWebhookPlugin, UpdateWebhookPlugin, WebhookExecutorPlugin
 
