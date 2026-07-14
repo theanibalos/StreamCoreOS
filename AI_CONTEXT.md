@@ -550,11 +550,11 @@ TTS Tool (tts):
 
 ### `ai_config`
 - **Table `ai_config`**: provider (str), endpoint_url (str), model (str), updated_at (str)
-- **Endpoints**: GET /api/ai/config, GET /api/ai/ia/enabled, POST /api/ai/test, PUT /api/ai/config, PUT /api/ai/ia/enabled
+- **Endpoints**: DELETE /api/ai/providers/{provider_id}, GET /api/ai/config, GET /api/ai/ia/enabled, GET /api/ai/providers, POST /api/ai/providers, POST /api/ai/providers/test, POST /api/ai/providers/{provider_id}/activate, POST /api/ai/providers/{provider_id}/test, POST /api/ai/test, PUT /api/ai/config, PUT /api/ai/ia/enabled, PUT /api/ai/providers/{provider_id}
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: ai, db, http, logger, state
-- **Plugins**: ai_config.GetAIConfigPlugin, ai_config.RestoreAIConfigPlugin, ai_config.SaveAIConfigPlugin, ai_config.TestAIConfigPlugin, ai_config.ToggleIAChatPlugin
+- **Plugins**: ai_config.ActivateAIProviderPlugin, ai_config.CreateAIProviderPlugin, ai_config.DeleteAIProviderPlugin, ai_config.GetAIConfigPlugin, ai_config.ListAIProvidersPlugin, ai_config.RestoreAIConfigPlugin, ai_config.SaveAIConfigPlugin, ai_config.TestAIConfigPlugin, ai_config.TestAIProviderConfigPlugin, ai_config.TestAIProviderPlugin, ai_config.ToggleIAChatPlugin, ai_config.UpdateAIProviderPlugin
 
 ### `chat_bot`
 - **Table `chat_command`**: name (str), response (str), cooldown_s (int), enabled (int), created_at (str), channel (str), user_id (str), display_name (str), message (str), is_command (int), timestamp (str)

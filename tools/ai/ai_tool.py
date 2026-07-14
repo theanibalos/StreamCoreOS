@@ -91,9 +91,16 @@ class AITool(BaseTool):
     # ── Config management ─────────────────────────────────────────────────────
 
     def load_config(self, config: dict) -> None:
-        """Push new config in. Called by RestoreAIConfigPlugin on boot and
-        SaveAIConfigPlugin on update. Never triggers a DB read."""
+        """Push new config in, replacing it entirely. Called by RestoreAIConfigPlugin
+        on boot and by the provider create/update/activate/delete plugins. Never
+        triggers a DB read."""
         self._config = config
+
+    def patch_config(self, fields: dict) -> None:
+        """Merge fields into the current config without touching the rest — used
+        when only chat-personality fields change and the provider connection
+        settings (endpoint_url, api_key, ...) must be left untouched."""
+        self._config = {**(self._config or {}), **fields}
 
     def is_configured(self) -> bool:
         return bool(
@@ -113,8 +120,8 @@ class AITool(BaseTool):
             "has_api_key":        bool(self._config.get("api_key")),
             "timeout_s":          int(self._config.get("timeout_s") or 120),
             "disable_reasoning":  bool(self._config.get("disable_reasoning", False)),
-            "extra_headers":      self._load_json_field("extra_headers"),
-            "extra_payload":      self._load_json_field("extra_payload"),
+            "extra_headers":      self._load_json_field(self._config, "extra_headers"),
+            "extra_payload":      self._load_json_field(self._config, "extra_payload"),
             "chat_cooldown_s":    int(self._config.get("chat_cooldown_s") or 120),
             "chat_system_prompt": self._config.get("chat_system_prompt", ""),
             "chat_max_tokens":    int(self._config.get("chat_max_tokens") or 200),
@@ -150,7 +157,12 @@ class AITool(BaseTool):
 
         Raises AIError on all failure paths — check .code for cause.
         """
-        return await self._call(messages, system, max_tokens, temperature, json_mode=False)
+        if not self.is_configured():
+            raise AIError(
+                "not_configured",
+                "AI tool is not configured. Set endpoint_url and model via /ai/config.",
+            )
+        return await self._call(self._config, messages, system, max_tokens, temperature, json_mode=False)
 
     async def complete_json(
         self,
@@ -174,30 +186,56 @@ class AITool(BaseTool):
             AIError("invalid_json") — if the model response cannot be parsed.
             AIError(*)              — same codes as complete() for request errors.
         """
-        text = await self._call(messages, system, max_tokens, temperature, json_mode=True)
+        if not self.is_configured():
+            raise AIError(
+                "not_configured",
+                "AI tool is not configured. Set endpoint_url and model via /ai/config.",
+            )
+        text = await self._call(self._config, messages, system, max_tokens, temperature, json_mode=True)
         return self._parse_json_response(text)
+
+    async def test_config(
+        self,
+        config: dict,
+        max_tokens: int = 64,
+    ) -> str:
+        """
+        Send a minimal probe request against an explicit config, without touching
+        the live config. Used to test a saved-but-inactive provider — safe to call
+        concurrently with complete()/complete_json() since it never mutates state.
+
+        Raises AIError on all failure paths — check .code for cause.
+        """
+        if not config.get("endpoint_url") or not config.get("model"):
+            raise AIError(
+                "not_configured",
+                "Provider config is missing endpoint_url or model.",
+            )
+        return await self._call(
+            config,
+            messages=[{"role": "user", "content": "Reply with just the word OK."}],
+            system=None,
+            max_tokens=max_tokens,
+            temperature=0.0,
+            json_mode=False,
+        )
 
     # ── Core request ──────────────────────────────────────────────────────────
 
     async def _call(
         self,
+        config: dict,
         messages: list[dict],
         system: str | None,
         max_tokens: int,
         temperature: float,
         json_mode: bool,
     ) -> str:
-        if not self.is_configured():
-            raise AIError(
-                "not_configured",
-                "AI tool is not configured. Set endpoint_url and model via /ai/config.",
-            )
-
-        provider  = (self._config.get("provider") or "custom").lower()
-        timeout_s = float(self._config.get("timeout_s") or 120)
-        endpoint  = self._config["endpoint_url"].rstrip("/")
-        payload   = self._build_payload(provider, messages, system, max_tokens, temperature, json_mode)
-        headers   = self._build_headers(provider)
+        provider  = (config.get("provider") or "custom").lower()
+        timeout_s = float(config.get("timeout_s") or 120)
+        endpoint  = config["endpoint_url"].rstrip("/")
+        payload   = self._build_payload(config, provider, messages, system, max_tokens, temperature, json_mode)
+        headers   = self._build_headers(config, provider)
 
         try:
             async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -233,6 +271,7 @@ class AITool(BaseTool):
 
     def _build_payload(
         self,
+        config: dict,
         provider: str,
         messages: list[dict],
         system: str | None,
@@ -246,7 +285,7 @@ class AITool(BaseTool):
         all_messages.extend(messages)
 
         payload: dict = {
-            "model":       self._config["model"],
+            "model":       config["model"],
             "messages":    all_messages,
             "temperature": temperature,
             "max_tokens":  max_tokens,
@@ -260,19 +299,19 @@ class AITool(BaseTool):
             payload["response_format"] = {"type": "json_object"}
 
         # Reasoning disable: only inject for providers that expose the API.
-        if self._config.get("disable_reasoning") and provider in _REASONING_DISABLE_PAYLOAD:
+        if config.get("disable_reasoning") and provider in _REASONING_DISABLE_PAYLOAD:
             payload.update(_REASONING_DISABLE_PAYLOAD[provider])
 
         # User-defined extra payload fields.
         # Common uses: {"num_ctx": 8192} for Ollama, {"num_predict": 256} for llama.cpp
-        payload.update(self._load_json_field("extra_payload"))
+        payload.update(self._load_json_field(config, "extra_payload"))
 
         return payload
 
-    def _build_headers(self, provider: str) -> dict:
+    def _build_headers(self, config: dict, provider: str) -> dict:
         headers = {"Content-Type": "application/json"}
 
-        api_key = (self._config.get("api_key") or "").strip()
+        api_key = (config.get("api_key") or "").strip()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
@@ -281,7 +320,7 @@ class AITool(BaseTool):
             headers[key] = val
 
         # User-defined extra headers (e.g. proxy auth, org headers, custom auth schemes)
-        headers.update(self._load_json_field("extra_headers"))
+        headers.update(self._load_json_field(config, "extra_headers"))
 
         return headers
 
@@ -414,9 +453,9 @@ class AITool(BaseTool):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _load_json_field(self, key: str) -> dict:
+    def _load_json_field(self, config: dict, key: str) -> dict:
         """Read a config field that may be stored as a dict or a JSON string."""
-        val = (self._config or {}).get(key) or {}
+        val = (config or {}).get(key) or {}
         if isinstance(val, str):
             try:
                 val = json.loads(val)

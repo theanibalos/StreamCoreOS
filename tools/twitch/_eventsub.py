@@ -14,11 +14,17 @@ Manages a persistent WebSocket connection to Twitch's EventSub service
 
 import asyncio
 import json
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import websockets
 
 EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws"
+
+# Twitch EventSub over WebSocket is at-least-once delivery — reconnects can
+# redeliver a notification already processed. Twitch's own guidance is to
+# dedupe by metadata.message_id; we only need to remember recent ids, not
+# all of them forever.
+_SEEN_MESSAGE_IDS_MAXLEN = 1000
 
 
 class TwitchEventSubClient:
@@ -35,6 +41,7 @@ class TwitchEventSubClient:
         self._session_id: str | None = None
         self._task: asyncio.Task | None = None
         self._connected = False
+        self._seen_message_ids: "OrderedDict[str, None]" = OrderedDict()
 
     # ── Registration API ─────────────────────────────────────────────
 
@@ -95,7 +102,8 @@ class TwitchEventSubClient:
                             pass
 
                         elif msg_type == "notification":
-                            await self._dispatch(msg["payload"])
+                            message_id = msg.get("metadata", {}).get("message_id")
+                            await self._dispatch(msg["payload"], message_id)
 
                         elif msg_type == "session_reconnect":
                             new_url = msg["payload"]["session"]["reconnect_url"]
@@ -150,7 +158,15 @@ class TwitchEventSubClient:
             except Exception as e:
                 print(f"[TwitchEventSub] Failed to subscribe to {sub['type']}: {e}")
 
-    async def _dispatch(self, payload: dict) -> None:
+    async def _dispatch(self, payload: dict, message_id: str | None = None) -> None:
+        if message_id:
+            if message_id in self._seen_message_ids:
+                print(f"[TwitchEventSub] Duplicate notification {message_id} — skipping redelivery.")
+                return
+            self._seen_message_ids[message_id] = None
+            if len(self._seen_message_ids) > _SEEN_MESSAGE_IDS_MAXLEN:
+                self._seen_message_ids.popitem(last=False)
+
         sub_type = payload.get("subscription", {}).get("type", "")
         event_data = payload.get("event", {})
 
