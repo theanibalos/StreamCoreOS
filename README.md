@@ -53,11 +53,20 @@ Open `.env` and fill in these fields:
 ```env
 TWITCH_CLIENT_ID=        # from Twitch Developer Console
 TWITCH_CLIENT_SECRET=    # from Twitch Developer Console
-TWITCH_REDIRECT_URI=http://localhost/api/auth/twitch/callback
 
-FRONTEND_URL=http://localhost
+APP_PORT=80              # change this to run on a different port (see note below)
 HTTP_HOST=0.0.0.0
 ```
+
+`FRONTEND_URL` and `TWITCH_REDIRECT_URI` don't need to be touched — both `docker-compose.prod.yml`
+and `docker-compose.selfhost.yml` compute them automatically from `APP_PORT`. `HTTP_HOST` stays
+`0.0.0.0` regardless of the port you pick; it's what lets nginx reach the backend container over
+Docker's internal network, unrelated to `APP_PORT`.
+
+Want the app on a port other than `80`? Change `APP_PORT` above — it's picked up automatically for
+both the published port and `FRONTEND_URL`/`TWITCH_REDIRECT_URI`. Just remember to register the
+matching `http://localhost:<port>/api/auth/twitch/callback` URL in the Twitch console first (exact
+match required).
 
 ### Step 3 — Run
 
@@ -132,7 +141,7 @@ Edit a `.svelte` or `.py` file and the change picks up automatically — no rebu
 
 #### Why two env files
 
-`docker-compose.prod.yml`, `docker-compose.local.yml`, and `docker-compose.selfhost.yml` all
+`docker-compose.prod.yml` and `docker-compose.selfhost.yml` both
 proxy through nginx on port 80, so `.env` has `FRONTEND_URL=http://localhost` and
 `TWITCH_REDIRECT_URI=http://localhost/api/auth/twitch/callback`. `docker-compose.dev.yml`
 publishes the frontend and backend on their own ports directly (`:5173` / `:8000`) with no nginx

@@ -12,8 +12,7 @@
 # a los de prod/local (puertos directos en vez de nginx en :80). Mismo
 # TWITCH_CLIENT_ID/SECRET que .env, solo cambian esas dos URLs.
 #
-# Requiere que ../StreamCoreOS-Front exista como carpeta hermana
-# (misma estructura que docker-compose.local.yml).
+# Requiere que ../StreamCoreOS-Front exista como carpeta hermana.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 services:
