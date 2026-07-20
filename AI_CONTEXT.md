@@ -147,26 +147,6 @@ AI Tool (ai):
         OpenRouter: https://openrouter.ai/api/v1/chat/completions
 ```
 
-### 🔧 Tool: `auth` (Status: ✅)
-```text
-Authentication Tool (auth):
-        - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
-        - CAPABILITIES:
-            - await hash_password(password: str) -> str: Securely hashes a plain-text
-                password using bcrypt. Async — runs in a thread (bcrypt is CPU-bound).
-            - await verify_password(password: str, hashed_password: str) -> bool:
-                Verifies if a password matches its hash. Async — runs in a thread.
-            - create_token(data: dict, expires_delta: Optional[int] = None) -> str:
-                Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}).
-                'expires_delta' is optional minutes until expiration.
-            - decode_token(token: str) -> dict:
-                Verifies and decodes a JWT token. Returns the payload dictionary.
-                Raises TokenExpiredError / InvalidTokenError / AuthError on failure.
-            - validate_token(token: str) -> dict | None:
-                Safe, non-throwing token validation. Returns the decoded payload
-                if valid, or None if expired/invalid. Ideal for middleware guards.
-```
-
 ### 🔧 Tool: `config` (Status: ✅)
 ```text
 Configuration Tool (config):
@@ -232,6 +212,29 @@ Universal Event Bus (event_bus):
           Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
           Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
           reads the variables from event.payload.
+```
+
+### 🔧 Tool: `http_client` (Status: ✅)
+```text
+HTTP Client Tool (http_client):
+        - PURPOSE: Make outgoing HTTP requests from plugins. Async, backed by httpx.
+        - RESPONSE: All methods return a dict:
+            {
+              "status": int,       # HTTP status code (200, 404, ...)
+              "ok": bool,          # True if status < 400
+              "json": dict | None, # Parsed JSON body (None if not JSON)
+              "text": str,         # Raw response body
+              "headers": dict      # Response headers
+            }
+        - ERRORS:
+            TimeoutError      — request exceeded the timeout
+            ConnectionError   — could not reach the server
+        - CAPABILITIES:
+            - await get(url, params?, headers?, timeout=10) -> dict
+            - await post(url, json?, data?, headers?, timeout=10) -> dict
+            - await put(url, json?, data?, headers?, timeout=10) -> dict
+            - await delete(url, params?, headers?, timeout=10) -> dict
+        - USAGE IN PLUGIN __init__: def __init__(self, http_client, ...)
 ```
 
 ### 🔧 Tool: `http` (Status: ✅)
@@ -359,29 +362,6 @@ Twitch Tool (twitch):
           - await delete(endpoint, params?, user_token?): DELETE to Helix.
 ```
 
-### 🔧 Tool: `http_client` (Status: ✅)
-```text
-HTTP Client Tool (http_client):
-        - PURPOSE: Make outgoing HTTP requests from plugins. Async, backed by httpx.
-        - RESPONSE: All methods return a dict:
-            {
-              "status": int,       # HTTP status code (200, 404, ...)
-              "ok": bool,          # True if status < 400
-              "json": dict | None, # Parsed JSON body (None if not JSON)
-              "text": str,         # Raw response body
-              "headers": dict      # Response headers
-            }
-        - ERRORS:
-            TimeoutError      — request exceeded the timeout
-            ConnectionError   — could not reach the server
-        - CAPABILITIES:
-            - await get(url, params?, headers?, timeout=10) -> dict
-            - await post(url, json?, data?, headers?, timeout=10) -> dict
-            - await put(url, json?, data?, headers?, timeout=10) -> dict
-            - await delete(url, params?, headers?, timeout=10) -> dict
-        - USAGE IN PLUGIN __init__: def __init__(self, http_client, ...)
-```
-
 ### 🔧 Tool: `context_manager` (Status: ✅)
 ```text
 Context Manager Tool (context_manager):
@@ -465,6 +445,31 @@ Systems Registry Tool (registry):
                 Intended for health-check plugins that verify tools proactively.
 ```
 
+### 🔧 Tool: `db` (Status: ✅)
+```text
+Async SQLite Persistence Tool (sqlite):
+        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
+          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
+          ($1, $2...) and converts them transparently to SQLite's native '?'.
+        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
+        - CAPABILITIES:
+            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
+            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
+            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
+              With RETURNING (SQLite 3.35+): returns the first column value.
+              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
+            - await execute_many(sql, params_list) → None: Batch writes.
+            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
+              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
+            - await health_check() → bool: Verify database connectivity.
+        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
+          topological sort (alphabetical by default). To declare that one migration must
+          run before another, add as the first comment line:
+            "-- depends: other_domain/001_file.sql"
+          Works for same-domain or cross-domain dependencies. .sql extension is optional.
+```
+
 ### 🔧 Tool: `scheduler` (Status: ✅)
 ```text
 Scheduler Tool (scheduler):
@@ -495,31 +500,6 @@ Scheduler Tool (scheduler):
           worker, never in the job callback.
         - SWAP: replace with Celery beat by creating a new tool with name = "scheduler"
           and the same 4-method API. Plugins do not change.
-```
-
-### 🔧 Tool: `db` (Status: ✅)
-```text
-Async SQLite Persistence Tool (sqlite):
-        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
-          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
-          ($1, $2...) and converts them transparently to SQLite's native '?'.
-        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
-        - CAPABILITIES:
-            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
-            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
-            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
-              With RETURNING (SQLite 3.35+): returns the first column value.
-              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
-            - await execute_many(sql, params_list) → None: Batch writes.
-            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
-              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
-            - await health_check() → bool: Verify database connectivity.
-        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
-        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
-          topological sort (alphabetical by default). To declare that one migration must
-          run before another, add as the first comment line:
-            "-- depends: other_domain/001_file.sql"
-          Works for same-domain or cross-domain dependencies. .sql extension is optional.
 ```
 
 ### 🔧 Tool: `tts` (Status: ✅)
@@ -577,7 +557,7 @@ TTS Tool (tts):
 - **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
 - **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
-- **Events consumed**: chat.message.received, moderation.rules.updated
+- **Events consumed**: none
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
 - **Plugins**: moderation.AiModPlugin, moderation.AutoModPlugin, moderation.CreateModRulePlugin, moderation.DeleteModRulePlugin, moderation.ListModRulesPlugin, moderation.ManualBanPlugin, moderation.ManualTimeoutPlugin, moderation.ManualUnbanPlugin, moderation.ModLogPlugin, moderation.UpdateModRulePlugin
 

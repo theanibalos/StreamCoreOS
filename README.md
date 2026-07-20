@@ -67,6 +67,11 @@ docker compose -f docker-compose.prod.yml up -d
 
 Docker pulls the images automatically. Open `http://localhost`, click **Connect with Twitch** and authorize. Done.
 
+**Data persists automatically.** `docker-compose.prod.yml` mounts a `./data` folder next to your
+`.env` into the container — that's where `database.db` (tokens, viewers, points, overlays, chat
+config, everything) lives. `docker compose down` / `up` again and nothing is lost. To back up,
+just copy the `data/` folder; to reset, delete it and restart.
+
 ---
 
 ## Other Deploy Options
@@ -90,6 +95,54 @@ docker compose up -d --build
 
 Exposes the backend API on port 8000. Frontend not included. Useful for development.
 
+### Full stack dev, hot-reload (Docker)
+
+Backend and frontend live in separate repos but nothing works without both, so this is the
+recommended way to develop day-to-day: one `up`, both sides live-reload.
+
+```bash
+git clone https://github.com/theanibalos/StreamCoreOS
+git clone https://github.com/theanibalos/StreamCoreOS-Front
+# both repos must sit side by side — StreamCoreOS reads
+# ../StreamCoreOS-Front as the build context
+cd StreamCoreOS
+cp .env.example .env.dev
+```
+
+Edit `.env.dev` (**not** `.env` — see [Why two env files](#why-two-env-files) below):
+
+```env
+TWITCH_CLIENT_ID=
+TWITCH_CLIENT_SECRET=
+TWITCH_REDIRECT_URI=http://localhost:8000/api/auth/twitch/callback
+FRONTEND_URL=http://localhost:5173
+```
+
+Register `http://localhost:8000/api/auth/twitch/callback` as an OAuth Redirect URL in the
+Twitch console (in addition to the prod one — Twitch lets you register several at once).
+
+```bash
+docker compose -f docker-compose.dev.yml up
+```
+
+- Frontend (Vite + HMR) → `http://localhost:5173`
+- Backend (auto-restart on `.py` changes via `cli.py`/watchfiles) → `http://localhost:8000`
+
+Edit a `.svelte` or `.py` file and the change picks up automatically — no rebuild, no restart.
+
+#### Why two env files
+
+`docker-compose.prod.yml`, `docker-compose.local.yml`, and `docker-compose.selfhost.yml` all
+proxy through nginx on port 80, so `.env` has `FRONTEND_URL=http://localhost` and
+`TWITCH_REDIRECT_URI=http://localhost/api/auth/twitch/callback`. `docker-compose.dev.yml`
+publishes the frontend and backend on their own ports directly (`:5173` / `:8000`) with no nginx
+in front, so it needs different values for those two variables. Keeping them in a separate
+`.env.dev` means running one compose file never breaks OAuth on the other — copy the same
+`TWITCH_CLIENT_ID`/`TWITCH_CLIENT_SECRET` into both files, only `FRONTEND_URL` and
+`TWITCH_REDIRECT_URI` differ.
+
+`.env.dev` is gitignored, same as `.env`.
+
 ### Development (no Docker)
 
 ```bash
@@ -101,7 +154,16 @@ cp .env.example .env
 uv run main.py
 ```
 
-API docs at `http://localhost:8000/docs`.
+Then, in the sibling `StreamCoreOS-Front` repo, run the frontend separately:
+
+```bash
+cd ../StreamCoreOS-Front
+pnpm install
+pnpm run dev
+```
+
+`vite.config.ts`'s `/api` proxy defaults to `http://localhost:8000`, so no extra config needed
+outside Docker. API docs at `http://localhost:8000/docs`.
 
 ---
 
@@ -480,6 +542,7 @@ uv run pytest tests/test_file.py                            # Single test
 docker compose -f dev_infra/docker-compose.yml up -d        # Dev infra
 docker compose -f docker-compose.selfhost.yml up -d --build # Full stack from source
 docker compose -f docker-compose.prod.yml up -d             # Full stack from images
+docker compose -f docker-compose.dev.yml up                 # Full stack, hot-reload dev
 ```
 
 ---

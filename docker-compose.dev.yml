@@ -1,0 +1,53 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Dev unificado — backend + frontend con hot-reload, un solo `up`.
+#
+# Uso:
+#   cp .env.example .env.dev   (si todavía no existe)
+#   docker compose -f docker-compose.dev.yml up
+#
+# Backend  → http://localhost:8000  (reload automático vía cli.py/watchfiles)
+# Frontend → http://localhost:5173  (vite dev server, HMR)
+#
+# Usa .env.dev (NO .env) porque FRONTEND_URL/TWITCH_REDIRECT_URI son distintos
+# a los de prod/local (puertos directos en vez de nginx en :80). Mismo
+# TWITCH_CLIENT_ID/SECRET que .env, solo cambian esas dos URLs.
+#
+# Requiere que ../StreamCoreOS-Front exista como carpeta hermana
+# (misma estructura que docker-compose.local.yml).
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+services:
+  backend:
+    build: .
+    env_file:
+      - .env.dev
+    environment:
+      HTTP_HOST: 0.0.0.0
+      SQLITE_DB_PATH: data/database.db
+    volumes:
+      - .:/app
+      - backend_venv:/app/.venv
+      - ./data:/app/data
+    command: sh -c "uv sync --frozen && uv run cli.py"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ../StreamCoreOS-Front:/app
+      - front_node_modules:/app/node_modules
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
+    command: sh -c "npm install -g pnpm && pnpm install --frozen-lockfile && pnpm run dev --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend_venv:
+  front_node_modules:
