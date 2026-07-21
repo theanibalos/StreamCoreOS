@@ -1,6 +1,7 @@
 from core.base_plugin import BasePlugin
 
 _NS = "ai_mod_rules"
+_REGULARS_NS = "ai_mod_regulars"
 
 
 class AiModPlugin(BasePlugin):
@@ -30,7 +31,10 @@ class AiModPlugin(BasePlugin):
         ])
         await self.bus.subscribe("chat.message.received", self._on_message)
         await self.bus.subscribe("moderation.rules.updated", self._invalidate_cache)
+        await self.bus.subscribe("viewer.regular.added", self._invalidate_regulars)
+        await self.bus.subscribe("viewer.regular.removed", self._invalidate_regulars)
         await self._load_rules()
+        await self._load_regulars()
 
     async def _load_rules(self):
         try:
@@ -41,16 +45,38 @@ class AiModPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"[AiMod] Failed to load rules: {e}")
 
+    async def _load_regulars(self):
+        try:
+            rows = await self.db.query("SELECT twitch_id FROM viewers WHERE is_regular=1")
+            regulars = {r["twitch_id"] for r in rows}
+            await self.state.set("regulars", regulars, namespace=_REGULARS_NS)
+        except Exception as e:
+            self.logger.error(f"[AiMod] Failed to load regulars: {e}")
+
     async def _invalidate_cache(self, event):
         await self._load_rules()
 
+    async def _invalidate_regulars(self, event):
+        await self._load_regulars()
+
     async def _on_message(self, event):
         msg = event.payload
-        if msg.get("is_broadcaster") or msg.get("is_mod"):
+        if msg.get("is_broadcaster"):
             return
 
         if not self.ai.is_configured():
             return
+
+        regulars = await self.state.get("regulars", default=set(), namespace=_REGULARS_NS)
+        sender_roles = set()
+        if msg.get("is_mod"):
+            sender_roles.add("mod")
+        if msg.get("is_vip"):
+            sender_roles.add("vip")
+        if msg.get("is_sub"):
+            sender_roles.add("sub")
+        if msg.get("user_id", "") in regulars:
+            sender_roles.add("regular")
 
         rules = await self.state.get("rules", default=[], namespace=_NS)
         if not rules:
@@ -62,6 +88,10 @@ class AiModPlugin(BasePlugin):
         message_id   = msg.get("message_id", "")
 
         for rule in rules:
+            exempt_roles = {r for r in (rule.get("exempt_roles") or "").split(",") if r}
+            if sender_roles & exempt_roles:
+                continue
+
             if await self._evaluate(rule, message):
                 await self._enforce(rule, user_id, display_name, message, message_id)
                 break

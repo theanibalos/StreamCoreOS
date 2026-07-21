@@ -10,6 +10,7 @@ class ModRuleEntity(BaseModel):
     action: str     # timeout | ban | delete
     duration_s: Optional[int]
     enabled: int
+    exempt_roles: str   # comma-separated: mod,vip,regular,sub
 
 
 class ModLogEntity(BaseModel):

@@ -2,6 +2,19 @@ import asyncio
 import json
 from core.base_plugin import BasePlugin
 
+# Raw Twitch EventSub types that reach every plugin's wildcard listener but
+# should NOT be forwarded to alert-widget overlays: channel.chat.message
+# fires on every single chat line (would spam an "alert" widget on every
+# message), and stream.online/offline are already covered as proper alerts
+# by the "stream.session.started/ended" bus event forwarded below.
+# Twin list: domains/dashboard/plugins/dashboard_alerts_plugin.py — keep both
+# in sync, they intentionally filter the same wildcard firehose the same way.
+_EXCLUDED_TWITCH_EVENTS = {
+    "channel.chat.message",
+    "stream.online",
+    "stream.offline",
+}
+
 
 class OverlayStreamPlugin(BasePlugin):
     """
@@ -68,9 +81,13 @@ class OverlayStreamPlugin(BasePlugin):
         await self.bus.subscribe("overlay.config.updated",  self._on_config_updated)
         await self.bus.subscribe("overlay.vars.set",        self._on_vars_set)
 
-        # System (non-Twitch) bus events forwarded to overlays as alerts
+        # System (non-Twitch) bus events forwarded to overlays as alerts.
+        # Kept in sync with dashboard_alerts_plugin.py's _BUS_EVENTS — same
+        # filtering intent, viewer.points.awarded excluded on purpose (fires
+        # on every chat message, would spam an alert widget).
         for bus_event in ("stream.session.started", "stream.session.ended",
-                          "moderation.action.taken", "viewer.points.awarded"):
+                          "viewer.regular.added", "viewer.regular.removed",
+                          "moderation.action.taken"):
             await self.bus.subscribe(bus_event, self._make_system_forwarder(bus_event))
 
         # All Twitch events — alerts go straight to the overlay unprocessed.
@@ -186,10 +203,12 @@ class OverlayStreamPlugin(BasePlugin):
         if latest:
             await self._set_vars(latest)
 
-        # All events go to alert overlays
-        self._broadcast_by_need("needs_alerts", {
-            "type": "alert", "data": {"type": event_type, "data": payload}
-        })
+        # All events go to alert overlays, except the noisy/duplicate ones
+        # (see _EXCLUDED_TWITCH_EVENTS at module level).
+        if event_type not in _EXCLUDED_TWITCH_EVENTS:
+            self._broadcast_by_need("needs_alerts", {
+                "type": "alert", "data": {"type": event_type, "data": payload}
+            })
 
     async def _on_config_updated(self, event):
         data = event.payload

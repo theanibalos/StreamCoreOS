@@ -4,9 +4,7 @@ from core.base_plugin import BasePlugin
 
 
 class AddRegularRequest(BaseModel):
-    twitch_id: str = Field(min_length=1)
     login: str = Field(min_length=1)
-    display_name: str = Field(min_length=1)
 
 
 class RegularData(BaseModel):
@@ -23,15 +21,17 @@ class AddRegularResponse(BaseModel):
 
 class AddRegularPlugin(BasePlugin):
     """
-    POST /viewers/regulars — Add a viewer to the regulars list.
+    POST /viewers/regulars — Add a viewer to the regulars list by username.
 
-    Upserts the viewer record if they haven't chatted yet,
-    then sets is_regular=1.
+    Looks up the login in the viewers table first (already chatted before);
+    falls back to the Twitch API to resolve twitch_id/display_name otherwise.
+    Upserts the viewer record, then sets is_regular=1.
     """
 
-    def __init__(self, http, db, event_bus, logger):
+    def __init__(self, http, db, twitch, event_bus, logger):
         self.http = http
         self.db = db
+        self.twitch = twitch
         self.bus = event_bus
         self.logger = logger
 
@@ -46,6 +46,19 @@ class AddRegularPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             req = AddRegularRequest(**data)
+            login = req.login.lstrip("@").lower()
+
+            viewer = await self.db.query_one(
+                "SELECT twitch_id, login, display_name FROM viewers WHERE login=$1", [login]
+            )
+            if not viewer:
+                resp = await self.twitch.get("/users", params={"login": login})
+                users = resp.get("data", [])
+                if not users:
+                    return {"success": False, "error": f"Usuario '{login}' no encontrado en Twitch."}
+                u = users[0]
+                viewer = {"twitch_id": u["id"], "login": u["login"], "display_name": u["display_name"]}
+
             await self.db.execute(
                 """INSERT INTO viewers (twitch_id, login, display_name, is_regular)
                    VALUES ($1, $2, $3, 1)
@@ -53,16 +66,16 @@ class AddRegularPlugin(BasePlugin):
                        login        = excluded.login,
                        display_name = excluded.display_name,
                        is_regular   = 1""",
-                [req.twitch_id, req.login, req.display_name],
+                [viewer["twitch_id"], viewer["login"], viewer["display_name"]],
             )
             await self.bus.publish("viewer.regular.added", {
-                "twitch_id": req.twitch_id,
-                "display_name": req.display_name,
+                "twitch_id": viewer["twitch_id"],
+                "display_name": viewer["display_name"],
             })
             return {"success": True, "data": {
-                "twitch_id": req.twitch_id,
-                "login": req.login,
-                "display_name": req.display_name,
+                "twitch_id": viewer["twitch_id"],
+                "login": viewer["login"],
+                "display_name": viewer["display_name"],
             }}
         except Exception as e:
             self.logger.error(f"[AddRegular] {e}")

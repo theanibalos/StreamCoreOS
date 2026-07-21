@@ -10,6 +10,7 @@ class ModRuleData(BaseModel):
     action: str
     duration_s: Optional[int] = None
     enabled: bool
+    exempt_roles: list[str] = []
 
 
 class ListModRulesResponse(BaseModel):
@@ -36,9 +37,16 @@ class ListModRulesPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             rows = await self.db.query(
-                "SELECT id, type, value, action, duration_s, enabled FROM mod_rules ORDER BY id"
+                "SELECT id, type, value, action, duration_s, enabled, exempt_roles FROM mod_rules ORDER BY id"
             )
-            rules = [{**r, "enabled": bool(r["enabled"])} for r in rows]
+            rules = [
+                {
+                    **r,
+                    "enabled": bool(r["enabled"]),
+                    "exempt_roles": [x for x in (r["exempt_roles"] or "").split(",") if x],
+                }
+                for r in rows
+            ]
             return {"success": True, "data": rules}
         except Exception as e:
             self.logger.error(f"[ListModRules] {e}")

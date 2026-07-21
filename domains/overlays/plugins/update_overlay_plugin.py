@@ -1,5 +1,4 @@
 import json
-import time
 from typing import Optional, Any
 from pydantic import BaseModel, Field
 from core.base_plugin import BasePlugin
@@ -56,10 +55,6 @@ class UpdateOverlayPlugin(BasePlugin):
                 params.append(req.name)
             
             if req.config is not None:
-                # Inject a version timestamp to force reactivity
-                if isinstance(req.config, dict):
-                    req.config["_v"] = int(time.time() * 1000)
-                
                 self.logger.info(f"[UpdateOverlay] Saving config for overlay {oid}: {len(json.dumps(req.config))} bytes")
                 updates.append(f"config = ${len(params)+1}")
                 params.append(json.dumps(req.config))

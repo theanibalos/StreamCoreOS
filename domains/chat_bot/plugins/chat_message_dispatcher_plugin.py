@@ -65,6 +65,7 @@ class ChatMessageDispatcherPlugin(BasePlugin):
             "is_mod": "moderator" in badge_ids,
             "is_sub": "subscriber" in badge_ids,
             "is_broadcaster": "broadcaster" in badge_ids,
+            "is_vip": "vip" in badge_ids,
             "user_id": event.get("chatter_user_id", ""),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }

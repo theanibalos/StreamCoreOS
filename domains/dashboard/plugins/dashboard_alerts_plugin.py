@@ -13,6 +13,15 @@ _BUS_EVENTS = [
     "dashboard.stats.updated",
 ]
 
+# Raw Twitch EventSub types the wildcard listener sees but should NOT reach the
+# alert feed: stream.online/offline are already covered (with richer data) by
+# the internal stream.session.started/ended bus events above — forwarding
+# them too would duplicate the same moment as an unstyled entry.
+_EXCLUDED_TWITCH_EVENTS = {
+    "stream.online",
+    "stream.offline",
+}
+
 
 class DashboardAlertsPlugin(BasePlugin):
     """
@@ -76,6 +85,8 @@ class DashboardAlertsPlugin(BasePlugin):
         # Wildcard handler: _event_type is injected by TwitchEventSubClient.
         # Use .get() — never .pop() — because the same dict is shared with all wildcard callbacks.
         event_type = event_data.get("_event_type", "twitch.event")
+        if event_type in _EXCLUDED_TWITCH_EVENTS:
+            return
         await self._push(event_type, {k: v for k, v in event_data.items() if k != "_event_type"})
 
     async def _push(self, event_type: str, data: dict):

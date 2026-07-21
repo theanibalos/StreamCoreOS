@@ -557,7 +557,7 @@ TTS Tool (tts):
 - **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
 - **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
-- **Events consumed**: none
+- **Events consumed**: chat.message.received, moderation.rules.updated, viewer.regular.added, viewer.regular.removed
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
 - **Plugins**: moderation.AiModPlugin, moderation.AutoModPlugin, moderation.CreateModRulePlugin, moderation.DeleteModRulePlugin, moderation.ListModRulesPlugin, moderation.ManualBanPlugin, moderation.ManualTimeoutPlugin, moderation.ManualUnbanPlugin, moderation.ModLogPlugin, moderation.UpdateModRulePlugin
 
