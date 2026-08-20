@@ -19,5 +19,6 @@ services:
       TWITCH_REDIRECT_URI: http://localhost:${APP_PORT:-80}/api/auth/twitch/callback
     volumes:
       - ./data:/app/data
+      - ./uploads:/app/uploads
     command: sh -c "uv run main.py"
     restart: unless-stopped

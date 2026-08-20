@@ -7,5 +7,6 @@ services:
       - .env
     volumes:
       - ./database.db:/app/database.db
+      - ./uploads:/app/uploads
     command: sh -c "touch /app/database.db && uv run main.py"
     restart: unless-stopped
