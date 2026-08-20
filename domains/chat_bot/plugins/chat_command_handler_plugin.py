@@ -161,7 +161,9 @@ class ChatCommandHandlerPlugin(BasePlugin):
             })
             await self.twitch.post(f"/chat/shoutouts?{query}", user_token=session["access_token"])
         except Exception as e:
-            self.logger.error(f"[CommandHandler] Shoutout failed for {target_login}: {e}")
+            body = getattr(getattr(e, "response", None), "text", None)
+            detail = f"{e} — {body}" if body else str(e)
+            self.logger.error(f"[CommandHandler] Shoutout failed for {target_login}: {detail}")
 
     async def _resolve(self, template: str, data: dict, count: int) -> str:
         """Replace all {variable} placeholders in the template with live data."""
