@@ -47,9 +47,11 @@ async def test_request_response(bus):
     result = await bus.request("validate", {"msg": "hello"})
     assert result == {"ok": True, "echo": "hello"}
 
-async def test_wildcard_observability(bus):
+async def test_system_wide_observation_via_listener(bus):
+    """There is no wildcard subscription: system-wide observation is
+    add_listener's job (publish-side sink, zero transport cost)."""
     received = []
-    await bus.subscribe("*", lambda env: received.append(env.event))
+    bus.add_listener(lambda record: received.append(record["event"]))
     await bus.publish("a", {})
     await bus.publish("b", {})
     await asyncio.sleep(0.01)

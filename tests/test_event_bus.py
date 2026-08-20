@@ -77,15 +77,17 @@ class TestPubSub:
         assert received == []
 
 
-# ─── Wildcard ─────────────────────────────────────────────────────────────
+# ─── System-wide observation (add_listener) ────────────────────────────────
+# There is deliberately no wildcard subscription: system-wide observation is
+# add_listener()'s job in-process (a publish-side sink, zero transport cost),
+# and the broker's own tooling when distributed.
 
-class TestWildcard:
+class TestListenerObservation:
     @pytest.mark.anyio
-    async def test_wildcard_receives_all_events(self, bus):
+    async def test_listener_receives_all_events(self, bus):
         seen = []
-        async def monitor(event): seen.append(event.payload.get("_type"))
+        bus.add_listener(lambda record: seen.append(record["payload"].get("_type")))
 
-        await bus.subscribe("*", monitor)
         await bus.publish("a", {"_type": "a"})
         await bus.publish("b", {"_type": "b"})
         await asyncio.sleep(0.01)
@@ -94,22 +96,21 @@ class TestWildcard:
         assert "b" in seen
 
     @pytest.mark.anyio
-    async def test_wildcard_does_not_participate_in_rpc(self, bus):
-        """Wildcard subscribers must not reply to request() calls."""
-        rpc_replied = []
+    async def test_listener_does_not_participate_in_rpc(self, bus):
+        """add_listener() is a passive sink and must not reply to request() calls."""
+        listener_called = []
 
-        async def wildcard_handler(event):
-            rpc_replied.append(True)
-            return {"reply": "from wildcard"}  # this should be ignored
+        def listener(record):
+            listener_called.append(True)
 
-        await bus.subscribe("*", wildcard_handler)
+        bus.add_listener(listener)
 
         # No direct subscriber → request should timeout
         with pytest.raises(asyncio.TimeoutError):
             await bus.request("some.event", {}, timeout=0.05)
 
-        assert rpc_replied  # wildcard was called
-        # but it didn't make the request succeed (TimeoutError was raised)
+        assert listener_called  # the listener saw the publish
+        # but it never subscribes/replies, so the request still times out
 
 
 # ─── RPC (request / response) ────────────────────────────────────────────

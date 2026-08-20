@@ -20,6 +20,8 @@ dependencies = [
     "edge-tts>=7.2.8",
     "python-multipart>=0.0.29",
     "redis>=8.0.1",
+    "aio-pika>=9.4",
+    "aiokafka>=0.14.0",
 ]
 
 [tool.pytest.ini_options]

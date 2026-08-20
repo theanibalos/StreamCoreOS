@@ -1,6 +1,7 @@
 import re
 import random as _random
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 from core.base_plugin import BasePlugin
 
 _VAR_PATTERN = re.compile(r'\{var:([a-z0-9_]+)\}')
@@ -41,9 +42,15 @@ class ChatCommandHandlerPlugin(BasePlugin):
       1. Looks up the command in DB by name.
       2. Checks userlevel permission.
       3. Checks per-user and global cooldowns via the state tool.
-      4. Resolves dynamic variables in the response template.
-      5. Sends the response to chat.
-      6. Publishes chat.command.executed.
+      4. Runs the command's built-in action, if any (see below).
+      5. Resolves dynamic variables in the response template.
+      6. Sends the response to chat.
+      7. Publishes chat.command.executed.
+
+    Built-in actions (chat_commands.action column, chosen at creation time —
+    the command's own name/alias, e.g. "!so", is independent of the action):
+      shoutout — calls Twitch's Helix POST /chat/shoutouts for the first
+                 @mention in the command args (moderator:manage:shoutouts).
 
     Supported variables in command responses:
       {user}          — Display name of the chatter who triggered the command.
@@ -66,7 +73,7 @@ class ChatCommandHandlerPlugin(BasePlugin):
         self.logger = logger
 
     async def on_boot(self):
-        self.twitch.require_scopes(["moderator:read:followers"])
+        self.twitch.require_scopes(["moderator:read:followers", "moderator:manage:shoutouts"])
         await self.bus.subscribe("chat.command.received", self._handle)
 
     async def _handle(self, event):
@@ -112,6 +119,9 @@ class ChatCommandHandlerPlugin(BasePlugin):
                 [command_name],
             )
 
+            if cmd["action"] == "shoutout":
+                await self._do_shoutout(data, channel)
+
             response = await self._resolve(cmd["response"], data, new_count or 1)
             await self.twitch.send_message(channel, response)
             await self.bus.publish("chat.command.executed", {
@@ -122,6 +132,36 @@ class ChatCommandHandlerPlugin(BasePlugin):
             })
         except Exception as e:
             self.logger.error(f"[CommandHandler] Error handling {command_name}: {e}")
+
+    async def _do_shoutout(self, data: dict, channel: str) -> None:
+        """Resolve the target login from the command args and call Twitch's
+        'Send a Shoutout' Helix endpoint (POST /chat/shoutouts). Failures are
+        logged but never block the command's chat response."""
+        args = data.get("args", "").strip()
+        target_login = args.split()[0].lstrip("@").lower() if args else ""
+        if not target_login:
+            return
+
+        session = self.twitch.get_session()
+        if not session:
+            return
+
+        try:
+            users = await self.twitch.get(
+                "/users", params={"login": target_login}, user_token=session["access_token"]
+            )
+            target = (users.get("data") or [None])[0]
+            if not target:
+                return
+
+            query = urlencode({
+                "from_broadcaster_id": session["broadcaster_id"],
+                "to_broadcaster_id": target["id"],
+                "moderator_id": session["broadcaster_id"],
+            })
+            await self.twitch.post(f"/chat/shoutouts?{query}", user_token=session["access_token"])
+        except Exception as e:
+            self.logger.error(f"[CommandHandler] Shoutout failed for {target_login}: {e}")
 
     async def _resolve(self, template: str, data: dict, count: int) -> str:
         """Replace all {variable} placeholders in the template with live data."""

@@ -162,58 +162,6 @@ Configuration Tool (config):
                 Example: self.config.require("STRIPE_KEY", "SENDGRID_KEY")
 ```
 
-### 🔧 Tool: `event_bus` (Status: ✅)
-```text
-Universal Event Bus (event_bus):
-        - publish(event_name, data, **kwargs): Broadcast an event.
-        - subscribe(event_name, callback, group=None, retries=0, backoff=0.5, broadcast=False):
-          Listen for events. group=None derives a STABLE group from the callback identity:
-          replicas of the same plugin consume each event exactly once across the fleet,
-          while distinct plugins each get their own copy. Use group="pool" for explicit
-          worker pools, broadcast=True ONLY for instance-local concerns (every replica
-          receives a copy — e.g. local cache invalidation).
-        - request(event_name, data, timeout=5): Async RPC (returns dict).
-        - unsubscribe(event_name, callback): Stop listening.
-        - get_trace_history() -> List[TraceNode]: Last 500 event records.
-        - get_subscribers() -> dict: Current subscriber map.
-        - add_listener(callback): Sink for all events (record: dict).
-        - add_failure_listener(callback): Sink for errors (record: dict).
-        
-        CRITICAL: Subscribing callbacks receive an 'EventEnvelope' object.
-        Example: async def on_event(self, event: EventEnvelope): print(event.payload)
-        
-        RETRIES & IDEMPOTENCY:
-        - If 'retries' > 0, the handler will be re-executed on failure with exponential backoff.
-        - Ensure handlers are idempotent as they may run multiple times.
-
-        DEAD-LETTER QUEUE (DLQ):
-        - Final failures are published to '_dlq.<original_event>'.
-        - Payload includes 'original' envelope, 'subscriber', 'error', and 'attempts'.
-        - Loop protection: '_dlq.*', '_reply.*', and wildcard events are never dead-lettered.
-        - Toggle via EVENT_BUS_DLQ_ENABLED (default: true).
-
-        UNIVERSAL CAPABILITIES (kwargs):
-        - key: String. For strict ordering (Kafka/SQS).
-        - priority: Integer (1-10). Importance (RabbitMQ).
-        - delay: Integer (seconds). Delivery schedule.
-        - ttl: Float (seconds). Message expiration hint.
-        - correlation_id: String. Cross-reference for RPC.
-
-        RESILIENCE:
-        - A subscriber that reaches 5 consecutive FINAL failures for a specific event is auto-unsubscribed.
-        - Each auto-unsubscribe publishes 'system.subscriber.dropped'
-          (payload: event, subscriber, error, consecutive_failures) so the drop
-          is observable — subscribe to it for alerting/monitoring.
-
-        WELL-KNOWN EVENTS:
-        - "overlay.vars.set" — publish a flat dict of variables to push them to all
-          live overlays (OBS browser sources). Persisted in the overlay_vars table,
-          broadcast instantly via SSE, readable in overlay JS as data.stats[key].
-          Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
-          Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
-          reads the variables from event.payload.
-```
-
 ### 🔧 Tool: `http_client` (Status: ✅)
 ```text
 HTTP Client Tool (http_client):
@@ -445,31 +393,6 @@ Systems Registry Tool (registry):
                 Intended for health-check plugins that verify tools proactively.
 ```
 
-### 🔧 Tool: `db` (Status: ✅)
-```text
-Async SQLite Persistence Tool (sqlite):
-        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
-          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
-          ($1, $2...) and converts them transparently to SQLite's native '?'.
-        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
-        - CAPABILITIES:
-            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
-            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
-            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
-              With RETURNING (SQLite 3.35+): returns the first column value.
-              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
-            - await execute_many(sql, params_list) → None: Batch writes.
-            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
-              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
-            - await health_check() → bool: Verify database connectivity.
-        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
-        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
-          topological sort (alphabetical by default). To declare that one migration must
-          run before another, add as the first comment line:
-            "-- depends: other_domain/001_file.sql"
-          Works for same-domain or cross-domain dependencies. .sql extension is optional.
-```
-
 ### 🔧 Tool: `scheduler` (Status: ✅)
 ```text
 Scheduler Tool (scheduler):
@@ -501,6 +424,34 @@ Scheduler Tool (scheduler):
         - SWAP: replace with Celery beat by creating a new tool with name = "scheduler"
           and the same 4-method API. Plugins do not change.
 ```
+
+### 🔧 Tool: `db` (Status: ✅)
+```text
+Async SQLite Persistence Tool (sqlite):
+        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
+          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
+          ($1, $2...) and converts them transparently to SQLite's native '?'.
+        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
+        - CAPABILITIES:
+            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
+            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
+            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
+              With RETURNING (SQLite 3.35+): returns the first column value.
+              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
+            - await execute_many(sql, params_list) → None: Batch writes.
+            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
+              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
+            - await health_check() → bool: Verify database connectivity.
+        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
+          topological sort (alphabetical by default). To declare that one migration must
+          run before another, add as the first comment line:
+            "-- depends: other_domain/001_file.sql"
+          Works for same-domain or cross-domain dependencies. .sql extension is optional.
+```
+
+### 🔧 Tool: `event_bus` (Status: ❌)
+Error extracting info: '"juego'
 
 ### 🔧 Tool: `tts` (Status: ✅)
 ```text
@@ -541,9 +492,9 @@ TTS Tool (tts):
 - **Table `chat_var`**: name (str), value (str), enabled (int), created_at (str)
 - **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}, SSE /api/chat/stream
 - **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command), `chat.message.received` ()
-- **Events consumed**: chat.command.received, chat.message.received
+- **Events consumed**: chat.command.received, chat.message.received, message.resend
 - **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch
-- **Plugins**: chat_bot.ChatAutoResponsePlugin, chat_bot.ChatBadgesPlugin, chat_bot.ChatCommandHandlerPlugin, chat_bot.ChatMessageDispatcherPlugin, chat_bot.ChatStreamPlugin, chat_bot.CommandsListPlugin, chat_bot.CreateCommandPlugin, chat_bot.CreateVarPlugin, chat_bot.DeleteCommandPlugin, chat_bot.DeleteVarPlugin, chat_bot.EchoReminderPlugin, chat_bot.IAChatPlugin, chat_bot.ListCommandsPlugin, chat_bot.ListRemindersPlugin, chat_bot.ListVarsPlugin, chat_bot.UpdateCommandPlugin, chat_bot.UpdateVarPlugin, chat_bot.VarCommandPlugin
+- **Plugins**: chat_bot.ChatAutoResponsePlugin, chat_bot.ChatBadgesPlugin, chat_bot.ChatCommandHandlerPlugin, chat_bot.ChatMessageDispatcherPlugin, chat_bot.ChatStreamPlugin, chat_bot.CommandsListPlugin, chat_bot.CreateCommandPlugin, chat_bot.CreateVarPlugin, chat_bot.DeleteCommandPlugin, chat_bot.DeleteVarPlugin, chat_bot.EchoReminderPlugin, chat_bot.IAChatPlugin, chat_bot.ListCommandsPlugin, chat_bot.ListRemindersPlugin, chat_bot.ListVarsPlugin, chat_bot.MessageResendPlugin, chat_bot.UpdateCommandPlugin, chat_bot.UpdateVarPlugin, chat_bot.VarCommandPlugin
 
 ### `dashboard`
 - **Table `channel_stats`**: recorded_at (str), viewer_count (int), follower_count (int)
@@ -554,7 +505,7 @@ TTS Tool (tts):
 - **Plugins**: dashboard.ChannelStatsCollectorPlugin, dashboard.ChannelStatsHistoryPlugin, dashboard.DashboardAlertsPlugin, dashboard.DashboardStatsPlugin
 
 ### `moderation`
-- **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
+- **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), exempt_roles (str), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
 - **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
 - **Events consumed**: chat.message.received, moderation.rules.updated, viewer.regular.added, viewer.regular.removed
@@ -563,11 +514,11 @@ TTS Tool (tts):
 
 ### `overlays`
 - **Table `overlay`**: name (str), config (str), created_at (any), updated_at (any)
-- **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/upload-background, PUT /api/overlays/{id}, SSE /api/overlays/stream/{id}
+- **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/manifest, GET /api/overlays/token, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/token, POST /api/overlays/upload-background, PUT /api/overlays/{id}, SSE /api/overlays/feed, SSE /api/overlays/stream/{id}
 - **Events emitted**: `overlay.config.updated` (overlay_id)
 - **Events consumed**: chat.message.received, dashboard.stats.updated, overlay.config.updated, overlay.vars.set
 - **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: overlays.CreateOverlayPlugin, overlays.DeleteBackgroundPlugin, overlays.DeleteOverlayPlugin, overlays.GetOverlayPlugin, overlays.ListBackgroundsPlugin, overlays.ListOverlaysPlugin, overlays.OverlayConfigPlugin, overlays.OverlayDataPlugin, overlays.OverlayStreamPlugin, overlays.UpdateOverlayPlugin, overlays.UploadBackgroundPlugin
+- **Plugins**: overlays.CreateOverlayPlugin, overlays.DeleteBackgroundPlugin, overlays.DeleteOverlayPlugin, overlays.GetOverlayPlugin, overlays.ListBackgroundsPlugin, overlays.ListOverlaysPlugin, overlays.OverlayConfigPlugin, overlays.OverlayDataPlugin, overlays.OverlayFeedPlugin, overlays.OverlayManifestPlugin, overlays.OverlayStreamPlugin, overlays.OverlayTokenPlugin, overlays.UpdateOverlayPlugin, overlays.UploadBackgroundPlugin
 
 ### `ping`
 - **Tables**: none
@@ -637,7 +588,7 @@ TTS Tool (tts):
 - **Table `webhook`**: name (str), url (str), method (str), headers (Optional[str]), body_template (Optional[str]), trigger_type (str), trigger_value (str), filter_field (Optional[str]), filter_value (Optional[str]), enabled (bool), created_at (Optional[str]), updated_at (Optional[str])
 - **Endpoints**: DELETE /api/webhooks/{webhook_id}, GET /api/webhooks, POST /api/webhooks, POST /api/webhooks/test, PUT /api/webhooks/{webhook_id}
 - **Events emitted**: none
-- **Events consumed**: *, chat.command.executed
+- **Events consumed**: chat.command.executed
 - **Dependencies**: db, event_bus, http, http_client, logger
 - **Plugins**: webhooks.CreateWebhookPlugin, webhooks.DeleteWebhookPlugin, webhooks.ListWebhooksPlugin, webhooks.TestWebhookPlugin, webhooks.UpdateWebhookPlugin, webhooks.WebhookExecutorPlugin
 

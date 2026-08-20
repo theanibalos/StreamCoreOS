@@ -4,6 +4,7 @@ from core.base_plugin import BasePlugin
 
 
 _USERLEVELS = r"^(everyone|subscriber|vip|regular|moderator|broadcaster)$"
+_ACTIONS = r"^(shoutout)$"
 
 
 class CreateCommandRequest(BaseModel):
@@ -12,6 +13,7 @@ class CreateCommandRequest(BaseModel):
     cooldown_s: int = Field(default=30, ge=0, le=3600)
     global_cooldown_s: int = Field(default=0, ge=0, le=3600)
     userlevel: str = Field(default="everyone", pattern=_USERLEVELS)
+    action: Optional[str] = Field(default=None, pattern=_ACTIONS)
 
 
 class CommandData(BaseModel):
@@ -23,6 +25,7 @@ class CommandData(BaseModel):
     userlevel: str
     use_count: int
     enabled: bool
+    action: Optional[str] = None
 
 
 class CreateCommandResponse(BaseModel):
@@ -51,14 +54,14 @@ class CreateCommandPlugin(BasePlugin):
         try:
             req = CreateCommandRequest(**data)
             cmd_id = await self.db.execute(
-                """INSERT INTO chat_commands (name, response, cooldown_s, global_cooldown_s, userlevel)
-                   VALUES ($1, $2, $3, $4, $5) RETURNING id""",
-                [req.name, req.response, req.cooldown_s, req.global_cooldown_s, req.userlevel],
+                """INSERT INTO chat_commands (name, response, cooldown_s, global_cooldown_s, userlevel, action)
+                   VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+                [req.name, req.response, req.cooldown_s, req.global_cooldown_s, req.userlevel, req.action],
             )
             return {"success": True, "data": {
                 "id": cmd_id, "name": req.name, "response": req.response,
                 "cooldown_s": req.cooldown_s, "global_cooldown_s": req.global_cooldown_s,
-                "userlevel": req.userlevel, "use_count": 0, "enabled": True,
+                "userlevel": req.userlevel, "use_count": 0, "enabled": True, "action": req.action,
             }}
         except Exception as e:
             self.logger.error(f"[CreateCommand] {e}")

@@ -23,6 +23,7 @@ class CommandData(BaseModel):
     userlevel: str
     use_count: int
     enabled: bool
+    action: Optional[str] = None
 
 
 class UpdateCommandResponse(BaseModel):
@@ -77,6 +78,7 @@ class UpdateCommandPlugin(BasePlugin):
                 "response": new_response, "cooldown_s": new_cooldown,
                 "global_cooldown_s": new_global_cooldown, "userlevel": new_userlevel,
                 "use_count": cmd["use_count"], "enabled": bool(new_enabled),
+                "action": cmd["action"],
             }}
         except Exception as e:
             self.logger.error(f"[UpdateCommand] {e}")

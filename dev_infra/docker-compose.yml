@@ -33,6 +33,26 @@ services:
       timeout: 3s
       retries: 5
 
+  # ─── RabbitMQ (event bus driver: EVENT_BUS_DRIVER=rabbitmq) ───
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: microcoreos_rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI (guest/guest)
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # ─── Redis (comentado, descomentar cuando se necesite) ───
   # redis:
   #   image: redis:7-alpine
@@ -50,4 +70,5 @@ services:
 
 volumes:
   postgres_data:
+  rabbitmq_data:
   # redis_data:

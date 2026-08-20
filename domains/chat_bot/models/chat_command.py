@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -9,6 +10,7 @@ class ChatCommandEntity(BaseModel):
     cooldown_s: int
     enabled: int
     created_at: str
+    action: Optional[str] = None
 
 
 class ChatLogEntity(BaseModel):

@@ -18,8 +18,6 @@ Monolith scaling pattern).
 TRANSPORT MAPPING:
 ─────────────────────────────────────────────────────────────────
     event "user.created"  → stream  "bus:user.created" (XADD, capped MAXLEN ~10000)
-    every publish ALSO lands in the firehose stream "bus:*" so wildcard
-        subscribers ("*") work without cross-stream discovery
     subscribe(group="g")   → durable consumer group "g": Redis delivers each
         message to exactly one consumer in the group across the WHOLE fleet.
         The Bus auto-derives stable groups from the callback identity, so this
@@ -27,7 +25,7 @@ TRANSPORT MAPPING:
     subscribe(group=None)  → ephemeral consumer group "_bcast_<uuid>"
         starting at "$" (broadcast: each subscriber sees every NEW message;
         destroyed on unsubscribe). Only broadcast subscriptions reach the
-        driver without a group: wildcards, RPC replies, broadcast=True.
+        driver without a group: RPC replies, broadcast=True.
     delay                  → applied driver-side before XADD (Streams have no
         native delayed delivery)
     key / priority         → accepted but no-ops: a stream is already totally
@@ -72,13 +70,12 @@ class _Subscription:
     """One reader loop: (event, callback) consuming a stream via a consumer group."""
 
     def __init__(self, event: str, stream: str, group: str, consumer: str,
-                 callback: Callable, is_wildcard: bool, ephemeral: bool):
+                 callback: Callable, ephemeral: bool):
         self.event = event
         self.stream = stream
         self.group = group
         self.consumer = consumer
         self.callback = callback
-        self.is_wildcard = is_wildcard
         self.ephemeral = ephemeral  # broadcast groups are destroyed on unsubscribe
         self.task: Optional[asyncio.Task] = None
 
@@ -132,20 +129,14 @@ class RedisStreamsDriver(EventBusDriver):
             await asyncio.sleep(envelope.delay)
         fields = {"json": envelope.model_dump_json()}
         try:
-            async with self._redis.pipeline(transaction=False) as pipe:
-                pipe.xadd(f"{self.STREAM_PREFIX}{envelope.event}", fields,
-                          maxlen=self._maxlen, approximate=True)
-                # Firehose copy so "*" subscribers see every event.
-                pipe.xadd(f"{self.STREAM_PREFIX}*", fields,
-                          maxlen=self._maxlen, approximate=True)
-                await pipe.execute()
+            await self._redis.xadd(f"{self.STREAM_PREFIX}{envelope.event}", fields,
+                                   maxlen=self._maxlen, approximate=True)
         except (redis_exceptions.ConnectionError, redis_exceptions.TimeoutError) as e:
             raise EventBusConnectionError(f"Redis broker unreachable: {e}") from e
 
     # ─── TRANSPORT: subscribe / readers ───────────────────
 
     async def subscribe(self, event_name: str, group: Optional[str], callback: Callable):
-        is_wildcard = event_name == "*"
         stream = f"{self.STREAM_PREFIX}{event_name}"
         ephemeral = group is None
         group_name = group if group is not None else f"_bcast_{uuid.uuid4().hex[:12]}"
@@ -159,7 +150,7 @@ class RedisStreamsDriver(EventBusDriver):
             if "BUSYGROUP" not in str(e):
                 raise
 
-        sub = _Subscription(event_name, stream, group_name, consumer, callback, is_wildcard, ephemeral)
+        sub = _Subscription(event_name, stream, group_name, consumer, callback, ephemeral)
         sub.task = asyncio.create_task(self._reader(sub))
         self._subs.append(sub)
 
@@ -201,7 +192,7 @@ class RedisStreamsDriver(EventBusDriver):
         for msg_id, fields in messages or []:
             try:
                 envelope = self._envelope_cls.model_validate_json(fields["json"])
-                delivery = await self._deliver_hook(envelope, sub.callback, sub.is_wildcard)
+                delivery = await self._deliver_hook(envelope, sub.callback)
                 if delivery is not None:
                     # Ack AFTER the handler (and its Bus-side retries) finishes:
                     # a replica dying mid-handler leaves the message pending,

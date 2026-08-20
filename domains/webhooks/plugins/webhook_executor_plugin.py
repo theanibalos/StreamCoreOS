@@ -15,7 +15,7 @@ class WebhookExecutorPlugin(BasePlugin):
 
     async def on_boot(self):
         await self.bus.subscribe("chat.command.executed", self._on_command)
-        await self.bus.subscribe("*", self._on_event)
+        self.bus.add_listener(self._on_event)
 
     async def _on_command(self, event):
         data = event.payload
@@ -27,11 +27,11 @@ class WebhookExecutorPlugin(BasePlugin):
         for wh in webhooks:
             asyncio.create_task(self._evaluate_and_execute(wh, data))
 
-    async def _on_event(self, event):
-        data = event.payload
-        # Wildcard subscription: the envelope's own `.event` field carries the
-        # topic name now (the bus no longer injects "_event_type" into payload).
-        event_topic = event.event or data.get("_event_type") or data.get("event_type")
+    async def _on_event(self, record: dict):
+        # add_listener() is the bus-wide observation sink and hands over the
+        # raw published record (a dict), not an EventEnvelope.
+        data = record.get("payload", {})
+        event_topic = record.get("event") or data.get("_event_type") or data.get("event_type")
         if not event_topic:
             return
 
