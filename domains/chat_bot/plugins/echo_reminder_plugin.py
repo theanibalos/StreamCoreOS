@@ -29,11 +29,10 @@ class EchoReminderPlugin(BasePlugin):
         if command not in ["!echo", "!reminder"]:
             return
 
-        badges = data.get("badges", {})
+        roles = data.get("roles") or {}
         is_permitted = (
-            data.get("is_mod") or
-            data.get("is_broadcaster") or
-            "vip" in badges
+            roles.get("moderator") or roles.get("broadcaster") or roles.get("vip")
+            or data.get("is_mod") or data.get("is_broadcaster") or "vip" in data.get("badges", {})
         )
         if not is_permitted:
             return
@@ -41,8 +40,8 @@ class EchoReminderPlugin(BasePlugin):
         current_count = await self.state.get("echo_count", 0, namespace="echo")
         if current_count >= 3:
             await self.twitch.send_message(
-                data["channel"],
-                f"@{data.get('display_name')} Falló la programación: Se alcanzó el límite máximo de 3 eco simultáneos. ❌"
+                data.get("channel_name") or data.get("channel_id") or data.get("channel", ""),
+                f"@{(data.get('user') or {}).get('display_name') or data.get('display_name', '')} Falló la programación: Se alcanzó el límite máximo de 3 eco simultáneos. ❌"
             )
             return
 
@@ -61,8 +60,8 @@ class EchoReminderPlugin(BasePlugin):
             self.logger.warning(f"[Echo] Invalid duration: {time_str}")
             return
 
-        display_name = data.get("display_name", "")
-        channel = data["channel"]
+        display_name = (data.get("user") or {}).get("display_name") or data.get("display_name", "")
+        channel = data.get("channel_name") or data.get("channel_id") or data.get("channel", "")
         run_at = datetime.now() + timedelta(seconds=seconds)
         job_id = f"echo_{datetime.now().timestamp()}"
 

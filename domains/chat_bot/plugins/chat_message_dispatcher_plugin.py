@@ -51,24 +51,37 @@ class ChatMessageDispatcherPlugin(BasePlugin):
             for f in raw_message.get("fragments", [])
         ]
 
+        platform_user_id = event.get("chatter_user_id", "")
+        channel_id = event.get("broadcaster_user_id", "")
+        login = event.get("chatter_user_login", "")
+        display_name = event.get("chatter_user_name", login)
         msg = {
-            "type": "PRIVMSG",
             "platform": "twitch",
+            "channel_id": channel_id,
+            "channel_name": event.get("broadcaster_user_login", ""),
             "message_id": event.get("message_id", ""),
-            "source_message_id": event.get("message_id", ""),
-            "channel": event.get("broadcaster_user_login", ""),
-            "nick": event.get("chatter_user_login", ""),
-            "display_name": event.get("chatter_user_name", event.get("chatter_user_login", "")),
             "message": raw_message.get("text", ""),
             "color": event.get("color", ""),
-            "badges": {b.get("set_id"): b.get("id") for b in badges_list},
+            "badges": [
+                {"set": b.get("set_id", ""), "version": str(b.get("id", ""))}
+                for b in badges_list
+            ],
             "fragments": fragments,
-            "tags": {},
-            "is_mod": "moderator" in badge_ids,
-            "is_sub": "subscriber" in badge_ids,
-            "is_broadcaster": "broadcaster" in badge_ids,
-            "is_vip": "vip" in badge_ids,
-            "user_id": event.get("chatter_user_id", ""),
+            "user": {
+                "id": f"twitch:{platform_user_id}" if platform_user_id else "",
+                "platform_id": platform_user_id,
+                "login": login,
+                "display_name": display_name,
+                "avatar_url": None,
+            },
+            "roles": {
+                "broadcaster": "broadcaster" in badge_ids,
+                "moderator": "moderator" in badge_ids,
+                "subscriber": "subscriber" in badge_ids,
+                "vip": "vip" in badge_ids,
+                "verified": False,
+            },
+            "raw": event,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -77,9 +90,9 @@ class ChatMessageDispatcherPlugin(BasePlugin):
             await self.db.execute(
                 """INSERT INTO chat_log (channel, user_id, display_name, message, is_command, timestamp, platform, source_message_id)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
-                [msg["channel"], msg["user_id"], msg["display_name"],
+                [msg["channel_name"], msg["user"]["id"], msg["user"]["display_name"],
                  msg["message"], 1 if is_command else 0, msg["timestamp"],
-                 msg["platform"], msg["source_message_id"]],
+                 msg["platform"], msg["message_id"]],
             )
         except Exception as e:
             self.logger.error(f"[ChatDispatcher] Failed to log message: {e}")

@@ -15,10 +15,11 @@ services:
       - .env
     environment:
       SQLITE_DB_PATH: data/database.db
-      # Overrides the static FRONTEND_URL/TWITCH_REDIRECT_URI from .env so both
-      # follow APP_PORT automatically — change APP_PORT in .env, nothing else.
-      FRONTEND_URL: http://localhost:${APP_PORT:-80}
-      TWITCH_REDIRECT_URI: http://localhost:${APP_PORT:-80}/api/auth/twitch/callback
+      # Public URL used by browser OAuth redirects.
+      # Set APP_ORIGIN=http://streammachine (or http://streammachine:PORT) in .env
+      # when accessing the app from another machine instead of localhost.
+      FRONTEND_URL: ${APP_ORIGIN:-http://localhost:${APP_PORT:-80}}
+      TWITCH_REDIRECT_URI: ${APP_ORIGIN:-http://localhost:${APP_PORT:-80}}/api/auth/twitch/callback
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads

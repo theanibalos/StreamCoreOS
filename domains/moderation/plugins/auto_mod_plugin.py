@@ -72,24 +72,26 @@ class AutoModPlugin(BasePlugin):
 
     async def _on_message(self, event):
         msg = event.payload
-        if msg.get("is_broadcaster"):
+        roles = msg.get("roles") or {}
+        user = msg.get("user") or {}
+        if roles.get("broadcaster"):
             return  # never moderate the broadcaster
 
         regulars = await self.state.get("regulars", default=set(), namespace=_REGULARS_NS)
         sender_roles = set()
-        if msg.get("is_mod"):
+        if roles.get("moderator"):
             sender_roles.add("mod")
-        if msg.get("is_vip"):
+        if roles.get("vip"):
             sender_roles.add("vip")
-        if msg.get("is_sub"):
+        if roles.get("subscriber"):
             sender_roles.add("sub")
-        if msg.get("user_id", "") in regulars:
+        if user.get("id", "") in regulars:
             sender_roles.add("regular")
 
         rules = await self.state.get("rules", default=[], namespace=_NS)
         message = msg.get("message", "")
-        user_id = msg.get("user_id", "")
-        display_name = msg.get("display_name", "")
+        user_id = user.get("platform_id", "")
+        display_name = user.get("display_name", "")
         message_id = msg.get("message_id", "")
 
         for rule in rules:
@@ -98,7 +100,23 @@ class AutoModPlugin(BasePlugin):
                 continue  # this rule doesn't apply to this sender's roles
 
             if self._matches(rule, message):
-                await self._enforce(rule, user_id, display_name, message, message_id)
+                if msg.get("platform") == "twitch":
+                    await self._enforce(rule, user_id, display_name, message, message_id)
+                else:
+                    await self.bus.publish("moderation.action.requested", {
+                        "platform": msg.get("platform"),
+                        "channel_id": msg.get("channel_id"),
+                        "message_id": message_id,
+                        "user": {
+                            "id": user.get("id", ""),
+                            "platform_id": user_id,
+                            "display_name": display_name,
+                        },
+                        "action": rule["action"],
+                        "duration_s": rule.get("duration_s"),
+                        "reason": f"Auto-mod: {rule['type']} rule #{rule['id']}",
+                        "rule_id": rule["id"],
+                    })
                 break  # apply first matching rule only
 
     def _matches(self, rule: dict, message: str) -> bool:

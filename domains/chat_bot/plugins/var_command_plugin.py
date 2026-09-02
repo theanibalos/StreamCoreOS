@@ -38,8 +38,8 @@ class VarCommandPlugin(BasePlugin):
         if not self._is_permitted(data):
             return
 
-        channel = data.get("channel", "")
-        display_name = data.get("display_name", "")
+        channel = data.get("channel_name") or data.get("channel_id", "")
+        display_name = (data.get("user") or {}).get("display_name", "")
         args = data.get("args", "").strip()
 
         if command == "!setvar":
@@ -107,8 +107,5 @@ class VarCommandPlugin(BasePlugin):
         return raw
 
     def _is_permitted(self, data: dict) -> bool:
-        return (
-            data.get("is_mod")
-            or data.get("is_broadcaster")
-            or "vip" in data.get("badges", {})
-        )
+        roles = data.get("roles") or {}
+        return roles.get("moderator") or roles.get("broadcaster") or roles.get("vip")

@@ -55,18 +55,18 @@ TWITCH_CLIENT_ID=        # from Twitch Developer Console
 TWITCH_CLIENT_SECRET=    # from Twitch Developer Console
 
 APP_PORT=80              # change this to run on a different port (see note below)
+APP_ORIGIN=http://localhost # public browser URL; use http://streammachine for LAN installs
 HTTP_HOST=0.0.0.0
 ```
 
-`FRONTEND_URL` and `TWITCH_REDIRECT_URI` don't need to be touched — both `docker-compose.prod.yml`
-and `docker-compose.selfhost.yml` compute them automatically from `APP_PORT`. `HTTP_HOST` stays
-`0.0.0.0` regardless of the port you pick; it's what lets nginx reach the backend container over
-Docker's internal network, unrelated to `APP_PORT`.
+`FRONTEND_URL` and `TWITCH_REDIRECT_URI` are computed from `APP_ORIGIN`. If you open the app from
+another machine, set `APP_ORIGIN` to that reachable address (for example `http://streammachine`, or
+`http://streammachine:8500` if using a non-80 port). `HTTP_HOST` stays `0.0.0.0`; it's what lets
+nginx reach the backend container over Docker's internal network.
 
-Want the app on a port other than `80`? Change `APP_PORT` above — it's picked up automatically for
-both the published port and `FRONTEND_URL`/`TWITCH_REDIRECT_URI`. Just remember to register the
-matching `http://localhost:<port>/api/auth/twitch/callback` URL in the Twitch console first (exact
-match required).
+Want the app on a port other than `80`? Change `APP_PORT` and include the same port in `APP_ORIGIN`.
+Register the matching `${APP_ORIGIN}/api/auth/twitch/callback` URL in the Twitch console first
+(exact match required).
 
 ### Step 3 — Run
 

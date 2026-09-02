@@ -47,15 +47,11 @@ class TtsVoiceCommandPlugin(BasePlugin):
         if not text.lower().startswith("!voz"):
             return
 
-        channel:      str = data.get("channel", "")
-        twitch_id:    str = data.get("user_id", "")
-        twitch_login: str = (
-            data.get("nick")
-            or data.get("username")
-            or data.get("user_login")
-            or twitch_id   # fallback: use ID if login not available
-        )
-        display_name: str = data.get("display_name", twitch_login)
+        user = data.get("user") or {}
+        channel: str = data.get("channel_name") or data.get("channel_id", "")
+        twitch_id: str = user.get("id", "")
+        twitch_login: str = user.get("login") or user.get("platform_id") or twitch_id
+        display_name: str = user.get("display_name") or twitch_login
 
         parts = text.split(None, 2)   # ["!voz", arg1?, arg2?]
         arg1  = parts[1].lower() if len(parts) > 1 else ""

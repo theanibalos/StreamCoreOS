@@ -150,25 +150,32 @@ class OverlayFeedPlugin(BasePlugin):
                 out.append({"type": "text", "text": f.get("text", "")})
         return out
 
-    async def _resolve_badges(self, raw_badges: dict) -> list:
+    async def _resolve_badges(self, raw_badges) -> list:
         bmap = await self._badge_map()
         out = []
-        for set_id, version in (raw_badges or {}).items():
-            url = bmap.get(set_id, {}).get(str(version), "")
-            out.append({"set": set_id, "version": str(version), "url": url})
+        if isinstance(raw_badges, dict):
+            raw_badges = [{"set": k, "version": v} for k, v in raw_badges.items()]
+        for badge in raw_badges or []:
+            set_id = badge.get("set") or badge.get("set_id") or ""
+            version = str(badge.get("version") or badge.get("id") or "")
+            url = badge.get("url") or bmap.get(set_id, {}).get(version, "")
+            out.append({"set": set_id, "version": version, "url": url})
         return out
 
     # ── Bus handlers ──────────────────────────────────────────────────
 
     async def _on_chat(self, event):
         p = event.payload or {}
+        user = p.get("user") or {}
         data = {
             "id": p.get("message_id", ""),
             "platform": p.get("platform", "twitch"),
-            "user": p.get("display_name", ""),
-            "user_id": p.get("user_id", ""),
+            "channel_id": p.get("channel_id", ""),
+            "channel_name": p.get("channel_name", ""),
+            "user": user.get("display_name", ""),
+            "user_id": user.get("id", ""),
             "color": p.get("color", ""),
-            "badges": await self._resolve_badges(p.get("badges", {})),
+            "badges": await self._resolve_badges(p.get("badges", [])),
             "text": p.get("message", ""),
             "fragments": self._resolve_fragments(p.get("fragments", [])),
         }

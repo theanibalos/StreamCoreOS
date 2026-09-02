@@ -23,11 +23,12 @@ class ViewerActivityPlugin(BasePlugin):
 
     async def _on_message(self, event):
         data = event.payload
-        twitch_id = data.get("user_id", "")
-        login = data.get("nick", "")
-        display_name = data.get("display_name", login)
+        user = data.get("user") or {}
+        user_id = user.get("id", "")
+        login = user.get("login") or user.get("platform_id") or ""
+        display_name = user.get("display_name") or login
 
-        if not twitch_id:
+        if not user_id:
             return
 
         try:
@@ -40,10 +41,11 @@ class ViewerActivityPlugin(BasePlugin):
                        points        = points + $4,
                        total_earned  = total_earned + $4,
                        last_seen     = datetime('now')""",
-                [twitch_id, login, display_name, _POINTS_PER_MESSAGE],
+                [user_id, login, display_name, _POINTS_PER_MESSAGE],
             )
             await self.bus.publish("viewer.points.awarded", {
-                "twitch_id": twitch_id,
+                "user_id": user_id,
+                "platform": data.get("platform", ""),
                 "display_name": display_name,
                 "delta": _POINTS_PER_MESSAGE,
             })

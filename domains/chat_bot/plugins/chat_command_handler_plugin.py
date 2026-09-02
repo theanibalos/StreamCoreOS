@@ -85,9 +85,10 @@ class ChatCommandHandlerPlugin(BasePlugin):
     async def _handle(self, event):
         data = event.payload
         command_name = data.get("command", "").lower()
-        user_id = data.get("user_id", "")
-        display_name = data.get("display_name", "")
-        channel = data.get("channel", "")
+        user = data.get("user") or {}
+        user_id = user.get("id") or data.get("user_id", "")
+        display_name = user.get("display_name") or data.get("display_name", "")
+        channel = data.get("channel_id") or data.get("channel", "")
 
         try:
             cmd = await self.db.query_one(
@@ -143,7 +144,7 @@ class ChatCommandHandlerPlugin(BasePlugin):
         if data.get("platform") == "youtube" and self.youtube:
             await self.youtube.send_message(channel, message)
             return
-        await self.twitch.send_message(channel, message)
+        await self.twitch.send_message(data.get("channel_name") or channel, message)
 
     async def _do_shoutout(self, data: dict, channel: str) -> None:
         """Resolve the target login from the command args and call Twitch's
@@ -182,16 +183,16 @@ class ChatCommandHandlerPlugin(BasePlugin):
         result = template
 
         if "{user}" in result:
-            result = result.replace("{user}", data.get("display_name", ""))
+            result = result.replace("{user}", (data.get("user") or {}).get("display_name") or data.get("display_name", ""))
 
         if "{touser}" in result:
             args = data.get("args", "").strip()
             words = args.split()
-            touser = words[0].lstrip("@") if words else data.get("display_name", "")
+            touser = words[0].lstrip("@") if words else ((data.get("user") or {}).get("display_name") or data.get("display_name", ""))
             result = result.replace("{touser}", touser)
 
         if "{channel}" in result:
-            result = result.replace("{channel}", data.get("channel", ""))
+            result = result.replace("{channel}", data.get("channel_name") or data.get("channel", ""))
 
         if "{count}" in result:
             result = result.replace("{count}", str(count))
@@ -230,13 +231,14 @@ class ChatCommandHandlerPlugin(BasePlugin):
         return result
 
     def _get_user_level(self, data: dict) -> str:
-        if data.get("is_broadcaster"):
+        roles = data.get("roles") or {}
+        if roles.get("broadcaster") or data.get("is_broadcaster"):
             return "broadcaster"
-        if data.get("is_mod"):
+        if roles.get("moderator") or data.get("is_mod"):
             return "moderator"
-        if "vip" in data.get("badges", {}):
+        if roles.get("vip") or data.get("is_vip"):
             return "vip"
-        if data.get("is_sub"):
+        if roles.get("subscriber") or data.get("is_sub"):
             return "subscriber"
         return "everyone"
 
@@ -255,7 +257,7 @@ class ChatCommandHandlerPlugin(BasePlugin):
         if required == "regular":
             row = await self.db.query_one(
                 "SELECT id FROM viewers WHERE twitch_id=$1 AND is_regular=1",
-                [data.get("user_id", "")],
+                [(data.get("user") or {}).get("id", "")],
             )
             return row is not None
 
@@ -268,7 +270,7 @@ class ChatCommandHandlerPlugin(BasePlugin):
                 return "unknown"
 
             broadcaster_id = session["broadcaster_id"]
-            user_id = data.get("user_id", "")
+            user_id = (data.get("user") or {}).get("platform_id", "")
             access_token = session["access_token"]
 
             resp = await self.twitch.get(

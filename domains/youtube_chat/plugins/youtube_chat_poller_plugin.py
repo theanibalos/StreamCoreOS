@@ -91,7 +91,13 @@ class YouTubeChatPollerPlugin(BasePlugin):
         if msg_type == "chatEndedEvent":
             return
         if msg_type == "tombstone":
-            await self.bus.publish("chat.message.deleted", {"platform": "youtube", "message_id": message_id})
+            await self.bus.publish("chat.message.deleted", {
+                "platform": "youtube",
+                "channel_id": live_chat_id,
+                "message_id": message_id,
+                "raw": item,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
             return
 
         text = self._text_for(snippet, msg_type)
@@ -101,27 +107,33 @@ class YouTubeChatPollerPlugin(BasePlugin):
         author_channel_id = snippet.get("authorChannelId") or author.get("channelId", "")
         display_name = author.get("displayName", author_channel_id)
         user_id = f"youtube:{author_channel_id}" if author_channel_id else ""
-        badges = self._badges(author)
         now = datetime.now(timezone.utc).isoformat()
+        session = self.youtube.get_session() or {}
 
         msg = {
-            "type": "PRIVMSG",
             "platform": "youtube",
+            "channel_id": live_chat_id,
+            "channel_name": session.get("channel_title") or "youtube",
             "message_id": message_id,
-            "source_message_id": message_id,
-            "channel": live_chat_id,
-            "nick": author_channel_id,
-            "display_name": display_name,
             "message": text,
             "color": "",
-            "badges": badges,
+            "badges": self._badges(author),
             "fragments": [{"type": "text", "text": text}],
-            "tags": {"youtube_type": msg_type},
-            "is_mod": bool(author.get("isChatModerator")),
-            "is_sub": bool(author.get("isChatSponsor")),
-            "is_broadcaster": bool(author.get("isChatOwner")),
-            "is_vip": False,
-            "user_id": user_id,
+            "user": {
+                "id": user_id,
+                "platform_id": author_channel_id,
+                "login": None,
+                "display_name": display_name,
+                "avatar_url": author.get("profileImageUrl"),
+            },
+            "roles": {
+                "broadcaster": bool(author.get("isChatOwner")),
+                "moderator": bool(author.get("isChatModerator")),
+                "subscriber": bool(author.get("isChatSponsor")),
+                "vip": False,
+                "verified": bool(author.get("isVerified")),
+            },
+            "raw": item,
             "timestamp": now,
         }
 
@@ -135,6 +147,14 @@ class YouTubeChatPollerPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"[YouTubeChatPoller] Failed to log message: {e}")
 
+        await self.bus.publish("chat.message.received", msg)
+        if text.startswith("!"):
+            parts = text.split(maxsplit=1)
+            await self.bus.publish("chat.command.received", {
+                **msg,
+                "command": parts[0].lower(),
+                "args": parts[1] if len(parts) > 1 else "",
+            })
 
         await self._publish_monetization(item, msg_type, display_name, user_id, text)
 
@@ -158,16 +178,16 @@ class YouTubeChatPollerPlugin(BasePlugin):
             return "recibió una membresía de regalo"
         return snippet.get("displayMessage", "")
 
-    def _badges(self, author: dict) -> dict:
-        badges = {}
+    def _badges(self, author: dict) -> list[dict]:
+        badges = []
         if author.get("isChatOwner"):
-            badges["owner"] = "1"
+            badges.append({"set": "owner", "version": "1"})
         if author.get("isChatModerator"):
-            badges["moderator"] = "1"
+            badges.append({"set": "moderator", "version": "1"})
         if author.get("isChatSponsor"):
-            badges["member"] = "1"
+            badges.append({"set": "member", "version": "1"})
         if author.get("isVerified"):
-            badges["verified"] = "1"
+            badges.append({"set": "verified", "version": "1"})
         return badges
 
     async def _publish_monetization(self, item: dict, msg_type: str, display_name: str, user_id: str, text: str):

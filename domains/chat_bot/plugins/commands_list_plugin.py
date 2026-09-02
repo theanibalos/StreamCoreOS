@@ -27,7 +27,7 @@ class CommandsListPlugin(BasePlugin):
         if data.get("command", "").lower() != "!commands":
             return
 
-        channel = data.get("channel", "")
+        channel = data.get("channel_name") or data.get("channel_id", "")
 
         try:
             rows = await self.db.query(

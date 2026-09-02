@@ -37,17 +37,14 @@ class TtsListenerPlugin(BasePlugin):
         if not settings.get("enabled", True):
             return
 
-        twitch_id:    str  = data.get("user_id", "")
-        twitch_login: str  = (
-            data.get("nick")
-            or data.get("username")
-            or data.get("user_login")
-            or twitch_id
-        )
-        is_sub:         bool = data.get("is_sub", False)
-        is_mod:         bool = data.get("is_mod", False)
-        is_broadcaster: bool = data.get("is_broadcaster", False)
-        is_privileged:  bool = is_mod or is_broadcaster
+        user = data.get("user") or {}
+        roles = data.get("roles") or {}
+        user_id: str = user.get("id", "")
+        username: str = user.get("display_name") or user.get("login") or user_id
+        is_sub: bool = bool(roles.get("subscriber"))
+        is_mod: bool = bool(roles.get("moderator"))
+        is_broadcaster: bool = bool(roles.get("broadcaster"))
+        is_privileged: bool = is_mod or is_broadcaster
 
         # Mods and broadcaster always bypass all access restrictions
         if not is_privileged:
@@ -57,7 +54,7 @@ class TtsListenerPlugin(BasePlugin):
 
         # Cooldown filter
         cooldown = int(settings.get("cooldown_seconds") or 0)
-        if cooldown > 0 and not await self._check_cooldown(twitch_id, cooldown):
+        if cooldown > 0 and not await self._check_cooldown(user_id, cooldown):
             return
 
         # Extract TTS text (strip "!tts ")
@@ -91,29 +88,29 @@ class TtsListenerPlugin(BasePlugin):
                 return
 
         # Resolve voice for this user
-        voice_id = await self._get_user_voice(twitch_id)
+        voice_id = await self._get_user_voice(user_id)
 
-        if twitch_id not in self._queues:
-            self._queues[twitch_id] = asyncio.Queue()
-            asyncio.create_task(self._user_worker(twitch_id))
+        if user_id not in self._queues:
+            self._queues[user_id] = asyncio.Queue()
+            asyncio.create_task(self._user_worker(user_id))
 
-        await self._queues[twitch_id].put((twitch_login, tts_text, voice_id))
+        await self._queues[user_id].put((username, tts_text, voice_id))
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
-    async def _user_worker(self, twitch_id: str):
-        queue = self._queues[twitch_id]
+    async def _user_worker(self, user_id: str):
+        queue = self._queues[user_id]
         try:
             while True:
                 username, text, voice_id = await asyncio.wait_for(queue.get(), timeout=60)
-                await self._generate_and_emit(twitch_id, username, text, voice_id)
+                await self._generate_and_emit(user_id, username, text, voice_id)
                 queue.task_done()
         except asyncio.TimeoutError:
             pass
         finally:
-            self._queues.pop(twitch_id, None)
+            self._queues.pop(user_id, None)
 
-    async def _generate_and_emit(self, twitch_id: str, username: str, text: str, voice_id: str):
+    async def _generate_and_emit(self, user_id: str, username: str, text: str, voice_id: str):
         try:
             audio_bytes = await self.tts.generate(text, voice_id)
             audio_b64   = base64.b64encode(audio_bytes).decode("utf-8")
@@ -134,18 +131,18 @@ class TtsListenerPlugin(BasePlugin):
         row = await self.db.query_one("SELECT * FROM tts_settings WHERE id = 1")
         return row or {}
 
-    async def _get_user_voice(self, twitch_id: str) -> str | None:
+    async def _get_user_voice(self, user_id: str) -> str | None:
         row = await self.db.query_one(
-            "SELECT voice_id FROM tts_user_voice WHERE twitch_id = $1", [twitch_id]
+            "SELECT voice_id FROM tts_user_voice WHERE twitch_id = $1", [user_id]
         )
         return row["voice_id"] if row else None
 
-    async def _check_cooldown(self, twitch_id: str, cooldown_s: int) -> bool:
+    async def _check_cooldown(self, user_id: str, cooldown_s: int) -> bool:
         """Returns True if user is allowed to speak (not in cooldown)."""
         import time
         now   = time.monotonic()
-        last  = self._cooldowns.get(twitch_id, 0.0)
+        last  = self._cooldowns.get(user_id, 0.0)
         if now - last < cooldown_s:
             return False
-        self._cooldowns[twitch_id] = now
+        self._cooldowns[user_id] = now
         return True

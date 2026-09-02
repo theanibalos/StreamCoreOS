@@ -39,15 +39,16 @@ class IAChatPlugin(BasePlugin):
             return
 
         question = data.get("args", "").strip()
-        channel  = data["channel"]
-        name     = data["display_name"]
+        channel = data["channel_id"]
+        user = data.get("user") or {}
+        name = user.get("display_name", "")
 
         if not question:
             await self._send_reply(data, channel, f"@{name} Escribe tu pregunta después de !ia.")
             return
 
         # Per-user cooldown
-        user_id     = data.get("user_id", "")
+        user_id     = user.get("id", "")
         cooldown_key = f"ia_cooldown:{user_id}"
         expires_at  = await self.state.get(cooldown_key, namespace="ia_chat")
         if expires_at:
@@ -87,7 +88,7 @@ class IAChatPlugin(BasePlugin):
         if data.get("platform") == "youtube" and self.youtube:
             await self.youtube.send_message(channel, message)
             return
-        await self.twitch.send_message(channel, message)
+        await self.twitch.send_message(data.get("channel_name") or channel, message)
 
 
 def _user_message_for_error(code: str, name: str) -> str:
