@@ -79,7 +79,7 @@ async def test_handle_triggers_shoutout_for_action_command(plugin, mock_tools):
 
     await plugin._handle(_event({
         "command": "!so", "args": "@otheruser", "user_id": "42",
-        "display_name": "Mod", "channel": "ch", "is_mod": True, "badges": {},
+        "display_name": "Mod", "channel": "ch", "roles": {"moderator": True}, "badges": {},
     }))
 
     mock_tools["twitch"].post.assert_called_once()
@@ -100,7 +100,7 @@ async def test_handle_skips_shoutout_for_plain_text_command(plugin, mock_tools):
 
     await plugin._handle(_event({
         "command": "!so", "args": "", "user_id": "42",
-        "display_name": "Mod", "channel": "ch", "is_mod": True, "badges": {},
+        "display_name": "Mod", "channel": "ch", "roles": {"moderator": True}, "badges": {},
     }))
 
     mock_tools["twitch"].post.assert_not_called()

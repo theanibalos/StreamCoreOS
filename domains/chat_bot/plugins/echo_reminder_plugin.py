@@ -30,10 +30,7 @@ class EchoReminderPlugin(BasePlugin):
             return
 
         roles = data.get("roles") or {}
-        is_permitted = (
-            roles.get("moderator") or roles.get("broadcaster") or roles.get("vip")
-            or data.get("is_mod") or data.get("is_broadcaster") or "vip" in data.get("badges", {})
-        )
+        is_permitted = roles.get("moderator") or roles.get("broadcaster") or roles.get("vip")
         if not is_permitted:
             return
 

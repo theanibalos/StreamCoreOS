@@ -234,13 +234,13 @@ class ChatCommandHandlerPlugin(BasePlugin):
 
     def _get_user_level(self, data: dict) -> str:
         roles = data.get("roles") or {}
-        if roles.get("broadcaster") or data.get("is_broadcaster"):
+        if roles.get("broadcaster"):
             return "broadcaster"
-        if roles.get("moderator") or data.get("is_mod"):
+        if roles.get("moderator"):
             return "moderator"
-        if roles.get("vip") or data.get("is_vip"):
+        if roles.get("vip"):
             return "vip"
-        if roles.get("subscriber") or data.get("is_sub"):
+        if roles.get("subscriber"):
             return "subscriber"
         return "everyone"
 

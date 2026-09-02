@@ -39,8 +39,7 @@ async def test_echo_parsing_and_scheduling(plugin, mock_tools):
         "args": "10s Test message",
         "channel": "test_channel",
         "display_name": "TestUser",
-        "is_mod": True,
-        "badges": {}
+        "roles": {"moderator": True},
     }
 
     await plugin._on_command(_event(data))
@@ -65,8 +64,7 @@ async def test_echo_reminder_synonym_accepted(plugin, mock_tools):
         "args": "10s Synonym test",
         "channel": "ch",
         "display_name": "User",
-        "is_mod": True,
-        "badges": {}
+        "roles": {"moderator": True},
     }
 
     await plugin._on_command(_event(data))
@@ -79,9 +77,7 @@ async def test_echo_permissions_denied(plugin, mock_tools):
     data = {
         "command": "!echo",
         "args": "10s Test",
-        "is_mod": False,
-        "is_broadcaster": False,
-        "badges": {}
+        "roles": {"moderator": False, "broadcaster": False},
     }
 
     await plugin._on_command(_event(data))
@@ -93,8 +89,7 @@ async def test_echo_vip_accepted(plugin, mock_tools):
     data = {
         "command": "!echo",
         "args": "10s Test",
-        "is_mod": False,
-        "is_broadcaster": False,
+        "roles": {"vip": True},
         "badges": {"vip": "1"},
         "channel": "ch",
         "display_name": "VIPUser"
@@ -112,8 +107,7 @@ async def test_echo_limit_reached(plugin, mock_tools):
         "args": "10s Test",
         "channel": "ch",
         "display_name": "ModUser",
-        "is_mod": True,
-        "badges": {}
+        "roles": {"moderator": True},
     }
 
     await plugin._on_command(_event(data))
@@ -131,7 +125,7 @@ async def test_echo_limit_reached(plugin, mock_tools):
 @pytest.mark.anyio
 async def test_echo_counter_lifecycle(plugin, mock_tools):
     mock_tools["state"].get.side_effect = _state_get_side_effect
-    data = {"command": "!echo", "args": "10s T", "channel": "ch", "is_mod": True, "display_name": "U", "badges": {}}
+    data = {"command": "!echo", "args": "10s T", "channel": "ch", "roles": {"moderator": True}, "display_name": "U"}
     await plugin._on_command(_event(data))
 
     mock_tools["state"].set.assert_called_with("echo_count", 1, namespace="echo")

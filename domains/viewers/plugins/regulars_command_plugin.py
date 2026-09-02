@@ -140,4 +140,4 @@ class RegularsCommandPlugin(BasePlugin):
 
     def _is_permitted(self, data: dict) -> bool:
         roles = data.get("roles") or {}
-        return roles.get("moderator") or roles.get("broadcaster") or data.get("is_mod") or data.get("is_broadcaster")
+        return roles.get("moderator") or roles.get("broadcaster")
