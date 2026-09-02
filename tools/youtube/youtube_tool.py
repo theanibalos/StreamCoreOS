@@ -166,21 +166,30 @@ class YouTubeTool(BaseTool):
             self._expires_at = 0
             token = await self._ensure_token()
             resp = await self._client.get(f"{_API_BASE}{endpoint}", params=params or {}, headers={"Authorization": f"Bearer {token}"})
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"YouTube GET {endpoint} failed {resp.status_code}: {resp.text[:1000]}") from e
         return resp.json() if resp.content else {}
 
     async def post(self, endpoint: str, body: dict | None = None, params: dict | None = None) -> dict:
         self._check_available()
         token = await self._ensure_token()
         resp = await self._client.post(f"{_API_BASE}{endpoint}", params=params or {}, json=body or {}, headers={"Authorization": f"Bearer {token}"})
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"YouTube POST {endpoint} failed {resp.status_code}: {resp.text[:1000]}") from e
         return resp.json() if resp.content else {}
 
     async def delete(self, endpoint: str, params: dict | None = None) -> dict:
         self._check_available()
         token = await self._ensure_token()
         resp = await self._client.delete(f"{_API_BASE}{endpoint}", params=params or {}, headers={"Authorization": f"Bearer {token}"})
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"YouTube DELETE {endpoint} failed {resp.status_code}: {resp.text[:1000]}") from e
         return resp.json() if resp.content else {}
 
     async def get_user_info(self) -> dict:
@@ -192,14 +201,30 @@ class YouTubeTool(BaseTool):
         return {"id": item["id"], "title": item.get("snippet", {}).get("title", item["id"])}
 
     async def get_active_broadcast(self) -> dict | None:
+        # YouTube requires EXACTLY ONE filter among broadcastStatus/id/mine.
+        # For the active live, use broadcastStatus=active; don't combine it with mine=true.
         data = await self.get("/liveBroadcasts", {
             "part": "id,snippet,contentDetails,status",
             "broadcastStatus": "active",
-            "mine": "true",
+            "broadcastType": "all",
             "maxResults": 1,
         })
         items = data.get("items", [])
-        return items[0] if items else None
+        if items:
+            return items[0]
+
+        # Fallback: fetch own broadcasts and filter client-side by lifecycle status.
+        data = await self.get("/liveBroadcasts", {
+            "part": "id,snippet,contentDetails,status",
+            "mine": "true",
+            "broadcastType": "all",
+            "maxResults": 10,
+        })
+        for item in data.get("items", []):
+            status = (item.get("status", {}) or {}).get("lifeCycleStatus", "")
+            if status in ("live", "testing"):
+                return item
+        return None
 
     async def get_live_chat_id(self) -> str | None:
         b = await self.get_active_broadcast()

@@ -162,67 +162,6 @@ Configuration Tool (config):
                 Example: self.config.require("STRIPE_KEY", "SENDGRID_KEY")
 ```
 
-### 🔧 Tool: `event_bus` (Status: ✅)
-```text
-Universal Event Bus (event_bus):
-        - publish(event_name, data, **kwargs): Broadcast an event.
-        - subscribe(event_name, callback, group=None, retries=0, backoff=0.5, broadcast=False):
-          Listen for events. group=None derives a STABLE group from the callback identity:
-          replicas of the same plugin consume each event exactly once across the fleet,
-          while distinct plugins each get their own copy. Use group="pool" for explicit
-          worker pools, broadcast=True ONLY for instance-local concerns (every replica
-          receives a copy — e.g. local cache invalidation).
-        - request(event_name, data, timeout=5): Async RPC (returns dict).
-        - unsubscribe(event_name, callback): Stop listening.
-        - get_trace_history() -> List[TraceNode]: Last 500 event records.
-        - get_subscribers() -> dict: Current subscriber map.
-        - add_listener(callback): Sink for all events (record: dict).
-        - add_failure_listener(callback): Sink for errors (record: dict).
-        
-        CRITICAL: Subscribing callbacks receive an 'EventEnvelope' object.
-        Example: async def on_event(self, event: EventEnvelope): print(event.payload)
-        
-        RETRIES & IDEMPOTENCY:
-        - If 'retries' > 0, the handler will be re-executed on failure with exponential backoff.
-        - Ensure handlers are idempotent as they may run multiple times.
-
-        DEAD-LETTER QUEUE (DLQ):
-        - Final failures are published to '_dlq.<original_event>'.
-        - Payload includes 'original' envelope, 'subscriber', 'error', and 'attempts'.
-        - Loop protection: '_dlq.*' and '_reply.*' events are never dead-lettered.
-        - Toggle via EVENT_BUS_DLQ_ENABLED (default: true).
-
-        UNIVERSAL CAPABILITIES (kwargs):
-        - key: String. Strict ordering PER KEY. Without a key, do NOT assume
-          cross-event ordering: it varies by transport (total in-process,
-          partition-dependent on Kafka).
-        - priority: Integer (1-10). Importance (RabbitMQ).
-        - delay: Integer (seconds). Delivery schedule. Crash-safe only when
-          the active transport claims delay=native (see ACTIVE TRANSPORT).
-        - ttl: Float (seconds). Message expiration hint. Counted from PUBLISH
-          time and therefore INCLUDES any delay (delay=60 + ttl=30 expires
-          before it can ever be delivered).
-        - correlation_id: String. Cross-reference for RPC.
-
-        RESILIENCE:
-        - A subscriber that reaches 5 consecutive FINAL failures for a specific event is auto-unsubscribed.
-        - Each auto-unsubscribe publishes 'system.subscriber.dropped'
-          (payload: event, subscriber, error, consecutive_failures) so the drop
-          is observable — subscribe to it for alerting/monitoring.
-
-        WELL-KNOWN EVENTS:
-        - "overlay.vars.set" — publish a flat dict of variables to push them to all
-          live overlays (OBS browser sources). Persisted in the overlay_vars table,
-          broadcast instantly via SSE, readable in overlay JS as data.stats[key].
-          Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
-          Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
-          reads the variables from event.payload.
-
-        ACTIVE TRANSPORT: InProcessDriver — capability claims: {'delay': 'in_bus', 'retries': 'in_bus', 'dlq': 'in_bus'}
-        ("native" = the broker implements it, crash-safe; "in_bus" = software
-        fallback in this process' memory).
-```
-
 ### 🔧 Tool: `http_client` (Status: ✅)
 ```text
 HTTP Client Tool (http_client):
@@ -306,30 +245,6 @@ Telemetry Tool (telemetry):
             uv add opentelemetry-sdk opentelemetry-exporter-otlp
 ```
 
-### 🔧 Tool: `tts` (Status: ✅)
-```text
-TTS Tool (tts):
-    - PURPOSE: Universal TTS router with swappable providers. Plugins never
-      interact with providers directly — just call generate(text, voice_id).
-    - VOICE ID FORMAT: "<provider>:<raw_id>"
-        edge_tts:es-ES-AlvaroNeural
-        voicebox:b7e63948-323c-4711-be5a-1a44ef1f2be6
-    - FALLBACK: If the requested provider is unavailable, falls back silently
-      to the edge_tts default voice. edge_tts is always available.
-    - PROVIDER CONFIG: env vars only (VOICEBOX_HOST, VOICEBOX_PORT, VOICEBOX_TIMEOUT_S,
-      EDGE_TTS_DEFAULT_VOICE). Never stored in DB.
-    - BEHAVIORAL CONFIG: pushed via load_config() from DB on boot and on PUT /tts/settings.
-    - API:
-        await generate(text, voice_id?) → bytes (MP3 or WAV)
-        await list_voices()             → list[{id, name, gender, locale, provider}]
-        load_config(config: dict)       → sets behavioral settings
-        get_config()                    → dict (includes providers availability)
-        is_available()                  → bool
-        get_default_voice()             → namespaced voice id
-        get_provider()                  → provider name of default voice
-        get_providers()                 → dict[provider_name, is_available]
-```
-
 ### 🔧 Tool: `twitch` (Status: ✅)
 ```text
 Twitch Tool (twitch):
@@ -393,6 +308,15 @@ Twitch Tool (twitch):
           - await get(endpoint, params?, user_token?): GET to Helix.
           - await post(endpoint, body?, user_token?): POST to Helix.
           - await delete(endpoint, params?, user_token?): DELETE to Helix.
+```
+
+### 🔧 Tool: `youtube` (Status: ✅)
+```text
+YouTube Tool (youtube): OAuth + YouTube Live Chat via YouTube Data API.
+        Env: YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI.
+        Methods: get_auth_url, consume_state, exchange_code, refresh_user_token,
+        connect, disconnect, get_session, get_user_info, get_active_broadcast,
+        get_live_chat_id, list_chat_messages, send_message, delete_message, ban_user.
 ```
 
 ### 🔧 Tool: `context_manager` (Status: ✅)
@@ -478,31 +402,6 @@ Systems Registry Tool (registry):
                 Intended for health-check plugins that verify tools proactively.
 ```
 
-### 🔧 Tool: `db` (Status: ✅)
-```text
-Async SQLite Persistence Tool (sqlite):
-        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
-          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
-          ($1, $2...) and converts them transparently to SQLite's native '?'.
-        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
-        - CAPABILITIES:
-            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
-            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
-            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
-              With RETURNING (SQLite 3.35+): returns the first column value.
-              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
-            - await execute_many(sql, params_list) → None: Batch writes.
-            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
-              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
-            - await health_check() → bool: Verify database connectivity.
-        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
-        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
-          topological sort (alphabetical by default). To declare that one migration must
-          run before another, add as the first comment line:
-            "-- depends: other_domain/001_file.sql"
-          Works for same-domain or cross-domain dependencies. .sql extension is optional.
-```
-
 ### 🔧 Tool: `scheduler` (Status: ✅)
 ```text
 Scheduler Tool (scheduler):
@@ -535,6 +434,116 @@ Scheduler Tool (scheduler):
           and the same 4-method API. Plugins do not change.
 ```
 
+### 🔧 Tool: `db` (Status: ✅)
+```text
+Async SQLite Persistence Tool (sqlite):
+        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
+          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
+          ($1, $2...) and converts them transparently to SQLite's native '?'.
+        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
+        - CAPABILITIES:
+            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
+            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
+            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
+              With RETURNING (SQLite 3.35+): returns the first column value.
+              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
+            - await execute_many(sql, params_list) → None: Batch writes.
+            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
+              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
+            - await health_check() → bool: Verify database connectivity.
+        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
+          topological sort (alphabetical by default). To declare that one migration must
+          run before another, add as the first comment line:
+            "-- depends: other_domain/001_file.sql"
+          Works for same-domain or cross-domain dependencies. .sql extension is optional.
+```
+
+### 🔧 Tool: `event_bus` (Status: ✅)
+```text
+Universal Event Bus (event_bus):
+        - publish(event_name, data, **kwargs): Broadcast an event.
+        - subscribe(event_name, callback, group=None, retries=0, backoff=0.5, broadcast=False):
+          Listen for events. group=None derives a STABLE group from the callback identity:
+          replicas of the same plugin consume each event exactly once across the fleet,
+          while distinct plugins each get their own copy. Use group="pool" for explicit
+          worker pools, broadcast=True ONLY for instance-local concerns (every replica
+          receives a copy — e.g. local cache invalidation).
+        - request(event_name, data, timeout=5): Async RPC (returns dict).
+        - unsubscribe(event_name, callback): Stop listening.
+        - get_trace_history() -> List[TraceNode]: Last 500 event records.
+        - get_subscribers() -> dict: Current subscriber map.
+        - add_listener(callback): Sink for all events (record: dict).
+        - add_failure_listener(callback): Sink for errors (record: dict).
+        
+        CRITICAL: Subscribing callbacks receive an 'EventEnvelope' object.
+        Example: async def on_event(self, event: EventEnvelope): print(event.payload)
+        
+        RETRIES & IDEMPOTENCY:
+        - If 'retries' > 0, the handler will be re-executed on failure with exponential backoff.
+        - Ensure handlers are idempotent as they may run multiple times.
+
+        DEAD-LETTER QUEUE (DLQ):
+        - Final failures are published to '_dlq.<original_event>'.
+        - Payload includes 'original' envelope, 'subscriber', 'error', and 'attempts'.
+        - Loop protection: '_dlq.*' and '_reply.*' events are never dead-lettered.
+        - Toggle via EVENT_BUS_DLQ_ENABLED (default: true).
+
+        UNIVERSAL CAPABILITIES (kwargs):
+        - key: String. Strict ordering PER KEY. Without a key, do NOT assume
+          cross-event ordering: it varies by transport (total in-process,
+          partition-dependent on Kafka).
+        - priority: Integer (1-10). Importance (RabbitMQ).
+        - delay: Integer (seconds). Delivery schedule. Crash-safe only when
+          the active transport claims delay=native (see ACTIVE TRANSPORT).
+        - ttl: Float (seconds). Message expiration hint. Counted from PUBLISH
+          time and therefore INCLUDES any delay (delay=60 + ttl=30 expires
+          before it can ever be delivered).
+        - correlation_id: String. Cross-reference for RPC.
+
+        RESILIENCE:
+        - A subscriber that reaches 5 consecutive FINAL failures for a specific event is auto-unsubscribed.
+        - Each auto-unsubscribe publishes 'system.subscriber.dropped'
+          (payload: event, subscriber, error, consecutive_failures) so the drop
+          is observable — subscribe to it for alerting/monitoring.
+
+        WELL-KNOWN EVENTS:
+        - "overlay.vars.set" — publish a flat dict of variables to push them to all
+          live overlays (OBS browser sources). Persisted in the overlay_vars table,
+          broadcast instantly via SSE, readable in overlay JS as data.stats[key].
+          Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
+          Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
+          reads the variables from event.payload.
+
+        ACTIVE TRANSPORT: RabbitMQDriver — capability claims: {'delay': 'native', 'retries': 'in_bus', 'dlq': 'in_bus'}
+        ("native" = the broker implements it, crash-safe; "in_bus" = software
+        fallback in this process' memory).
+```
+
+### 🔧 Tool: `tts` (Status: ✅)
+```text
+TTS Tool (tts):
+    - PURPOSE: Universal TTS router with swappable providers. Plugins never
+      interact with providers directly — just call generate(text, voice_id).
+    - VOICE ID FORMAT: "<provider>:<raw_id>"
+        edge_tts:es-ES-AlvaroNeural
+        voicebox:b7e63948-323c-4711-be5a-1a44ef1f2be6
+    - FALLBACK: If the requested provider is unavailable, falls back silently
+      to the edge_tts default voice. edge_tts is always available.
+    - PROVIDER CONFIG: env vars only (VOICEBOX_HOST, VOICEBOX_PORT, VOICEBOX_TIMEOUT_S,
+      EDGE_TTS_DEFAULT_VOICE). Never stored in DB.
+    - BEHAVIORAL CONFIG: pushed via load_config() from DB on boot and on PUT /tts/settings.
+    - API:
+        await generate(text, voice_id?) → bytes (MP3 or WAV)
+        await list_voices()             → list[{id, name, gender, locale, provider}]
+        load_config(config: dict)       → sets behavioral settings
+        get_config()                    → dict (includes providers availability)
+        is_available()                  → bool
+        get_default_voice()             → namespaced voice id
+        get_provider()                  → provider name of default voice
+        get_providers()                 → dict[provider_name, is_available]
+```
+
 ## 📦 Domains
 
 ### `ai_config`
@@ -551,7 +560,7 @@ Scheduler Tool (scheduler):
 - **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}, SSE /api/chat/stream
 - **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command), `chat.message.received` ()
 - **Events consumed**: chat.command.received, chat.message.received, message.resend
-- **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch
+- **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch, youtube
 - **Plugins**: chat_bot.ChatAutoResponsePlugin, chat_bot.ChatBadgesPlugin, chat_bot.ChatCommandHandlerPlugin, chat_bot.ChatMessageDispatcherPlugin, chat_bot.ChatStreamPlugin, chat_bot.CommandsListPlugin, chat_bot.CreateCommandPlugin, chat_bot.CreateVarPlugin, chat_bot.DeleteCommandPlugin, chat_bot.DeleteVarPlugin, chat_bot.EchoReminderPlugin, chat_bot.IAChatPlugin, chat_bot.ListCommandsPlugin, chat_bot.ListRemindersPlugin, chat_bot.ListVarsPlugin, chat_bot.MessageResendPlugin, chat_bot.UpdateCommandPlugin, chat_bot.UpdateVarPlugin, chat_bot.VarCommandPlugin
 
 ### `dashboard`
@@ -566,7 +575,7 @@ Scheduler Tool (scheduler):
 - **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), exempt_roles (str), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
 - **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
-- **Events consumed**: none
+- **Events consumed**: chat.message.received, moderation.rules.updated, viewer.regular.added, viewer.regular.removed
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch
 - **Plugins**: moderation.AiModPlugin, moderation.AutoModPlugin, moderation.CreateModRulePlugin, moderation.DeleteModRulePlugin, moderation.ListModRulesPlugin, moderation.ManualBanPlugin, moderation.ManualTimeoutPlugin, moderation.ManualUnbanPlugin, moderation.ModLogPlugin, moderation.UpdateModRulePlugin
 
@@ -574,7 +583,7 @@ Scheduler Tool (scheduler):
 - **Table `overlay`**: name (str), config (str), created_at (any), updated_at (any)
 - **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/manifest, GET /api/overlays/token, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/test, POST /api/overlays/token, POST /api/overlays/upload-background, PUT /api/overlays/{id}, SSE /api/overlays/feed, SSE /api/overlays/stream/{id}
 - **Events emitted**: `overlay.config.updated` (overlay_id), `overlay.test.event` (data, type)
-- **Events consumed**: chat.message.received, dashboard.stats.updated, overlay.config.updated, overlay.test.event, overlay.vars.set
+- **Events consumed**: chat.message.received, dashboard.stats.updated, overlay.config.updated, overlay.test.event, overlay.vars.set, youtube.superchat.received, youtube.supersticker.received
 - **Dependencies**: db, event_bus, http, logger, state, twitch
 - **Plugins**: overlays.CreateOverlayPlugin, overlays.DeleteBackgroundPlugin, overlays.DeleteOverlayPlugin, overlays.GetOverlayPlugin, overlays.ListBackgroundsPlugin, overlays.ListOverlaysPlugin, overlays.OverlayConfigPlugin, overlays.OverlayDataPlugin, overlays.OverlayFeedPlugin, overlays.OverlayManifestPlugin, overlays.OverlayStreamPlugin, overlays.OverlayTestPlugin, overlays.OverlayTokenPlugin, overlays.UpdateOverlayPlugin, overlays.UploadBackgroundPlugin
 
@@ -649,4 +658,20 @@ Scheduler Tool (scheduler):
 - **Events consumed**: chat.command.executed
 - **Dependencies**: db, event_bus, http, http_client, logger
 - **Plugins**: webhooks.CreateWebhookPlugin, webhooks.DeleteWebhookPlugin, webhooks.ListWebhooksPlugin, webhooks.TestWebhookPlugin, webhooks.UpdateWebhookPlugin, webhooks.WebhookExecutorPlugin
+
+### `youtube_auth`
+- **Table `youtube_token`**: channel_id (str), channel_title (str), access_token (str), refresh_token (Optional[str]), scopes (str), expires_at (str), created_at (Optional[str]), updated_at (Optional[str])
+- **Endpoints**: GET /api/auth/youtube, GET /api/auth/youtube/callback, GET /api/auth/youtube/status, POST /api/auth/youtube/logout
+- **Events emitted**: none
+- **Events consumed**: none
+- **Dependencies**: config, db, http, logger, youtube
+- **Plugins**: youtube_auth.RestoreYouTubeSessionPlugin, youtube_auth.YouTubeAuthStatusPlugin, youtube_auth.YouTubeLogoutPlugin, youtube_auth.YouTubeOAuthCallbackPlugin, youtube_auth.YouTubeOAuthStartPlugin, youtube_auth.YouTubeTokenRefreshPlugin
+
+### `youtube_chat`
+- **Tables**: none
+- **Endpoints**: none
+- **Events emitted**: `chat.command.received` (args, command), `chat.message.deleted` (message_id, platform), `chat.message.received` (), `youtube.superchat.received` (amount_micros, currency, display_amount, id, message, platform, user, user_id), `youtube.supersticker.received` (display_amount, id, message, platform, user, user_id)
+- **Events consumed**: none
+- **Dependencies**: db, event_bus, logger, youtube
+- **Plugins**: youtube_chat.YouTubeChatPollerPlugin
 
