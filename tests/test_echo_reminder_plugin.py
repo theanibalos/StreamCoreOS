@@ -49,10 +49,13 @@ async def test_echo_parsing_and_scheduling(plugin, mock_tools):
     diff = (kwargs["run_at"] - datetime.now()).total_seconds()
     assert 9 <= diff <= 11
     assert "job_id" in kwargs
-    mock_tools["twitch"].send_message.assert_called_with(
-        "test_channel",
-        "@TestUser Mensaje programado para dentro de 10s. 😊"
-    )
+    mock_tools["twitch"].send_message.assert_not_called()
+    mock_tools["event_bus"].publish.assert_any_call("chat.message.send", {
+        "platform": "twitch",
+        "channel_id": "test_channel",
+        "channel_name": "test_channel",
+        "message": "@TestUser Mensaje programado para dentro de 10s. 😊",
+    })
 
 @pytest.mark.anyio
 async def test_echo_reminder_synonym_accepted(plugin, mock_tools):
@@ -115,11 +118,14 @@ async def test_echo_limit_reached(plugin, mock_tools):
 
     await plugin._on_command(_event(data))
 
-    # Verify error message
-    mock_tools["twitch"].send_message.assert_called_with(
-        "ch",
-        "@ModUser Falló la programación: Se alcanzó el límite máximo de 3 eco simultáneos. ❌"
-    )
+    # Verify error message is routed through chat.message.send
+    mock_tools["twitch"].send_message.assert_not_called()
+    mock_tools["event_bus"].publish.assert_any_call("chat.message.send", {
+        "platform": "twitch",
+        "channel_id": "ch",
+        "channel_name": "ch",
+        "message": "@ModUser Falló la programación: Se alcanzó el límite máximo de 3 eco simultáneos. ❌",
+    })
     mock_tools["scheduler"].add_one_shot.assert_not_called()
 
 @pytest.mark.anyio
@@ -138,6 +144,6 @@ async def test_echo_counter_lifecycle(plugin, mock_tools):
         return default
 
     mock_tools["state"].get.side_effect = _state_get_after
-    await plugin._send_echo("ch", "T", "dummy_job_id")
+    await plugin._send_echo({"platform": "twitch", "channel_id": "ch", "channel_name": "ch"}, "T", "dummy_job_id")
 
     mock_tools["state"].set.assert_any_call("echo_count", 0, namespace="echo")

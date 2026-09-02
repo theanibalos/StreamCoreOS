@@ -5,11 +5,14 @@ from core.base_plugin import BasePlugin
 
 class AddRegularRequest(BaseModel):
     login: str = Field(min_length=1)
+    platform: str = Field(default="twitch", pattern="^(twitch|youtube)$")
 
 
 class RegularData(BaseModel):
-    twitch_id: str
-    login: str
+    global_user_id: str
+    platform: str
+    platform_user_id: str
+    login: Optional[str] = None
     display_name: str
 
 
@@ -21,11 +24,11 @@ class AddRegularResponse(BaseModel):
 
 class AddRegularPlugin(BasePlugin):
     """
-    POST /viewers/regulars — Add a viewer to the regulars list by username.
+    POST /viewers/regulars — Add a viewer to the regulars list.
 
-    Looks up the login in the viewers table first (already chatted before);
-    falls back to the Twitch API to resolve twitch_id/display_name otherwise.
-    Upserts the viewer record, then sets is_regular=1.
+    Looks up a known viewer by platform/login first. For new manual entries, only
+    Twitch can be resolved via API today; YouTube users become regulars after they
+    have chatted at least once.
     """
 
     def __init__(self, http, db, twitch, event_bus, logger):
@@ -47,36 +50,53 @@ class AddRegularPlugin(BasePlugin):
         try:
             req = AddRegularRequest(**data)
             login = req.login.lstrip("@").lower()
+            platform = req.platform.lower()
 
             viewer = await self.db.query_one(
-                "SELECT twitch_id, login, display_name FROM viewers WHERE login=$1", [login]
+                """SELECT global_user_id, platform, platform_user_id, login, display_name
+                   FROM viewers WHERE platform=$1 AND lower(login)=lower($2)""",
+                [platform, login],
             )
-            if not viewer:
+            if not viewer and platform == "twitch":
                 resp = await self.twitch.get("/users", params={"login": login})
                 users = resp.get("data", [])
                 if not users:
                     return {"success": False, "error": f"Usuario '{login}' no encontrado en Twitch."}
                 u = users[0]
-                viewer = {"twitch_id": u["id"], "login": u["login"], "display_name": u["display_name"]}
+                viewer = {
+                    "global_user_id": f"twitch:{u['id']}",
+                    "platform": "twitch",
+                    "platform_user_id": u["id"],
+                    "login": u["login"],
+                    "display_name": u["display_name"],
+                }
+            elif not viewer:
+                return {"success": False, "error": f"Usuario '{login}' no encontrado en viewers para {platform}."}
 
             await self.db.execute(
-                """INSERT INTO viewers (twitch_id, login, display_name, is_regular)
-                   VALUES ($1, $2, $3, 1)
-                   ON CONFLICT(twitch_id) DO UPDATE SET
-                       login        = excluded.login,
-                       display_name = excluded.display_name,
-                       is_regular   = 1""",
-                [viewer["twitch_id"], viewer["login"], viewer["display_name"]],
+                """INSERT INTO viewers (global_user_id, platform, platform_user_id, login, display_name, is_regular)
+                   VALUES ($1, $2, $3, $4, $5, 1)
+                   ON CONFLICT(global_user_id) DO UPDATE SET
+                       platform         = excluded.platform,
+                       platform_user_id = excluded.platform_user_id,
+                       login            = excluded.login,
+                       display_name     = excluded.display_name,
+                       is_regular       = 1""",
+                [
+                    viewer["global_user_id"],
+                    viewer["platform"],
+                    viewer["platform_user_id"],
+                    viewer["login"],
+                    viewer["display_name"],
+                ],
             )
             await self.bus.publish("viewer.regular.added", {
-                "twitch_id": viewer["twitch_id"],
+                "global_user_id": viewer["global_user_id"],
+                "platform": viewer["platform"],
+                "platform_user_id": viewer["platform_user_id"],
                 "display_name": viewer["display_name"],
             })
-            return {"success": True, "data": {
-                "twitch_id": viewer["twitch_id"],
-                "login": viewer["login"],
-                "display_name": viewer["display_name"],
-            }}
+            return {"success": True, "data": dict(viewer)}
         except Exception as e:
             self.logger.error(f"[AddRegular] {e}")
             return {"success": False, "error": str(e)}

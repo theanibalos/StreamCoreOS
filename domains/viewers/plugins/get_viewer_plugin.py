@@ -5,9 +5,12 @@ from core.base_plugin import BasePlugin
 
 class ViewerData(BaseModel):
     id: int
-    twitch_id: str
-    login: str
+    global_user_id: str
+    platform: str
+    platform_user_id: str
+    login: Optional[str] = None
     display_name: str
+    avatar_url: Optional[str] = None
     points: int
     total_earned: int
     is_regular: bool
@@ -22,7 +25,7 @@ class GetViewerResponse(BaseModel):
 
 
 class GetViewerPlugin(BasePlugin):
-    """GET /viewers/{login} — Fetch a viewer's profile by login name."""
+    """GET /viewers/{query} — Fetch a viewer by global id, platform id, or login."""
 
     def __init__(self, http, db, logger):
         self.http = http
@@ -31,16 +34,21 @@ class GetViewerPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/api/viewers/{login}", "GET", self.execute,
+            "/api/viewers/{query}", "GET", self.execute,
             tags=["Viewers"],
             response_model=GetViewerResponse,
         )
 
     async def execute(self, data: dict, context=None):
         try:
+            query = data["query"]
             row = await self.db.query_one(
-                "SELECT * FROM viewers WHERE lower(login) LIKE lower($1) ORDER BY points DESC LIMIT 1",
-                [f"%{data['login']}%"]
+                """SELECT * FROM viewers
+                   WHERE lower(global_user_id)=lower($1)
+                      OR lower(platform_user_id)=lower($1)
+                      OR lower(login) LIKE lower($2)
+                   ORDER BY points DESC LIMIT 1""",
+                [query, f"%{query}%"],
             )
             if not row:
                 if context:

@@ -4,8 +4,10 @@ from core.base_plugin import BasePlugin
 
 
 class RegularEntry(BaseModel):
-    twitch_id: str
-    login: str
+    global_user_id: str
+    platform: str
+    platform_user_id: str
+    login: Optional[str] = None
     display_name: str
     points: int
     first_seen: str
@@ -35,7 +37,8 @@ class ListRegularsPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             rows = await self.db.query(
-                "SELECT twitch_id, login, display_name, points, first_seen FROM viewers WHERE is_regular=1 ORDER BY display_name"
+                """SELECT global_user_id, platform, platform_user_id, login, display_name, points, first_seen
+                   FROM viewers WHERE is_regular=1 ORDER BY display_name"""
             )
             return {"success": True, "data": [dict(r) for r in rows]}
         except Exception as e:

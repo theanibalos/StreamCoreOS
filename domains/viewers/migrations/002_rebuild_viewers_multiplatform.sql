@@ -1,4 +1,6 @@
-CREATE TABLE IF NOT EXISTS viewers (
+DROP TABLE IF EXISTS viewers;
+
+CREATE TABLE viewers (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     global_user_id   TEXT    NOT NULL UNIQUE,
     platform         TEXT    NOT NULL,

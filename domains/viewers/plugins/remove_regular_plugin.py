@@ -9,7 +9,7 @@ class RemoveRegularResponse(BaseModel):
 
 
 class RemoveRegularPlugin(BasePlugin):
-    """DELETE /viewers/regulars/{twitch_id} — Remove a viewer from the regulars list."""
+    """DELETE /viewers/regulars/{global_user_id} — Remove a viewer from regulars."""
 
     def __init__(self, http, db, event_bus, logger):
         self.http = http
@@ -19,17 +19,18 @@ class RemoveRegularPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/api/viewers/regulars/{twitch_id}", "DELETE", self.execute,
+            "/api/viewers/regulars/{global_user_id}", "DELETE", self.execute,
             tags=["Viewers"],
             response_model=RemoveRegularResponse,
         )
 
     async def execute(self, data: dict, context=None):
         try:
-            twitch_id = data["twitch_id"]
+            global_user_id = data["global_user_id"]
             viewer = await self.db.query_one(
-                "SELECT display_name FROM viewers WHERE twitch_id=$1 AND is_regular=1",
-                [twitch_id],
+                """SELECT global_user_id, platform, platform_user_id, display_name
+                   FROM viewers WHERE global_user_id=$1 AND is_regular=1""",
+                [global_user_id],
             )
             if not viewer:
                 if context:
@@ -37,12 +38,9 @@ class RemoveRegularPlugin(BasePlugin):
                 return {"success": False, "error": "Regular not found"}
 
             await self.db.execute(
-                "UPDATE viewers SET is_regular=0 WHERE twitch_id=$1", [twitch_id]
+                "UPDATE viewers SET is_regular=0 WHERE global_user_id=$1", [global_user_id]
             )
-            await self.bus.publish("viewer.regular.removed", {
-                "twitch_id": twitch_id,
-                "display_name": viewer["display_name"],
-            })
+            await self.bus.publish("viewer.regular.removed", dict(viewer))
             return {"success": True}
         except Exception as e:
             self.logger.error(f"[RemoveRegular] {e}")

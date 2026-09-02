@@ -58,8 +58,8 @@ class AutoModPlugin(BasePlugin):
 
     async def _load_regulars(self):
         try:
-            rows = await self.db.query("SELECT twitch_id FROM viewers WHERE is_regular=1")
-            regulars = {r["twitch_id"] for r in rows}
+            rows = await self.db.query("SELECT global_user_id FROM viewers WHERE is_regular=1")
+            regulars = {r["global_user_id"] for r in rows}
             await self.state.set("regulars", regulars, namespace=_REGULARS_NS)
         except Exception as e:
             self.logger.error(f"[AutoMod] Failed to load regulars: {e}")

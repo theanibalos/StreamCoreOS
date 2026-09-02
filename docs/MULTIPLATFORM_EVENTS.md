@@ -123,10 +123,14 @@ Same as `moderation.action.requested`, plus execution status fields when needed.
 
 ```py
 {
-  "platform": str,
+  "id": int,
+  "platform": "twitch" | "youtube",
   "channel_id": str,
   "channel_name": str,
-  "connected": bool,
+  "enabled": bool,
+  "chat_read_enabled": bool,
+  "chat_write_enabled": bool,
+  "moderation_enabled": bool,
   "capabilities": dict,
 }
 ```

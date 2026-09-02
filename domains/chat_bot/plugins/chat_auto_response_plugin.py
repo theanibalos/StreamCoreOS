@@ -17,8 +17,9 @@ class ChatAutoResponsePlugin(BasePlugin):
     to DB-backed config in the future).
     """
 
-    def __init__(self, twitch, logger):
+    def __init__(self, twitch, event_bus, logger):
         self.twitch = twitch
+        self.bus = event_bus
         self.logger = logger
 
     async def on_boot(self):
@@ -59,7 +60,12 @@ class ChatAutoResponsePlugin(BasePlugin):
             session = self.twitch.get_session()
             if not session:
                 return
-            await self.twitch.send_message(session["login"], message)
+            await self.bus.publish("chat.message.send", {
+                "platform": "twitch",
+                "channel_id": session["broadcaster_id"],
+                "channel_name": session["login"],
+                "message": message,
+            })
         except Exception as e:
             self.logger.error(f"[AutoResponse] Failed to send message: {e}")
 

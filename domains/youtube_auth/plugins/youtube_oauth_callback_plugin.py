@@ -12,10 +12,11 @@ class YouTubeOAuthCallbackResponse(BaseModel):
 
 
 class YouTubeOAuthCallbackPlugin(BasePlugin):
-    def __init__(self, youtube, http, db, logger, config):
+    def __init__(self, youtube, http, db, event_bus, logger, config):
         self.youtube = youtube
         self.http = http
         self.db = db
+        self.bus = event_bus
         self.logger = logger
         self.config = config
 
@@ -67,6 +68,47 @@ class YouTubeOAuthCallbackPlugin(BasePlugin):
                        VALUES ($1, $2, $3, $4, $5, $6)""",
                     [channel_id, channel_title, access_token, stored_refresh, json.dumps(scopes), expires_at],
                 )
+
+            capabilities = {
+                "chat.read": True,
+                "chat.write": True,
+                "moderation.delete": True,
+                "moderation.timeout": True,
+                "moderation.ban": True,
+                "events.subscription": False,
+                "events.cheer": False,
+                "events.superchat": True,
+                "stream.status": True,
+            }
+            connection_id = await self.db.execute(
+                """INSERT INTO platform_connections (
+                       platform, channel_id, channel_name, enabled,
+                       chat_read_enabled, chat_write_enabled, moderation_enabled, capabilities
+                   )
+                   VALUES ('youtube', $1, $2, 1, 1, 1, 1, $3)
+                   ON CONFLICT(platform, channel_id) DO UPDATE SET
+                       channel_name = excluded.channel_name,
+                       enabled = 1,
+                       chat_read_enabled = 1,
+                       chat_write_enabled = 1,
+                       moderation_enabled = 1,
+                       capabilities = excluded.capabilities,
+                       updated_at = datetime('now')
+                   RETURNING id""",
+                [channel_id, channel_title, json.dumps(capabilities)],
+            )
+            await self.bus.publish("platform.connection.updated", {
+                "id": connection_id,
+                "platform": "youtube",
+                "channel_id": channel_id,
+                "channel_name": channel_title,
+                "enabled": True,
+                "chat_read_enabled": True,
+                "chat_write_enabled": True,
+                "moderation_enabled": True,
+                "capabilities": capabilities,
+            })
+
             self.logger.info(f"[YouTubeAuth] Connected as {channel_title} ({channel_id})")
             frontend_url = self.config.get("FRONTEND_URL", "/")
             context.redirect(frontend_url)

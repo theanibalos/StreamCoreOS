@@ -38,19 +38,18 @@ class VarCommandPlugin(BasePlugin):
         if not self._is_permitted(data):
             return
 
-        channel = data.get("channel_name") or data.get("channel_id", "")
         display_name = (data.get("user") or {}).get("display_name", "")
         args = data.get("args", "").strip()
 
         if command == "!setvar":
-            await self._handle_setvar(channel, display_name, args)
+            await self._handle_setvar(data, display_name, args)
         elif command == "!deletevar":
-            await self._handle_deletevar(channel, display_name, args)
+            await self._handle_deletevar(data, display_name, args)
 
-    async def _handle_setvar(self, channel: str, display_name: str, args: str):
+    async def _handle_setvar(self, data: dict, display_name: str, args: str):
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            await self.twitch.send_message(channel, f"Uso: !setvar <nombre> <valor>")
+            await self._send(data, f"Uso: !setvar <nombre> <valor>")
             return
 
         name, raw_value = parts[0].lower(), parts[1].strip()
@@ -72,23 +71,31 @@ class VarCommandPlugin(BasePlugin):
                 "INSERT INTO chat_vars (name, value) VALUES ($1, $2)", [name, new_value]
             )
 
-        await self.twitch.send_message(channel, f"{name} = {new_value}")
+        await self._send(data, f"{name} = {new_value}")
         self.logger.info(f"[VarCommand] @{display_name} set {name} = {new_value}")
 
-    async def _handle_deletevar(self, channel: str, display_name: str, args: str):
+    async def _handle_deletevar(self, data: dict, display_name: str, args: str):
         name = args.split()[0].lower() if args.split() else ""
         if not name:
-            await self.twitch.send_message(channel, "Uso: !deletevar <nombre>")
+            await self._send(data, "Uso: !deletevar <nombre>")
             return
 
         affected = await self.db.execute(
             "DELETE FROM chat_vars WHERE name=$1", [name]
         )
         if affected:
-            await self.twitch.send_message(channel, f"Variable '{name}' eliminada.")
+            await self._send(data, f"Variable '{name}' eliminada.")
             self.logger.info(f"[VarCommand] @{display_name} deleted {name}")
         else:
-            await self.twitch.send_message(channel, f"Variable '{name}' no existe.")
+            await self._send(data, f"Variable '{name}' no existe.")
+
+    async def _send(self, data: dict, message: str):
+        await self.bus.publish("chat.message.send", {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id"),
+            "channel_name": data.get("channel_name"),
+            "message": message,
+        })
 
     async def _resolve_value(self, raw: str, current: str) -> str:
         """Resolve +n, -n, reset or plain value against the current value."""

@@ -48,7 +48,11 @@ class TtsVoiceCommandPlugin(BasePlugin):
             return
 
         user = data.get("user") or {}
-        channel: str = data.get("channel_name") or data.get("channel_id", "")
+        channel = {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id"),
+            "channel_name": data.get("channel_name"),
+        }
         twitch_id: str = user.get("id", "")
         twitch_login: str = user.get("login") or user.get("platform_id") or twitch_id
         display_name: str = user.get("display_name") or twitch_login
@@ -161,8 +165,16 @@ class TtsVoiceCommandPlugin(BasePlugin):
         else:
             await self._send(channel, f"@{display_name} No tenías voz asignada.")
 
-    async def _send(self, channel: str, message: str):
+    async def _send(self, channel, message: str):
         try:
-            await self.twitch.send_message(channel, message)
+            if isinstance(channel, dict):
+                await self.bus.publish("chat.message.send", {**channel, "message": message})
+            else:
+                await self.bus.publish("chat.message.send", {
+                    "platform": "twitch",
+                    "channel_id": channel,
+                    "channel_name": channel,
+                    "message": message,
+                })
         except Exception as e:
-            self.logger.error(f"[TTS] Failed to send chat message: {e}")
+            self.logger.error(f"[TTS] Failed to route chat message: {e}")

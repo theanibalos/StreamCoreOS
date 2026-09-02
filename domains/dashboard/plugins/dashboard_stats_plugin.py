@@ -11,7 +11,9 @@ class StreamInfo(BaseModel):
 
 
 class TopViewer(BaseModel):
-    twitch_id: str
+    global_user_id: str
+    platform: str
+    platform_user_id: str
     display_name: str
     points: int
 
@@ -93,7 +95,7 @@ class DashboardStatsPlugin(BasePlugin):
 
             # Top 5 viewers by points
             top_viewers = await self.db.query(
-                "SELECT twitch_id, display_name, points FROM viewers ORDER BY points DESC LIMIT 5"
+                "SELECT global_user_id, platform, platform_user_id, display_name, points FROM viewers ORDER BY points DESC LIMIT 5"
             )
 
             # Last 5 mod actions

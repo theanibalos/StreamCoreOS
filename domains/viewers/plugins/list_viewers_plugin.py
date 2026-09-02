@@ -5,9 +5,12 @@ from core.base_plugin import BasePlugin
 
 class ViewerData(BaseModel):
     id: int
-    twitch_id: str
-    login: str
+    global_user_id: str
+    platform: str
+    platform_user_id: str
+    login: Optional[str] = None
     display_name: str
+    avatar_url: Optional[str] = None
     points: int
     total_earned: int
     is_regular: bool
@@ -38,9 +41,7 @@ class ListViewersPlugin(BasePlugin):
 
     async def execute(self, data: dict, context=None):
         try:
-            rows = await self.db.query(
-                "SELECT * FROM viewers ORDER BY points DESC"
-            )
+            rows = await self.db.query("SELECT * FROM viewers ORDER BY points DESC")
             viewers = [
                 {**row, "is_regular": bool(row["is_regular"])}
                 for row in rows

@@ -34,7 +34,7 @@ class CommandsListPlugin(BasePlugin):
                 "SELECT name FROM chat_commands WHERE enabled=1 ORDER BY name"
             )
             if not rows:
-                await self.twitch.send_message(channel, "No hay comandos activos.")
+                await self._send(data, "No hay comandos activos.")
                 return
 
             names = [r["name"] for r in rows]
@@ -42,9 +42,17 @@ class CommandsListPlugin(BasePlugin):
             messages = _build_messages(prefix, names)
 
             for msg in messages:
-                await self.twitch.send_message(channel, msg)
+                await self._send(data, msg)
         except Exception as e:
             self.logger.error(f"[CommandsList] {e}")
+
+    async def _send(self, data: dict, message: str):
+        await self.bus.publish("chat.message.send", {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id"),
+            "channel_name": data.get("channel_name"),
+            "message": message,
+        })
 
 
 def _build_messages(prefix: str, names: list[str]) -> list[str]:

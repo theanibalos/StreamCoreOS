@@ -4,13 +4,12 @@ from core.base_plugin import BasePlugin
 class MessageResendPlugin(BasePlugin):
     """
     Listens for 'message.resend' on the event_bus and forwards the message
-    to Twitch chat.
+    to the requested platform chat.
 
-    Expected payload: {"channel": str, "message": str}
+    Expected payload: {"platform": str, "channel_id": str, "channel_name": str, "message": str}
     """
 
-    def __init__(self, twitch, event_bus, logger):
-        self.twitch = twitch
+    def __init__(self, event_bus, logger):
         self.bus = event_bus
         self.logger = logger
 
@@ -19,14 +18,13 @@ class MessageResendPlugin(BasePlugin):
 
     async def _on_resend(self, event):
         data = event.payload
-        channel = data.get("channel", "")
         message = data.get("message", "")
-
-        if not channel or not message:
-            self.logger.warning(f"[MessageResend] Missing channel or message: {data}")
+        if not message:
+            self.logger.warning(f"[MessageResend] Missing message: {data}")
             return
-
-        try:
-            await self.twitch.send_message(channel, message)
-        except Exception as e:
-            self.logger.error(f"[MessageResend] Failed to resend to '{channel}': {e}")
+        await self.bus.publish("chat.message.send", {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id") or data.get("channel"),
+            "channel_name": data.get("channel_name") or data.get("channel"),
+            "message": message,
+        })

@@ -1,11 +1,13 @@
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from core.base_plugin import BasePlugin
 
 
 class LeaderboardEntry(BaseModel):
     rank: int
-    twitch_id: str
+    global_user_id: str
+    platform: str
+    platform_user_id: str
     display_name: str
     points: int
     total_earned: int
@@ -19,7 +21,7 @@ class LeaderboardResponse(BaseModel):
 
 
 class LeaderboardPlugin(BasePlugin):
-    """GET /viewers/leaderboard?limit=10 — Top viewers by points."""
+    """GET /viewers/leaderboard?limit=10 — Top viewers by points across platforms."""
 
     def __init__(self, http, db, logger):
         self.http = http
@@ -37,7 +39,9 @@ class LeaderboardPlugin(BasePlugin):
         try:
             limit = min(int(data.get("limit", 10)), 100)
             rows = await self.db.query(
-                "SELECT twitch_id, display_name, points, total_earned, is_regular FROM viewers ORDER BY points DESC LIMIT $1",
+                """SELECT global_user_id, platform, platform_user_id, display_name,
+                          points, total_earned, is_regular
+                   FROM viewers ORDER BY points DESC LIMIT $1""",
                 [limit],
             )
             entries = [

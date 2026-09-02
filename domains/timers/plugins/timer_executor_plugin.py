@@ -115,8 +115,13 @@ class TimerExecutorPlugin(BasePlugin):
                 
             self.logger.info(f"[TimerExecutor] Triggering timer: {timer['name']}")
             
-            # Send message to broadcaster channel
-            await self.twitch.send_message(session["login"], timer["message"])
+            # Route message to broadcaster channel through platform sender plugins.
+            await self.bus.publish("chat.message.send", {
+                "platform": "twitch",
+                "channel_id": session["broadcaster_id"],
+                "channel_name": session["login"],
+                "message": timer["message"],
+            })
             
             # Update last_executed_at in DB
             await self.db.execute(

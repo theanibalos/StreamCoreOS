@@ -8,7 +8,9 @@ class AdjustPointsRequest(BaseModel):
 
 
 class ViewerData(BaseModel):
-    twitch_id: str
+    global_user_id: str
+    platform: str
+    platform_user_id: str
     display_name: str
     points: int
     total_earned: int
@@ -21,12 +23,7 @@ class AdjustPointsResponse(BaseModel):
 
 
 class AdjustPointsPlugin(BasePlugin):
-    """
-    POST /viewers/{twitch_id}/points — Manually adjust a viewer's points.
-
-    Positive delta awards points (also increments total_earned).
-    Negative delta deducts points (floor at 0, total_earned unchanged).
-    """
+    """POST /viewers/{global_user_id}/points — Manually adjust a viewer's points."""
 
     def __init__(self, http, db, event_bus, logger):
         self.http = http
@@ -36,7 +33,7 @@ class AdjustPointsPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
-            "/api/viewers/{twitch_id}/points", "POST", self.execute,
+            "/api/viewers/{global_user_id}/points", "POST", self.execute,
             tags=["Viewers"],
             request_model=AdjustPointsRequest,
             response_model=AdjustPointsResponse,
@@ -44,11 +41,11 @@ class AdjustPointsPlugin(BasePlugin):
 
     async def execute(self, data: dict, context=None):
         try:
-            twitch_id = data["twitch_id"]
-            req = AdjustPointsRequest(**{k: v for k, v in data.items() if k != "twitch_id"})
+            global_user_id = data["global_user_id"]
+            req = AdjustPointsRequest(**{k: v for k, v in data.items() if k != "global_user_id"})
 
             viewer = await self.db.query_one(
-                "SELECT * FROM viewers WHERE twitch_id=$1", [twitch_id]
+                "SELECT * FROM viewers WHERE global_user_id=$1", [global_user_id]
             )
             if not viewer:
                 if context:
@@ -57,23 +54,26 @@ class AdjustPointsPlugin(BasePlugin):
 
             if req.delta >= 0:
                 await self.db.execute(
-                    "UPDATE viewers SET points=points+$1, total_earned=total_earned+$1 WHERE twitch_id=$2",
-                    [req.delta, twitch_id],
+                    "UPDATE viewers SET points=points+$1, total_earned=total_earned+$1 WHERE global_user_id=$2",
+                    [req.delta, global_user_id],
                 )
             else:
                 await self.db.execute(
-                    "UPDATE viewers SET points=MAX(0, points+$1) WHERE twitch_id=$2",
-                    [req.delta, twitch_id],
+                    "UPDATE viewers SET points=MAX(0, points+$1) WHERE global_user_id=$2",
+                    [req.delta, global_user_id],
                 )
 
             updated = await self.db.query_one(
-                "SELECT twitch_id, display_name, points, total_earned FROM viewers WHERE twitch_id=$1",
-                [twitch_id],
+                """SELECT global_user_id, platform, platform_user_id, display_name, points, total_earned
+                   FROM viewers WHERE global_user_id=$1""",
+                [global_user_id],
             )
 
             if req.delta != 0:
                 await self.bus.publish("viewer.points.awarded", {
-                    "twitch_id": twitch_id,
+                    "global_user_id": global_user_id,
+                    "platform": updated["platform"],
+                    "platform_user_id": updated["platform_user_id"],
                     "display_name": updated["display_name"],
                     "delta": req.delta,
                 })

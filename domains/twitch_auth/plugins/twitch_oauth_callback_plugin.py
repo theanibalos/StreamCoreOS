@@ -92,6 +92,46 @@ class TwitchOAuthCallbackPlugin(BasePlugin):
                      refresh_token, json.dumps(scopes), expires_at],
                 )
 
+            capabilities = {
+                "chat.read": True,
+                "chat.write": True,
+                "moderation.delete": True,
+                "moderation.timeout": True,
+                "moderation.ban": True,
+                "events.subscription": True,
+                "events.cheer": True,
+                "events.superchat": False,
+                "stream.status": True,
+            }
+            connection_id = await self.db.execute(
+                """INSERT INTO platform_connections (
+                       platform, channel_id, channel_name, enabled,
+                       chat_read_enabled, chat_write_enabled, moderation_enabled, capabilities
+                   )
+                   VALUES ('twitch', $1, $2, 1, 1, 1, 1, $3)
+                   ON CONFLICT(platform, channel_id) DO UPDATE SET
+                       channel_name = excluded.channel_name,
+                       enabled = 1,
+                       chat_read_enabled = 1,
+                       chat_write_enabled = 1,
+                       moderation_enabled = 1,
+                       capabilities = excluded.capabilities,
+                       updated_at = datetime('now')
+                   RETURNING id""",
+                [twitch_id, login, json.dumps(capabilities)],
+            )
+            await self.bus.publish("platform.connection.updated", {
+                "id": connection_id,
+                "platform": "twitch",
+                "channel_id": twitch_id,
+                "channel_name": login,
+                "enabled": True,
+                "chat_read_enabled": True,
+                "chat_write_enabled": True,
+                "moderation_enabled": True,
+                "capabilities": capabilities,
+            })
+
             # Connect EventSub + IRC
             await self.twitch.connect(access_token, refresh_token, twitch_id, login)
             self.logger.info(f"[TwitchAuth] Connected as {display_name} ({login})")

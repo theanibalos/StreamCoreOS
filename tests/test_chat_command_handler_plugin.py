@@ -83,7 +83,13 @@ async def test_handle_triggers_shoutout_for_action_command(plugin, mock_tools):
     }))
 
     mock_tools["twitch"].post.assert_called_once()
-    mock_tools["twitch"].send_message.assert_called_once_with("ch", "¡Vayan a ver a otheruser! 🎉")
+    mock_tools["twitch"].send_message.assert_not_called()
+    mock_tools["event_bus"].publish.assert_any_call("chat.message.send", {
+        "platform": "twitch",
+        "channel_id": "ch",
+        "channel_name": None,
+        "message": "¡Vayan a ver a otheruser! 🎉",
+    })
 
 
 @pytest.mark.anyio
@@ -99,4 +105,10 @@ async def test_handle_skips_shoutout_for_plain_text_command(plugin, mock_tools):
 
     mock_tools["twitch"].post.assert_not_called()
     mock_tools["twitch"].get.assert_not_called()
-    mock_tools["twitch"].send_message.assert_called_once_with("ch", "Hola Mod!")
+    mock_tools["twitch"].send_message.assert_not_called()
+    mock_tools["event_bus"].publish.assert_any_call("chat.message.send", {
+        "platform": "twitch",
+        "channel_id": "ch",
+        "channel_name": None,
+        "message": "Hola Mod!",
+    })

@@ -141,10 +141,12 @@ class ChatCommandHandlerPlugin(BasePlugin):
             self.logger.error(f"[CommandHandler] Error handling {command_name}: {e}")
 
     async def _send_reply(self, data: dict, channel: str, message: str) -> None:
-        if data.get("platform") == "youtube" and self.youtube:
-            await self.youtube.send_message(channel, message)
-            return
-        await self.twitch.send_message(data.get("channel_name") or channel, message)
+        await self.bus.publish("chat.message.send", {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id") or channel,
+            "channel_name": data.get("channel_name"),
+            "message": message,
+        })
 
     async def _do_shoutout(self, data: dict, channel: str) -> None:
         """Resolve the target login from the command args and call Twitch's
@@ -256,7 +258,7 @@ class ChatCommandHandlerPlugin(BasePlugin):
         # Extra check: is this user in the regulars list?
         if required == "regular":
             row = await self.db.query_one(
-                "SELECT id FROM viewers WHERE twitch_id=$1 AND is_regular=1",
+                "SELECT id FROM viewers WHERE global_user_id=$1 AND is_regular=1",
                 [(data.get("user") or {}).get("id", "")],
             )
             return row is not None

@@ -39,10 +39,7 @@ class EchoReminderPlugin(BasePlugin):
 
         current_count = await self.state.get("echo_count", 0, namespace="echo")
         if current_count >= 3:
-            await self.twitch.send_message(
-                data.get("channel_name") or data.get("channel_id") or data.get("channel", ""),
-                f"@{(data.get('user') or {}).get('display_name') or data.get('display_name', '')} Falló la programación: Se alcanzó el límite máximo de 3 eco simultáneos. ❌"
-            )
+            await self._send(data, f"@{(data.get('user') or {}).get('display_name') or data.get('display_name', '')} Falló la programación: Se alcanzó el límite máximo de 3 eco simultáneos. ❌")
             return
 
         args_str = data.get("args", "")
@@ -76,20 +73,23 @@ class EchoReminderPlugin(BasePlugin):
         await self.state.set("active_reminders", active, namespace="echo")
         await self.state.set("echo_count", current_count + 1, namespace="echo")
 
+        route = {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id") or data.get("channel"),
+            "channel_name": data.get("channel_name") or data.get("channel"),
+        }
+
         async def _fire():
-            await self._send_echo(channel, message, job_id)
+            await self._send_echo(route, message, job_id)
 
         self.scheduler.add_one_shot(run_at=run_at, callback=_fire, job_id=job_id)
 
-        await self.twitch.send_message(
-            channel,
-            f"@{display_name} Mensaje programado para dentro de {time_str}. 😊"
-        )
+        await self._send(data, f"@{display_name} Mensaje programado para dentro de {time_str}. 😊")
         self.logger.info(f"[Echo] Scheduled for @{display_name} in {seconds}s")
 
-    async def _send_echo(self, channel: str, message: str, job_id: str):
+    async def _send_echo(self, route: dict, message: str, job_id: str):
         try:
-            await self.twitch.send_message(channel, message)
+            await self.bus.publish("chat.message.send", {**route, "message": message})
         except Exception as e:
             self.logger.error(f"[Echo] Error sending message: {e}")
         finally:
@@ -98,6 +98,14 @@ class EchoReminderPlugin(BasePlugin):
             await self.state.set("active_reminders", active, namespace="echo")
             count = await self.state.get("echo_count", 0, namespace="echo")
             await self.state.set("echo_count", max(0, count - 1), namespace="echo")
+
+    async def _send(self, data: dict, message: str):
+        await self.bus.publish("chat.message.send", {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id") or data.get("channel"),
+            "channel_name": data.get("channel_name") or data.get("channel"),
+            "message": message,
+        })
 
     def _parse_duration(self, duration_str: str) -> Optional[int]:
         match = self._duration_regex.match(duration_str.lower())

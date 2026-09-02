@@ -85,10 +85,12 @@ class IAChatPlugin(BasePlugin):
             await self._send_reply(data, channel, msg)
 
     async def _send_reply(self, data: dict, channel: str, message: str) -> None:
-        if data.get("platform") == "youtube" and self.youtube:
-            await self.youtube.send_message(channel, message)
-            return
-        await self.twitch.send_message(data.get("channel_name") or channel, message)
+        await self.bus.publish("chat.message.send", {
+            "platform": data.get("platform", "twitch"),
+            "channel_id": data.get("channel_id") or channel,
+            "channel_name": data.get("channel_name"),
+            "message": message,
+        })
 
 
 def _user_message_for_error(code: str, name: str) -> str:
