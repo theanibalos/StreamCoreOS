@@ -670,7 +670,7 @@ TTS Tool (tts):
 ### `youtube_chat`
 - **Tables**: none
 - **Endpoints**: none
-- **Events emitted**: `chat.command.received` (args, command), `chat.message.deleted` (message_id, platform), `chat.message.received` (), `youtube.superchat.received` (amount_micros, currency, display_amount, id, message, platform, user, user_id), `youtube.supersticker.received` (display_amount, id, message, platform, user, user_id)
+- **Events emitted**: `chat.message.deleted` (message_id, platform), `youtube.superchat.received` (amount_micros, currency, display_amount, id, message, platform, user, user_id), `youtube.supersticker.received` (display_amount, id, message, platform, user, user_id)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, logger, youtube
 - **Plugins**: youtube_chat.YouTubeChatPollerPlugin

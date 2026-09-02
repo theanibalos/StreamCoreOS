@@ -135,14 +135,6 @@ class YouTubeChatPollerPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"[YouTubeChatPoller] Failed to log message: {e}")
 
-        await self.bus.publish("chat.message.received", msg)
-        if text.startswith("!"):
-            parts = text.split(maxsplit=1)
-            await self.bus.publish("chat.command.received", {
-                **msg,
-                "command": parts[0].lower(),
-                "args": parts[1] if len(parts) > 1 else "",
-            })
 
         await self._publish_monetization(item, msg_type, display_name, user_id, text)
 
