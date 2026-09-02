@@ -11,14 +11,20 @@ class IAChatPlugin(BasePlugin):
     Per-user cooldown is read from the AI config (chat_cooldown_s).
     """
 
-    def __init__(self, twitch, event_bus, state, ai, logger):
+    def __init__(self, twitch, event_bus, state, ai, logger, youtube=None):
         self.twitch = twitch
+        self.youtube = youtube
         self.bus = event_bus
         self.state = state
         self.ai = ai
         self.logger = logger
 
     async def on_boot(self):
+        if self.youtube:
+            try:
+                self.youtube.require_scopes(["https://www.googleapis.com/auth/youtube.force-ssl"])
+            except Exception:
+                pass
         await self.bus.subscribe("chat.command.received", self._handle)
 
     async def _handle(self, event):
@@ -37,10 +43,7 @@ class IAChatPlugin(BasePlugin):
         name     = data["display_name"]
 
         if not question:
-            await self.twitch.send_message(
-                channel,
-                f"@{name} Escribe tu pregunta después de !ia.",
-            )
+            await self._send_reply(data, channel, f"@{name} Escribe tu pregunta después de !ia.")
             return
 
         # Per-user cooldown
@@ -50,10 +53,7 @@ class IAChatPlugin(BasePlugin):
         if expires_at:
             remaining = int(expires_at - time.time())
             if remaining > 0:
-                await self.twitch.send_message(
-                    channel,
-                    f"@{name} Espera {remaining}s antes de volver a usar !ia.",
-                )
+                await self._send_reply(data, channel, f"@{name} Espera {remaining}s antes de volver a usar !ia.")
                 return
 
         cooldown_s = self.ai.get_chat_cooldown()
@@ -62,7 +62,7 @@ class IAChatPlugin(BasePlugin):
         # coroutine now that state.set/delete are async.
         await self.state.set(cooldown_key, time.time() + cooldown_s, namespace="ia_chat", ttl=cooldown_s)
 
-        await self.twitch.send_message(channel, f"@{name} Pensando...")
+        await self._send_reply(data, channel, f"@{name} Pensando...")
 
         try:
             personality = self.ai.get_chat_personality()
@@ -75,13 +75,19 @@ class IAChatPlugin(BasePlugin):
             reply = f"@{name} {answer}"
             if len(reply) > MAX_RESPONSE_CHARS:
                 reply = reply[: MAX_RESPONSE_CHARS - 1] + "…"
-            await self.twitch.send_message(channel, reply)
+            await self._send_reply(data, channel, reply)
 
         except Exception as e:
             code = getattr(e, "code", "unknown")
             self.logger.error(f"[IAChatPlugin] [{code}] {e}")
             msg = _user_message_for_error(code, name)
-            await self.twitch.send_message(channel, msg)
+            await self._send_reply(data, channel, msg)
+
+    async def _send_reply(self, data: dict, channel: str, message: str) -> None:
+        if data.get("platform") == "youtube" and self.youtube:
+            await self.youtube.send_message(channel, message)
+            return
+        await self.twitch.send_message(channel, message)
 
 
 def _user_message_for_error(code: str, name: str) -> str:

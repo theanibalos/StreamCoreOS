@@ -68,6 +68,8 @@ class OverlayFeedPlugin(BasePlugin):
         await self.bus.subscribe("chat.message.received", self._on_chat)
         await self.bus.subscribe("dashboard.stats.updated", self._on_stats)
         await self.bus.subscribe("overlay.test.event", self._on_test)
+        await self.bus.subscribe("youtube.superchat.received", self._on_youtube_superchat)
+        await self.bus.subscribe("youtube.supersticker.received", self._on_youtube_supersticker)
         self.twitch.on_event("*", self._on_twitch_event)
 
         self.http.add_sse_endpoint(
@@ -162,6 +164,7 @@ class OverlayFeedPlugin(BasePlugin):
         p = event.payload or {}
         data = {
             "id": p.get("message_id", ""),
+            "platform": p.get("platform", "twitch"),
             "user": p.get("display_name", ""),
             "user_id": p.get("user_id", ""),
             "color": p.get("color", ""),
@@ -190,6 +193,30 @@ class OverlayFeedPlugin(BasePlugin):
             return
         p = {k: v for k, v in event_data.items() if k != "_event_type"}
         self._broadcast(contract_type, self._event_data(raw_type, p))
+
+    async def _on_youtube_superchat(self, event):
+        p = event.payload or {}
+        self._broadcast("event.superchat", {
+            "id": p.get("id", ""),
+            "platform": "youtube",
+            "user": p.get("user", ""),
+            "user_id": p.get("user_id", ""),
+            "amount_micros": p.get("amount_micros", 0),
+            "currency": p.get("currency", ""),
+            "display_amount": p.get("display_amount", ""),
+            "message": p.get("message", ""),
+        })
+
+    async def _on_youtube_supersticker(self, event):
+        p = event.payload or {}
+        self._broadcast("event.supersticker", {
+            "id": p.get("id", ""),
+            "platform": "youtube",
+            "user": p.get("user", ""),
+            "user_id": p.get("user_id", ""),
+            "display_amount": p.get("display_amount", ""),
+            "message": p.get("message", ""),
+        })
 
     async def _on_test(self, event):
         p = event.payload or {}

@@ -65,8 +65,9 @@ class ChatCommandHandlerPlugin(BasePlugin):
       {var:name}      — Value of a stream variable from chat_vars table.
     """
 
-    def __init__(self, twitch, event_bus, db, state, logger):
+    def __init__(self, twitch, event_bus, db, state, logger, youtube=None):
         self.twitch = twitch
+        self.youtube = youtube
         self.bus = event_bus
         self.db = db
         self.state = state
@@ -74,6 +75,11 @@ class ChatCommandHandlerPlugin(BasePlugin):
 
     async def on_boot(self):
         self.twitch.require_scopes(["moderator:read:followers", "moderator:manage:shoutouts"])
+        if self.youtube:
+            try:
+                self.youtube.require_scopes(["https://www.googleapis.com/auth/youtube.force-ssl"])
+            except Exception:
+                pass
         await self.bus.subscribe("chat.command.received", self._handle)
 
     async def _handle(self, event):
@@ -123,7 +129,7 @@ class ChatCommandHandlerPlugin(BasePlugin):
                 await self._do_shoutout(data, channel)
 
             response = await self._resolve(cmd["response"], data, new_count or 1)
-            await self.twitch.send_message(channel, response)
+            await self._send_reply(data, channel, response)
             await self.bus.publish("chat.command.executed", {
                 "command": command_name,
                 "user_id": user_id,
@@ -132,6 +138,12 @@ class ChatCommandHandlerPlugin(BasePlugin):
             })
         except Exception as e:
             self.logger.error(f"[CommandHandler] Error handling {command_name}: {e}")
+
+    async def _send_reply(self, data: dict, channel: str, message: str) -> None:
+        if data.get("platform") == "youtube" and self.youtube:
+            await self.youtube.send_message(channel, message)
+            return
+        await self.twitch.send_message(channel, message)
 
     async def _do_shoutout(self, data: dict, channel: str) -> None:
         """Resolve the target login from the command args and call Twitch's

@@ -53,7 +53,9 @@ class ChatMessageDispatcherPlugin(BasePlugin):
 
         msg = {
             "type": "PRIVMSG",
+            "platform": "twitch",
             "message_id": event.get("message_id", ""),
+            "source_message_id": event.get("message_id", ""),
             "channel": event.get("broadcaster_user_login", ""),
             "nick": event.get("chatter_user_login", ""),
             "display_name": event.get("chatter_user_name", event.get("chatter_user_login", "")),
@@ -73,10 +75,11 @@ class ChatMessageDispatcherPlugin(BasePlugin):
         try:
             is_command = msg["message"].startswith("!")
             await self.db.execute(
-                """INSERT INTO chat_log (channel, user_id, display_name, message, is_command, timestamp)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                """INSERT INTO chat_log (channel, user_id, display_name, message, is_command, timestamp, platform, source_message_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
                 [msg["channel"], msg["user_id"], msg["display_name"],
-                 msg["message"], 1 if is_command else 0, msg["timestamp"]],
+                 msg["message"], 1 if is_command else 0, msg["timestamp"],
+                 msg["platform"], msg["source_message_id"]],
             )
         except Exception as e:
             self.logger.error(f"[ChatDispatcher] Failed to log message: {e}")

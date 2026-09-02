@@ -1,0 +1,254 @@
+import os
+import secrets
+import time
+from urllib.parse import urlencode
+
+import httpx
+
+from core.base_tool import BaseTool
+
+
+_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_API_BASE = "https://www.googleapis.com/youtube/v3"
+
+
+class YouTubeTool(BaseTool):
+    """YouTube Live wrapper: OAuth + YouTube Data API live chat helpers."""
+
+    @property
+    def name(self) -> str:
+        return "youtube"
+
+    def __init__(self) -> None:
+        self._client_id: str | None = None
+        self._client_secret: str | None = None
+        self._redirect_uri: str | None = None
+        self._client: httpx.AsyncClient | None = None
+        self._pending_states: set[str] = set()
+        self._scopes: list[str] = ["https://www.googleapis.com/auth/youtube.readonly"]
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._expires_at: float = 0
+        self._channel_id: str | None = None
+        self._channel_title: str | None = None
+        self._available = False
+        self.on_token_refreshed = None
+
+    async def setup(self) -> None:
+        self._client_id = os.getenv("YOUTUBE_CLIENT_ID")
+        self._client_secret = os.getenv("YOUTUBE_CLIENT_SECRET")
+        self._redirect_uri = os.getenv(
+            "YOUTUBE_REDIRECT_URI", "http://localhost/api/auth/youtube/callback"
+        )
+        if not self._client_id or not self._client_secret:
+            print("[YouTubeTool] ⚠️  YOUTUBE_CLIENT_ID or YOUTUBE_CLIENT_SECRET not set. Tool unavailable.")
+            return
+        self._client = httpx.AsyncClient(timeout=30)
+        self._available = True
+        print("[YouTubeTool] Ready.")
+
+    async def shutdown(self) -> None:
+        if self._client:
+            await self._client.aclose()
+        print("[YouTubeTool] Shutdown complete.")
+
+    async def on_boot_complete(self, container) -> None:
+        if self._available and not self._access_token:
+            url, _ = self.get_auth_url()
+            print(f"\n{'='*60}\n[YouTubeTool] No active session — authentication optional.\nOpen this URL to authorize YouTube:\n{url}\n{'='*60}\n")
+
+    def require_scopes(self, scopes: list[str]) -> None:
+        self._check_available()
+        for scope in scopes:
+            if scope not in self._scopes:
+                self._scopes.append(scope)
+
+    def get_required_scopes(self) -> list[str]:
+        return list(self._scopes)
+
+    def get_auth_url(self) -> tuple[str, str]:
+        self._check_available()
+        state = secrets.token_urlsafe(16)
+        self._pending_states.add(state)
+        query = urlencode({
+            "client_id": self._client_id,
+            "redirect_uri": self._redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(self._scopes),
+            "access_type": "offline",
+            "prompt": "consent",
+            "include_granted_scopes": "true",
+            "state": state,
+        })
+        return f"{_AUTH_URL}?{query}", state
+
+    def consume_state(self, state: str) -> bool:
+        if state in self._pending_states:
+            self._pending_states.discard(state)
+            return True
+        return False
+
+    async def exchange_code(self, code: str) -> dict:
+        self._check_available()
+        resp = await self._client.post(_TOKEN_URL, data={
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": self._redirect_uri,
+        })
+        resp.raise_for_status()
+        return resp.json()
+
+    async def refresh_user_token(self, refresh_token: str) -> dict:
+        self._check_available()
+        resp = await self._client.post(_TOKEN_URL, data={
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        })
+        resp.raise_for_status()
+        return resp.json()
+
+    async def connect(self, access_token: str, refresh_token: str | None, channel_id: str, channel_title: str, expires_in: int = 3600) -> None:
+        self._check_available()
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+        self._channel_id = channel_id
+        self._channel_title = channel_title
+        self._expires_at = time.time() + max(60, expires_in - 60)
+
+    async def disconnect(self) -> None:
+        self._access_token = None
+        self._refresh_token = None
+        self._expires_at = 0
+        self._channel_id = None
+        self._channel_title = None
+
+    def get_session(self) -> dict | None:
+        if not self._access_token:
+            return None
+        return {
+            "access_token": self._access_token,
+            "refresh_token": self._refresh_token,
+            "channel_id": self._channel_id,
+            "channel_title": self._channel_title,
+        }
+
+    def is_connected(self) -> bool:
+        return bool(self._access_token)
+
+    async def _ensure_token(self) -> str:
+        if not self._access_token:
+            raise RuntimeError("No active YouTube session")
+        if self._refresh_token and time.time() >= self._expires_at:
+            tokens = await self.refresh_user_token(self._refresh_token)
+            self._access_token = tokens["access_token"]
+            if tokens.get("refresh_token"):
+                self._refresh_token = tokens["refresh_token"]
+            self._expires_at = time.time() + max(60, int(tokens.get("expires_in", 3600)) - 60)
+            if self.on_token_refreshed:
+                await self.on_token_refreshed({
+                    "access_token": self._access_token,
+                    "refresh_token": self._refresh_token,
+                    "expires_in": int(tokens.get("expires_in", 3600)),
+                    "scope": tokens.get("scope", ""),
+                })
+        return self._access_token
+
+    async def get(self, endpoint: str, params: dict | None = None) -> dict:
+        self._check_available()
+        token = await self._ensure_token()
+        resp = await self._client.get(f"{_API_BASE}{endpoint}", params=params or {}, headers={"Authorization": f"Bearer {token}"})
+        if resp.status_code == 401 and self._refresh_token:
+            self._expires_at = 0
+            token = await self._ensure_token()
+            resp = await self._client.get(f"{_API_BASE}{endpoint}", params=params or {}, headers={"Authorization": f"Bearer {token}"})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    async def post(self, endpoint: str, body: dict | None = None, params: dict | None = None) -> dict:
+        self._check_available()
+        token = await self._ensure_token()
+        resp = await self._client.post(f"{_API_BASE}{endpoint}", params=params or {}, json=body or {}, headers={"Authorization": f"Bearer {token}"})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    async def delete(self, endpoint: str, params: dict | None = None) -> dict:
+        self._check_available()
+        token = await self._ensure_token()
+        resp = await self._client.delete(f"{_API_BASE}{endpoint}", params=params or {}, headers={"Authorization": f"Bearer {token}"})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    async def get_user_info(self) -> dict:
+        data = await self.get("/channels", {"part": "snippet", "mine": "true"})
+        items = data.get("items", [])
+        if not items:
+            raise RuntimeError("Authenticated Google account has no YouTube channel")
+        item = items[0]
+        return {"id": item["id"], "title": item.get("snippet", {}).get("title", item["id"])}
+
+    async def get_active_broadcast(self) -> dict | None:
+        data = await self.get("/liveBroadcasts", {
+            "part": "id,snippet,contentDetails,status",
+            "broadcastStatus": "active",
+            "mine": "true",
+            "maxResults": 1,
+        })
+        items = data.get("items", [])
+        return items[0] if items else None
+
+    async def get_live_chat_id(self) -> str | None:
+        b = await self.get_active_broadcast()
+        if not b:
+            return None
+        return b.get("snippet", {}).get("liveChatId")
+
+    async def list_chat_messages(self, live_chat_id: str, page_token: str | None = None, max_results: int = 500) -> dict:
+        params = {
+            "liveChatId": live_chat_id,
+            "part": "id,snippet,authorDetails",
+            "maxResults": max(200, min(2000, max_results)),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        return await self.get("/liveChat/messages", params)
+
+    async def send_message(self, live_chat_id: str, text: str) -> dict:
+        self.require_scopes(["https://www.googleapis.com/auth/youtube.force-ssl"])
+        return await self.post("/liveChat/messages", body={
+            "snippet": {
+                "liveChatId": live_chat_id,
+                "type": "textMessageEvent",
+                "textMessageDetails": {"messageText": text},
+            }
+        }, params={"part": "snippet"})
+
+    async def delete_message(self, message_id: str) -> dict:
+        return await self.delete("/liveChat/messages", {"id": message_id})
+
+    async def ban_user(self, live_chat_id: str, channel_id: str, duration_s: int | None = None) -> dict:
+        snippet = {
+            "liveChatId": live_chat_id,
+            "type": "temporary" if duration_s else "permanent",
+            "bannedUserDetails": {"channelId": channel_id},
+        }
+        if duration_s:
+            snippet["banDurationSeconds"] = duration_s
+        return await self.post("/liveChat/bans", body={"snippet": snippet}, params={"part": "snippet"})
+
+    def _check_available(self) -> None:
+        if not self._available:
+            raise RuntimeError("YouTubeTool not available. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.")
+
+    def get_interface_description(self) -> str:
+        return """
+        YouTube Tool (youtube): OAuth + YouTube Live Chat via YouTube Data API.
+        Env: YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI.
+        Methods: get_auth_url, consume_state, exchange_code, refresh_user_token,
+        connect, disconnect, get_session, get_user_info, get_active_broadcast,
+        get_live_chat_id, list_chat_messages, send_message, delete_message, ban_user.
+        """
