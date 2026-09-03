@@ -1,6 +1,6 @@
 # StreamCoreOS
 
-A complete Twitch streaming platform — chatbot, AI moderation, TTS with per-user voices, overlay builder with AI generation, real-time dashboard, loyalty points, and more. All as isolated, single-file plugins on a self-contained async kernel.
+A complete **Twitch & YouTube Live multi-platform streaming engine** — unified chatbot, RTMP restreaming, AI moderation, TTS with per-user voices, dynamic overlay builder with AI generation, real-time dashboard, loyalty points, and more. All built as isolated, single-file plugins on top of the atomic [MicroCoreOS](https://github.com/theanibalos/MicroCoreOS) kernel.
 
 **License:** AGPL-3.0 — free to self-host, modifications must be open-sourced if used as a network service.
 
@@ -184,19 +184,24 @@ StreamCoreOS/
 │   ├── twitch/                  # Twitch platform wrapper (OAuth + EventSub + IRC)
 │   ├── youtube/                 # YouTube Live wrapper (OAuth + Data API + gRPC)
 │   ├── rtmp_engine/             # Ingest RTMP server & relay engine
+│   ├── stream_tool/             # Restreaming & broadcast lifecycle orchestrator
 │   ├── sqlite/                  # Default DB — swap to PostgreSQL with zero plugin changes
 │   ├── tts/                     # TTS router (edge_tts + Voicebox providers)
 │   ├── ai/                      # AI completions (OpenAI-compatible, local or cloud)
+│   ├── http_client/             # Resilient async HTTP client
 │   ├── event_bus/               # Pub/Sub + async RPC
 │   ├── http_server/             # FastAPI gateway (REST + SSE + WebSocket)
 │   ├── scheduler/               # Cron jobs (APScheduler)
 │   ├── state/                   # In-memory key-value store
 │   └── logger/                  # Structured logging with sinks
 └── domains/
-    ├── twitch_auth/             # OAuth flow + token storage + session restore
-    ├── youtube_auth/            # YouTube OAuth flow + token storage
-    ├── stream_state/            # Online/offline tracking + history
+    ├── twitch_auth/             # Twitch OAuth flow + token storage + session restore
+    ├── youtube_auth/            # YouTube OAuth flow + token storage + channel restore
+    ├── youtube_chat/            # YouTube Live Chat poller & gRPC streaming bridge
+    ├── chat_platform/           # Outgoing chat routing for Twitch IRC and YouTube Live
+    ├── stream_state/            # Online/offline tracking + multi-platform history
     ├── stream_outputs/          # RTMP multi-destination output management
+    ├── platforms/               # Centralized streaming platform connection status
     ├── chat_bot/                # Chat dispatch + commands + variables + TTS + SSE
     ├── viewers/                 # Viewer profiles + points + regulars
     ├── moderation/              # AI mod + word/link/caps/spam filters + manual controls
@@ -205,6 +210,7 @@ StreamCoreOS/
     ├── overlays/                # Overlay builder + AI generation + live SSE
     ├── subscribers/             # Sub/bits/gifter tracking + leaderboards
     ├── tts_chat/                # TTS listener + per-user voice assignment
+    ├── webhooks/                # Event-driven HTTP webhooks (Discord, external APIs)
     ├── ai_config/               # AI provider configuration
     ├── system/                  # Observability — traces, events, health, SSE logs
     └── ping/                    # Health check
@@ -230,13 +236,28 @@ On every subsequent restart the session is restored automatically from the DB �
 ## Domains
 
 ### `twitch_auth`
-OAuth flow + token persistence + automatic session restore on boot.
+Twitch OAuth 2.0 flow + token persistence + automatic session restore on boot.
+
+### `youtube_auth`
+Google OAuth 2.0 flow + token storage + automatic YouTube channel session restore on boot.
+
+### `youtube_chat`
+YouTube Live Chat synchronization via high-performance gRPC streamList / REST polling, live message dispatch, and chat replies.
+
+### `stream_outputs`
+Multi-destination RTMP restreaming management. Ingests OBS stream once via local RTMP and relays to Twitch, YouTube, Kick, or custom endpoints with automatic video fallback on disconnect.
+
+### `platforms`
+Centralized status and configuration for all connected streaming platforms.
+
+### `chat_platform`
+Outgoing chat bridge. Listens to internal chat send events and routes messages to Twitch IRC and YouTube Live Chat.
 
 ### `stream_state`
-Tracks stream online/offline. Publishes `stream.session.started` / `stream.session.ended`.
+Tracks stream online/offline status across platforms. Publishes `stream.session.started` / `stream.session.ended`.
 
 ### `chat_bot`
-IRC bridge, command system, stream variables, reminders, AI chat (`!ia`), real-time SSE stream.
+Multiplatform chat dispatcher, command system, stream variables, reminders, AI chat (`!ia`), and real-time SSE stream.
 
 **Command response variables:** `{user}`, `{touser}`, `{count}`, `{random X-Y}`, `{uptime}`, `{game}`, `{viewers}`, `{followage}`, `{var:name}`
 
@@ -248,28 +269,31 @@ IRC bridge, command system, stream variables, reminders, AI chat (`!ia`), real-t
 ```
 
 ### `viewers`
-Viewer profiles, points, regulars tier. Auto-created on first chat message.
+Viewer profiles, loyalty points, and regulars tier. Auto-created on first chat message across platforms.
 
 ### `moderation`
-Rule types: `word_filter`, `link_filter`, `caps_filter`, `spam_filter`, AI-powered filter.
-Actions: `ban`, `timeout`, `delete`.
+Rule types: `word_filter`, `link_filter`, `caps_filter`, `spam_filter`, and AI-powered filter.
+Actions: `ban`, `timeout`, `delete` applied directly to Twitch & YouTube chats.
 
 ### `timers`
-Recurring messages posted to chat on a cron schedule.
+Recurring messages posted to live chat on a cron schedule.
 
 ### `dashboard`
-Aggregated stream stats + real-time SSE alert stream for all Twitch events.
+Aggregated stream stats + real-time SSE alert stream for all platform events.
 
 ### `overlays`
 Overlay builder with widgets (alert, stat, progress bar, chat highlight, banner).
 AI generation endpoint — describe the layout in text, get a configured overlay back.
-Live SSE endpoint for real-time widget updates.
+Live SSE endpoint for real-time widget updates in OBS.
 
 ### `subscribers`
 Subscription, bits, and gifter tracking with leaderboards.
 
 ### `tts_chat`
 TTS listener with per-viewer voice assignment. Supports edge_tts (always available) and Voicebox.
+
+### `webhooks`
+Event-driven HTTP webhook system. Send alerts, stream notifications, and moderation events to Discord webhooks or custom HTTP endpoints.
 
 ### `ai_config`
 Configure the AI provider (Ollama, OpenAI, Groq, OpenRouter, etc.) via API.
