@@ -908,7 +908,7 @@ wheels = [
 [[package]]
 name = "microcoreos"
 version = "0.4.4"
-source = { editable = "/home/anibalos/Documents/Original/MicroCoreOS" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "fastapi" },
@@ -918,6 +918,10 @@ dependencies = [
     { name = "pyyaml" },
     { name = "uvicorn" },
     { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/04/b7f5b49622f5b4b7527a8ddc7cb453a65760026cb9fceb1654d384b98e1d/microcoreos-0.4.4.tar.gz", hash = "sha256:f9626e3b82e4f5b1aec8c891fd0efd2d59aae3bad64bb52bf429538c233e2049", size = 615215, upload-time = "2026-08-31T11:28:34.156Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/1c/e8645853a2783c6db0e6b9fb17d989d42b225bafe1c7f688c072122555af/microcoreos-0.4.4-py3-none-any.whl", hash = "sha256:3ebca19fc4e7b0bb42143d19e0c027cc6db94eaf01c2265b0439eb124df9bbdb", size = 391542, upload-time = "2026-08-31T11:28:32.361Z" },
 ]
 
 [package.optional-dependencies]
@@ -930,47 +934,6 @@ all = [
     { name = "bcrypt" },
     { name = "pyjwt" },
     { name = "redis" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aio-pika", marker = "extra == 'all'", specifier = ">=9.4" },
-    { name = "aio-pika", marker = "extra == 'rabbitmq'", specifier = ">=9.4" },
-    { name = "aioboto3", marker = "extra == 'all'", specifier = ">=15.5.0" },
-    { name = "aioboto3", marker = "extra == 's3'", specifier = ">=15.5.0" },
-    { name = "aiokafka", marker = "extra == 'all'", specifier = ">=0.14.0" },
-    { name = "aiokafka", marker = "extra == 'kafka'", specifier = ">=0.14.0" },
-    { name = "aiosqlite", specifier = ">=0.20.0" },
-    { name = "apscheduler", marker = "extra == 'all'", specifier = ">=3.10,<4" },
-    { name = "apscheduler", marker = "extra == 'scheduler'", specifier = ">=3.10,<4" },
-    { name = "asyncpg", marker = "extra == 'all'", specifier = ">=0.29.0" },
-    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29.0" },
-    { name = "bcrypt", marker = "extra == 'all'", specifier = ">=3.2.2" },
-    { name = "bcrypt", marker = "extra == 'auth'", specifier = ">=3.2.2" },
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "pydantic", extras = ["email"], specifier = ">=2.10.0" },
-    { name = "pyjwt", marker = "extra == 'all'", specifier = ">=2.9.0" },
-    { name = "pyjwt", marker = "extra == 'auth'", specifier = ">=2.9.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "redis", marker = "extra == 'all'", specifier = ">=5.0" },
-    { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
-    { name = "uvicorn", specifier = ">=0.30.0" },
-    { name = "websockets", specifier = ">=13.0" },
-]
-provides-extras = ["auth", "redis", "postgres", "kafka", "rabbitmq", "s3", "scheduler", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "anyio", extras = ["trio"], specifier = ">=4.0.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "microcoreos", extras = ["all"] },
-    { name = "mutmut", specifier = ">=3.2.0" },
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-cov", specifier = ">=7.1.0" },
-    { name = "ruff", specifier = ">=0.15.16" },
-    { name = "watchfiles", specifier = ">=1.1.1" },
 ]
 
 [[package]]
@@ -1597,7 +1560,7 @@ requires-dist = [
     { name = "grpcio", specifier = ">=1.68.0" },
     { name = "grpcio-tools", specifier = ">=1.68.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "microcoreos", extras = ["all"], editable = "/home/anibalos/Documents/Original/MicroCoreOS" },
+    { name = "microcoreos", extras = ["all"], specifier = ">=0.4.4" },
     { name = "protobuf", specifier = ">=5.29.0" },
     { name = "pyrtmp", specifier = ">=0.3.1" },
 ]
