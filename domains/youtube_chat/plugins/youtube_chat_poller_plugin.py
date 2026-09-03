@@ -192,25 +192,43 @@ class YouTubeChatPollerPlugin(BasePlugin):
 
     async def _publish_monetization(self, item: dict, msg_type: str, display_name: str, user_id: str, text: str):
         snippet = item.get("snippet", {})
+        author_channel_id = (user_id.split(":", 1)[1] if ":" in user_id else user_id)
+        base = {
+            "platform": "youtube",
+            "channel_id": snippet.get("liveChatId", ""),
+            "message_id": item.get("id", ""),
+            "user": {
+                "id": user_id,
+                "platform_id": author_channel_id,
+                "display_name": display_name,
+            },
+            "message": text,
+            "raw": item,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
         if msg_type == "superChatEvent":
             d = snippet.get("superChatDetails", {})
-            await self.bus.publish("youtube.superchat.received", {
-                "platform": "youtube",
-                "id": item.get("id", ""),
-                "user": display_name,
-                "user_id": user_id,
+            await self.bus.publish("monetization.event.received", {
+                **base,
+                "type": "superchat",
                 "amount_micros": d.get("amountMicros", 0),
                 "currency": d.get("currency", ""),
                 "display_amount": d.get("amountDisplayString", ""),
-                "message": text,
             })
         elif msg_type == "superStickerEvent":
             d = snippet.get("superStickerDetails", {})
-            await self.bus.publish("youtube.supersticker.received", {
-                "platform": "youtube",
-                "id": item.get("id", ""),
-                "user": display_name,
-                "user_id": user_id,
+            await self.bus.publish("monetization.event.received", {
+                **base,
+                "type": "supersticker",
+                "amount_micros": d.get("amountMicros"),
+                "currency": d.get("currency"),
                 "display_amount": d.get("amountDisplayString", ""),
-                "message": text,
+            })
+        elif msg_type in ("newSponsorEvent", "memberMilestoneChatEvent", "membershipGiftingEvent", "giftMembershipReceivedEvent"):
+            await self.bus.publish("monetization.event.received", {
+                **base,
+                "type": "member",
+                "amount_micros": None,
+                "currency": None,
+                "display_amount": None,
             })

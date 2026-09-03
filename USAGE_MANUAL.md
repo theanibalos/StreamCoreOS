@@ -318,9 +318,13 @@ POST /moderation/ban
 Content-Type: application/json
 
 {
-  "twitch_id": "12345678",
+  "platform": "twitch",
+  "channel_id": "12345678",
+  "user_id": "87654321",
   "reason": "Spam reiterado"
 }
+
+También se acepta `twitch_id` como alias legacy de `user_id` para Twitch.
 ```
 
 #### Timeout a un usuario
@@ -330,10 +334,14 @@ POST /moderation/timeout
 Content-Type: application/json
 
 {
-  "twitch_id": "12345678",
-  "duration": 600,
+  "platform": "twitch",
+  "channel_id": "12345678",
+  "user_id": "87654321",
+  "duration_s": 600,
   "reason": "Lenguaje inapropiado"
 }
+
+Para YouTube usar `platform: "youtube"`, `channel_id` como `liveChatId` y `user_id` como channel id del usuario.
 ```
 
 #### Desbanear a un usuario
@@ -343,8 +351,12 @@ POST /moderation/unban
 Content-Type: application/json
 
 {
-  "twitch_id": "12345678"
+  "platform": "twitch",
+  "channel_id": "12345678",
+  "user_id": "87654321"
 }
+
+YouTube unban no está soportado desde `user_id`; la API requiere un `liveChatBan id`.
 ```
 
 ### Ver registro de moderación
@@ -353,7 +365,7 @@ Content-Type: application/json
 GET /moderation/log
 ```
 
-Historial de todas las acciones de moderación (automáticas y manuales).
+Historial de todas las acciones de moderación (automáticas y manuales). Permite filtrar por `platform`, `channel_id` y `user_id`.
 
 ---
 

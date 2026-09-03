@@ -1,10 +1,14 @@
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from core.base_plugin import BasePlugin
 
 
 class UnbanRequest(BaseModel):
-    twitch_id: str = Field(min_length=1)
+    platform: str = "twitch"
+    channel_id: Optional[str] = None
+    user_id: Optional[str] = None
+    twitch_id: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class UnbanResponse(BaseModel):
@@ -14,12 +18,12 @@ class UnbanResponse(BaseModel):
 
 
 class ManualUnbanPlugin(BasePlugin):
-    """POST /moderation/unban — Unban a user via Helix API."""
+    """POST /moderation/unban — Request a platform-scoped unban."""
 
-    def __init__(self, http, twitch, db, logger):
+    def __init__(self, http, twitch, event_bus, logger):
         self.http = http
         self.twitch = twitch
-        self.db = db
+        self.bus = event_bus
         self.logger = logger
 
     async def on_boot(self):
@@ -33,34 +37,37 @@ class ManualUnbanPlugin(BasePlugin):
     async def execute(self, data: dict, context=None):
         try:
             req = UnbanRequest(**data)
-            session = self.twitch.get_session()
-            if not session:
-                return {"success": False, "error": "Twitch session not active"}
-            broadcaster_id = session["broadcaster_id"]
-            access_token = session["access_token"]
-            if not broadcaster_id or not access_token:
-                return {"success": False, "error": "Twitch session not active"}
+            platform = req.platform or "twitch"
+            identifier = req.user_id or req.twitch_id
+            if not identifier:
+                return {"success": False, "error": "user_id is required"}
+            if platform == "youtube":
+                return {"success": False, "error": "YouTube unban requires a liveChatBan id and is not supported from user id"}
 
-            twitch_id, display_name = await self._resolve(req.twitch_id, access_token)
-            if not twitch_id:
-                return {"success": False, "error": f"User '{req.twitch_id}' not found on Twitch"}
+            user_id = identifier
+            display_name = req.display_name or identifier
+            if platform == "twitch":
+                session = self.twitch.get_session()
+                if not session:
+                    return {"success": False, "error": "Twitch session not active"}
+                user_id, display_name = await self._resolve(identifier, session["access_token"])
+                if not user_id:
+                    return {"success": False, "error": f"User '{identifier}' not found on Twitch"}
 
-            await self.twitch.delete(
-                "/moderation/bans",
-                params={"broadcaster_id": broadcaster_id, "moderator_id": broadcaster_id, "user_id": twitch_id},
-                user_token=access_token,
-            )
-            await self.db.execute(
-                "INSERT INTO mod_log (twitch_id, display_name, action, reason) VALUES ($1,$2,$3,$4)",
-                [twitch_id, display_name, "unban", "Manual unban"],
-            )
-            return {"success": True, "data": {"twitch_id": twitch_id, "display_name": display_name}}
+            await self.bus.publish("moderation.action.requested", {
+                "platform": platform,
+                "channel_id": req.channel_id,
+                "user": {"id": f"{platform}:{user_id}", "platform_id": user_id, "display_name": display_name},
+                "action": "unban",
+                "duration_s": None,
+                "reason": "Manual unban",
+            })
+            return {"success": True, "data": {"platform": platform, "user_id": user_id, "display_name": display_name}}
         except Exception as e:
             self.logger.error(f"[ManualUnban] {e}")
             return {"success": False, "error": str(e)}
 
     async def _resolve(self, identifier: str, access_token: str) -> tuple[str | None, str]:
-        """Returns (twitch_id, display_name). Resolves username via Helix if needed."""
         if identifier.isdigit():
             return identifier, identifier
         result = await self.twitch.get("/users", params={"login": identifier}, user_token=access_token)

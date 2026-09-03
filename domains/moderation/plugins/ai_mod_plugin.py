@@ -16,8 +16,7 @@ class AiModPlugin(BasePlugin):
     without affecting any other feature.
     """
 
-    def __init__(self, twitch, event_bus, db, state, ai, logger):
-        self.twitch = twitch
+    def __init__(self, event_bus, db, state, ai, logger):
         self.bus = event_bus
         self.db = db
         self.state = state
@@ -25,10 +24,6 @@ class AiModPlugin(BasePlugin):
         self.logger = logger
 
     async def on_boot(self):
-        self.twitch.require_scopes([
-            "moderator:manage:banned_users",
-            "moderator:manage:chat_messages",
-        ])
         await self.bus.subscribe("chat.message.received", self._on_message)
         await self.bus.subscribe("moderation.rules.updated", self._invalidate_cache)
         await self.bus.subscribe("viewer.regular.added", self._invalidate_regulars)
@@ -95,23 +90,20 @@ class AiModPlugin(BasePlugin):
                 continue
 
             if await self._evaluate(rule, message):
-                if msg.get("platform") == "twitch":
-                    await self._enforce(rule, user_id, display_name, message, message_id)
-                else:
-                    await self.bus.publish("moderation.action.requested", {
-                        "platform": msg.get("platform"),
-                        "channel_id": msg.get("channel_id"),
-                        "message_id": message_id,
-                        "user": {
-                            "id": user.get("id", ""),
-                            "platform_id": user_id,
-                            "display_name": display_name,
-                        },
-                        "action": rule["action"],
-                        "duration_s": rule.get("duration_s"),
-                        "reason": f"AI-Mod: rule #{rule['id']}",
-                        "rule_id": rule["id"],
-                    })
+                await self.bus.publish("moderation.action.requested", {
+                    "platform": msg.get("platform", "twitch"),
+                    "channel_id": msg.get("channel_id"),
+                    "message_id": message_id,
+                    "user": {
+                        "id": user.get("id", ""),
+                        "platform_id": user_id,
+                        "display_name": display_name,
+                    },
+                    "action": rule["action"],
+                    "duration_s": rule.get("duration_s"),
+                    "reason": f"AI-Mod: rule #{rule['id']}",
+                    "rule_id": rule["id"],
+                })
                 break
 
     async def _evaluate(self, rule: dict, message: str) -> bool:
@@ -144,65 +136,3 @@ class AiModPlugin(BasePlugin):
                 return False
             self.logger.error(f"[AiMod] Rule #{rule['id']} [{code}]: {e}")
             return False
-
-    async def _enforce(
-        self,
-        rule: dict,
-        user_id: str,
-        display_name: str,
-        message: str,
-        message_id: str,
-    ):
-        action  = rule["action"]
-        session = self.twitch.get_session()
-        if not session:
-            return
-
-        broadcaster_id = session["broadcaster_id"]
-        access_token   = session["access_token"]
-        reason         = f"AI-Mod: rule #{rule['id']}"
-
-        try:
-            if action == "ban":
-                await self.twitch.post(
-                    f"/moderation/bans?broadcaster_id={broadcaster_id}&moderator_id={broadcaster_id}",
-                    body={"data": {"user_id": user_id, "reason": reason}},
-                    user_token=access_token,
-                )
-            elif action == "timeout":
-                duration = rule.get("duration_s") or 600
-                await self.twitch.post(
-                    f"/moderation/bans?broadcaster_id={broadcaster_id}&moderator_id={broadcaster_id}",
-                    body={"data": {"user_id": user_id, "duration": duration, "reason": reason}},
-                    user_token=access_token,
-                )
-            elif action == "delete" and message_id:
-                await self.twitch.delete(
-                    "/moderation/chat",
-                    params={
-                        "broadcaster_id": broadcaster_id,
-                        "moderator_id":   broadcaster_id,
-                        "message_id":     message_id,
-                    },
-                    user_token=access_token,
-                )
-        except Exception as e:
-            self.logger.error(
-                f"[AiMod] Helix API failed for {action} on {display_name}: {e}"
-            )
-
-        try:
-            await self.db.execute(
-                "INSERT INTO mod_log (twitch_id, display_name, action, reason, rule_id) "
-                "VALUES ($1,$2,$3,$4,$5)",
-                [user_id, display_name, action, reason, rule["id"]],
-            )
-            await self.bus.publish("moderation.action.taken", {
-                "twitch_id":    user_id,
-                "display_name": display_name,
-                "action":       action,
-                "reason":       reason,
-                "rule_id":      rule["id"],
-            })
-        except Exception as e:
-            self.logger.error(f"[AiMod] Failed to log action: {e}")

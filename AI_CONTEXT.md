@@ -434,31 +434,6 @@ Scheduler Tool (scheduler):
           and the same 4-method API. Plugins do not change.
 ```
 
-### 🔧 Tool: `db` (Status: ✅)
-```text
-Async SQLite Persistence Tool (sqlite):
-        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
-          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
-          ($1, $2...) and converts them transparently to SQLite's native '?'.
-        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
-        - CAPABILITIES:
-            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
-            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
-            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
-              With RETURNING (SQLite 3.35+): returns the first column value.
-              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
-            - await execute_many(sql, params_list) → None: Batch writes.
-            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
-              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
-            - await health_check() → bool: Verify database connectivity.
-        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
-        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
-          topological sort (alphabetical by default). To declare that one migration must
-          run before another, add as the first comment line:
-            "-- depends: other_domain/001_file.sql"
-          Works for same-domain or cross-domain dependencies. .sql extension is optional.
-```
-
 ### 🔧 Tool: `event_bus` (Status: ✅)
 ```text
 Universal Event Bus (event_bus):
@@ -520,6 +495,31 @@ Universal Event Bus (event_bus):
         fallback in this process' memory).
 ```
 
+### 🔧 Tool: `db` (Status: ✅)
+```text
+Async SQLite Persistence Tool (sqlite):
+        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
+          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
+          ($1, $2...) and converts them transparently to SQLite's native '?'.
+        - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
+        - CAPABILITIES:
+            - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
+            - await query_one(sql, params?) → dict | None: Read a single row (SELECT).
+            - await execute(sql, params?) → int | None: Write data (INSERT/UPDATE/DELETE).
+              With RETURNING (SQLite 3.35+): returns the first column value.
+              INSERT without RETURNING: returns lastrowid. Others: returns affected row count.
+            - await execute_many(sql, params_list) → None: Batch writes.
+            - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
+              Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
+            - await health_check() → bool: Verify database connectivity.
+        - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+        - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
+          topological sort (alphabetical by default). To declare that one migration must
+          run before another, add as the first comment line:
+            "-- depends: other_domain/001_file.sql"
+          Works for same-domain or cross-domain dependencies. .sql extension is optional.
+```
+
 ### 🔧 Tool: `tts` (Status: ✅)
 ```text
 TTS Tool (tts):
@@ -558,10 +558,18 @@ TTS Tool (tts):
 - **Table `chat_command`**: name (str), response (str), cooldown_s (int), enabled (int), created_at (str), action (Optional[str]), channel (str), user_id (str), display_name (str), message (str), is_command (int), timestamp (str)
 - **Table `chat_var`**: name (str), value (str), enabled (int), created_at (str)
 - **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}, SSE /api/chat/stream
-- **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command), `chat.message.received` ()
+- **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command), `chat.message.received` (), `chat.message.send` (channel_id, channel_name, message, platform)
 - **Events consumed**: chat.command.received, chat.message.received, message.resend
 - **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch, youtube
 - **Plugins**: chat_bot.ChatAutoResponsePlugin, chat_bot.ChatBadgesPlugin, chat_bot.ChatCommandHandlerPlugin, chat_bot.ChatMessageDispatcherPlugin, chat_bot.ChatStreamPlugin, chat_bot.CommandsListPlugin, chat_bot.CreateCommandPlugin, chat_bot.CreateVarPlugin, chat_bot.DeleteCommandPlugin, chat_bot.DeleteVarPlugin, chat_bot.EchoReminderPlugin, chat_bot.IAChatPlugin, chat_bot.ListCommandsPlugin, chat_bot.ListRemindersPlugin, chat_bot.ListVarsPlugin, chat_bot.MessageResendPlugin, chat_bot.UpdateCommandPlugin, chat_bot.UpdateVarPlugin, chat_bot.VarCommandPlugin
+
+### `chat_platform`
+- **Tables**: none
+- **Endpoints**: none
+- **Events emitted**: none
+- **Events consumed**: chat.message.send
+- **Dependencies**: event_bus, logger, twitch, youtube
+- **Plugins**: chat_platform.TwitchChatSendPlugin, chat_platform.YouTubeChatSendPlugin
 
 ### `dashboard`
 - **Table `channel_stats`**: recorded_at (str), viewer_count (int), follower_count (int)
@@ -574,10 +582,10 @@ TTS Tool (tts):
 ### `moderation`
 - **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), exempt_roles (str), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
 - **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
-- **Events emitted**: `moderation.action.taken` (action, display_name, reason, rule_id, twitch_id), `moderation.rules.updated` (rule_id)
-- **Events consumed**: chat.message.received, moderation.rules.updated, viewer.regular.added, viewer.regular.removed
-- **Dependencies**: ai, db, event_bus, http, logger, state, twitch
-- **Plugins**: moderation.AiModPlugin, moderation.AutoModPlugin, moderation.CreateModRulePlugin, moderation.DeleteModRulePlugin, moderation.ListModRulesPlugin, moderation.ManualBanPlugin, moderation.ManualTimeoutPlugin, moderation.ManualUnbanPlugin, moderation.ModLogPlugin, moderation.UpdateModRulePlugin
+- **Events emitted**: `moderation.action.requested` (action, channel_id, duration_s, message_id, platform, reason, rule_id, user), `moderation.action.taken` (action, channel_id, duration_s, message_id, platform, reason, rule_id, user), `moderation.rules.updated` (rule_id)
+- **Events consumed**: chat.message.received, moderation.action.requested, moderation.rules.updated, viewer.regular.added, viewer.regular.removed
+- **Dependencies**: ai, db, event_bus, http, logger, state, twitch, youtube
+- **Plugins**: moderation.AiModPlugin, moderation.AutoModPlugin, moderation.CreateModRulePlugin, moderation.DeleteModRulePlugin, moderation.ListModRulesPlugin, moderation.ManualBanPlugin, moderation.ManualTimeoutPlugin, moderation.ManualUnbanPlugin, moderation.ModLogPlugin, moderation.ModerationActionRouterPlugin, moderation.UpdateModRulePlugin
 
 ### `overlays`
 - **Table `overlay`**: name (str), config (str), created_at (any), updated_at (any)
@@ -595,6 +603,22 @@ TTS Tool (tts):
 - **Dependencies**: http, logger
 - **Plugins**: ping.PingPlugin
 
+### `platforms`
+- **Table `platform_connection`**: platform (str), channel_id (str), channel_name (str), enabled (bool), chat_read_enabled (bool), chat_write_enabled (bool), moderation_enabled (bool), capabilities (str), created_at (str), updated_at (str)
+- **Endpoints**: GET /api/platforms/connections, PUT /api/platforms/connections/{id}
+- **Events emitted**: `platform.connection.updated` ()
+- **Events consumed**: none
+- **Dependencies**: db, event_bus, http, logger
+- **Plugins**: platforms.ListPlatformConnectionsPlugin, platforms.UpdatePlatformConnectionPlugin
+
+### `stream_outputs`
+- **Table `stream_output`**: name (str), platform (str), channel_id (str), enabled (bool), overlay_id (Optional[int]), rtmp_url (Optional[str]), stream_key_configured (bool), stream_key_preview (Optional[str]), status (str), settings (dict), created_at (str), updated_at (str)
+- **Endpoints**: DELETE /api/stream-outputs/{id}, GET /api/stream-outputs, POST /api/stream-outputs, PUT /api/stream-outputs/{id}
+- **Events emitted**: none
+- **Events consumed**: none
+- **Dependencies**: db, http, logger
+- **Plugins**: stream_outputs.CreateStreamOutputPlugin, stream_outputs.DeleteStreamOutputPlugin, stream_outputs.ListStreamOutputsPlugin, stream_outputs.UpdateStreamOutputPlugin
+
 ### `stream_state`
 - **Table `stream_session`**: twitch_stream_id (Optional[str]), started_at (str), ended_at (Optional[str]), title (Optional[str]), game_name (Optional[str]), peak_viewers (int)
 - **Endpoints**: GET /api/stream/sessions, GET /api/stream/status
@@ -606,7 +630,7 @@ TTS Tool (tts):
 ### `subscribers`
 - **Table `subscriber`**: twitch_id (str), login (str), display_name (str), tier (str), is_prime (bool), is_gift (bool), cumulative_months (int), streak_months (Optional[int]), subscribed_at (str), last_sub_at (str), is_active (bool), bits_total (int), last_cheer_at (str)
 - **Endpoints**: GET /api/bits/leaderboard, GET /api/gifters/leaderboard, GET /api/subscribers/leaderboard, POST /api/bits/sync, POST /api/subscribers/sync
-- **Events emitted**: `subscriber.expired` (twitch_id), `subscriber.gift` (cumulative_total, gifter_id, gifter_name, total), `subscriber.new` (display_name, is_gift, tier, twitch_id), `subscriber.resub` (cumulative_months, display_name, streak_months, tier, twitch_id), `viewer.bits.received` (bits, display_name, twitch_id)
+- **Events emitted**: `monetization.event.received` (amount_micros, channel_id, currency, display_amount, message, platform, raw, timestamp, type, user), `subscriber.expired` (twitch_id), `subscriber.gift` (cumulative_total, gifter_id, gifter_name, total), `subscriber.new` (display_name, is_gift, tier, twitch_id), `subscriber.resub` (cumulative_months, display_name, streak_months, tier, twitch_id), `viewer.bits.received` (bits, display_name, twitch_id)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, twitch
 - **Plugins**: subscribers.BitsLeaderboardPlugin, subscribers.BitsTrackerPlugin, subscribers.GiftersLeaderboardPlugin, subscribers.SubscribersLeaderboardPlugin, subscribers.SubscriptionTrackerPlugin, subscribers.SyncBitsPlugin, subscribers.SyncSubscribersPlugin
@@ -622,7 +646,7 @@ TTS Tool (tts):
 ### `timers`
 - **Table `timer`**: name (str), message (str), interval_minutes (int), min_lines (int), enabled (int), last_executed_at (any), created_at (any)
 - **Endpoints**: DELETE /api/timers/{id}, GET /api/timers, POST /api/timers, PUT /api/timers/{id}
-- **Events emitted**: `timer.created` (id, name), `timer.deleted` (id), `timer.updated` (id)
+- **Events emitted**: `chat.message.send` (channel_id, channel_name, message, platform), `timer.created` (id, name), `timer.deleted` (id), `timer.updated` (id)
 - **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: timers.CreateTimerPlugin, timers.DeleteTimerPlugin, timers.GetTimersPlugin, timers.TimerExecutorPlugin, timers.UpdateTimerPlugin
@@ -630,7 +654,7 @@ TTS Tool (tts):
 ### `tts_chat`
 - **Table `tts_voice_config`**: twitch_id (str), twitch_login (str), voice_id (str), voice_name (str), provider (str), created_at (str), updated_at (str), enabled (bool), host (str), port (int), default_voice (str), timeout_s (int), max_message_length (int), skip_commands (bool), skip_links (bool), sub_only (bool), cooldown_seconds (int), blocked_words (str)
 - **Endpoints**: DELETE /api/tts/user-voices/{twitch_login}, GET /api/tts/settings, GET /api/tts/user-voices, GET /api/tts/user-voices/{twitch_login}, GET /api/tts/voices, PUT /api/tts/settings, PUT /api/tts/user-voices, SSE /api/tts/overlay/stream
-- **Events emitted**: `tts.audio.ready` (audio_b64, text, username, voice_id)
+- **Events emitted**: `chat.message.send` (channel_id, channel_name, message, platform), `tts.audio.ready` (audio_b64, text, username, voice_id)
 - **Events consumed**: chat.message.received, tts.audio.ready
 - **Dependencies**: db, event_bus, http, logger, tts, twitch
 - **Plugins**: tts_chat.TtsListenerPlugin, tts_chat.TtsRedemptionPlugin, tts_chat.TtsRestoreConfigPlugin, tts_chat.TtsSettingsPlugin, tts_chat.TtsStreamPlugin, tts_chat.TtsUserVoicesPlugin, tts_chat.TtsVoiceCommandPlugin, tts_chat.TtsVoiceListPlugin
@@ -638,15 +662,15 @@ TTS Tool (tts):
 ### `twitch_auth`
 - **Table `twitch_token`**: twitch_id (str), login (str), display_name (str), access_token (str), refresh_token (str), scopes (str), expires_at (str), created_at (str), updated_at (str)
 - **Endpoints**: GET /api/auth/twitch, GET /api/auth/twitch/callback, GET /api/auth/twitch/scopes, GET /api/auth/twitch/status, POST /api/auth/twitch/logout
-- **Events emitted**: none
+- **Events emitted**: `platform.connection.updated` (capabilities, channel_id, channel_name, chat_read_enabled, chat_write_enabled, enabled, id, moderation_enabled, platform)
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, scheduler, twitch
 - **Plugins**: twitch_auth.RestoreSessionPlugin, twitch_auth.TwitchAuthStatusPlugin, twitch_auth.TwitchEventBridgePlugin, twitch_auth.TwitchLogoutPlugin, twitch_auth.TwitchOAuthCallbackPlugin, twitch_auth.TwitchOAuthStartPlugin, twitch_auth.TwitchScopesPlugin, twitch_auth.TwitchTokenRefreshPlugin
 
 ### `viewers`
-- **Table `viewer`**: twitch_id (str), login (str), display_name (str), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
-- **Endpoints**: DELETE /api/viewers/regulars/{twitch_id}, GET /api/viewers, GET /api/viewers/leaderboard, GET /api/viewers/regulars, GET /api/viewers/{login}, POST /api/viewers/regulars, POST /api/viewers/{twitch_id}/points
-- **Events emitted**: `viewer.points.awarded` (delta, display_name, twitch_id), `viewer.regular.added` (added_by, display_name, twitch_id), `viewer.regular.removed` (display_name, twitch_id)
+- **Table `viewer`**: global_user_id (str), platform (str), platform_user_id (str), login (Optional[str]), display_name (str), avatar_url (Optional[str]), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
+- **Endpoints**: DELETE /api/viewers/regulars/{global_user_id}, GET /api/viewers, GET /api/viewers/leaderboard, GET /api/viewers/regulars, GET /api/viewers/{query}, POST /api/viewers/regulars, POST /api/viewers/{global_user_id}/points
+- **Events emitted**: `chat.message.send` (message), `viewer.points.awarded` (delta, display_name, global_user_id, platform, platform_user_id), `viewer.regular.added` (added_by, display_name, global_user_id, platform, platform_user_id), `viewer.regular.removed` ()
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, twitch
 - **Plugins**: viewers.AddRegularPlugin, viewers.AdjustPointsPlugin, viewers.GetViewerPlugin, viewers.LeaderboardPlugin, viewers.ListRegularsPlugin, viewers.ListViewersPlugin, viewers.RegularsCommandPlugin, viewers.RemoveRegularPlugin, viewers.ViewerActivityPlugin
@@ -662,15 +686,15 @@ TTS Tool (tts):
 ### `youtube_auth`
 - **Table `youtube_token`**: channel_id (str), channel_title (str), access_token (str), refresh_token (Optional[str]), scopes (str), expires_at (str), created_at (Optional[str]), updated_at (Optional[str])
 - **Endpoints**: GET /api/auth/youtube, GET /api/auth/youtube/callback, GET /api/auth/youtube/status, POST /api/auth/youtube/logout
-- **Events emitted**: none
+- **Events emitted**: `platform.connection.updated` (capabilities, channel_id, channel_name, chat_read_enabled, chat_write_enabled, enabled, id, moderation_enabled, platform)
 - **Events consumed**: none
-- **Dependencies**: config, db, http, logger, youtube
+- **Dependencies**: config, db, event_bus, http, logger, youtube
 - **Plugins**: youtube_auth.RestoreYouTubeSessionPlugin, youtube_auth.YouTubeAuthStatusPlugin, youtube_auth.YouTubeLogoutPlugin, youtube_auth.YouTubeOAuthCallbackPlugin, youtube_auth.YouTubeOAuthStartPlugin, youtube_auth.YouTubeTokenRefreshPlugin
 
 ### `youtube_chat`
 - **Tables**: none
 - **Endpoints**: none
-- **Events emitted**: `chat.message.deleted` (message_id, platform), `youtube.superchat.received` (amount_micros, currency, display_amount, id, message, platform, user, user_id), `youtube.supersticker.received` (display_amount, id, message, platform, user, user_id)
+- **Events emitted**: `chat.command.received` (args, command), `chat.message.deleted` (channel_id, message_id, platform, raw, timestamp), `chat.message.received` (), `monetization.event.received` (amount_micros, currency, display_amount, type)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, logger, youtube
 - **Plugins**: youtube_chat.YouTubeChatPollerPlugin

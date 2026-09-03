@@ -5,7 +5,10 @@ from core.base_plugin import BasePlugin
 
 class ModLogEntry(BaseModel):
     id: int
-    twitch_id: str
+    platform: str = "twitch"
+    channel_id: Optional[str] = None
+    user_id: str = ""
+    twitch_id: Optional[str] = None
     display_name: str
     action: str
     reason: str
@@ -20,7 +23,7 @@ class ModLogResponse(BaseModel):
 
 
 class ModLogPlugin(BasePlugin):
-    """GET /moderation/log — Moderation action history. Query params: limit, offset, twitch_id."""
+    """GET /moderation/log — Moderation action history. Query params: limit, offset, platform, channel_id, user_id/twitch_id."""
 
     def __init__(self, http, db, logger):
         self.http = http
@@ -38,19 +41,28 @@ class ModLogPlugin(BasePlugin):
         try:
             limit = max(1, min(int(data.get("limit", 50)), 200))
             offset = int(data.get("offset", 0))
-            twitch_id = data.get("twitch_id")
+            platform = data.get("platform")
+            channel_id = data.get("channel_id")
+            user_id = data.get("user_id") or data.get("twitch_id")
 
-            if twitch_id:
-                rows = await self.db.query(
-                    """SELECT * FROM mod_log WHERE twitch_id=$1
-                       ORDER BY created_at DESC LIMIT $2 OFFSET $3""",
-                    [twitch_id, limit, offset],
-                )
-            else:
-                rows = await self.db.query(
-                    "SELECT * FROM mod_log ORDER BY created_at DESC LIMIT $1 OFFSET $2",
-                    [limit, offset],
-                )
+            clauses = []
+            params = []
+            if platform:
+                params.append(platform)
+                clauses.append(f"platform=${len(params)}")
+            if channel_id:
+                params.append(channel_id)
+                clauses.append(f"channel_id=${len(params)}")
+            if user_id:
+                params.append(user_id)
+                clauses.append(f"user_id=${len(params)}")
+
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            params.extend([limit, offset])
+            rows = await self.db.query(
+                f"SELECT * FROM mod_log{where} ORDER BY created_at DESC LIMIT ${len(params)-1} OFFSET ${len(params)}",
+                params,
+            )
             return {"success": True, "data": rows}
         except Exception as e:
             self.logger.error(f"[ModLog] {e}")

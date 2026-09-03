@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from core.base_plugin import BasePlugin
 
 
@@ -79,6 +80,25 @@ class SubscriptionTrackerPlugin(BasePlugin):
             ],
         )
 
+    async def _publish_monetization(self, event_type: str, twitch_id: str, login: str, display_name: str, tier: str | None = None, message: str = "", raw: dict | None = None):
+        await self.bus.publish("monetization.event.received", {
+            "platform": "twitch",
+            "channel_id": (raw or {}).get("broadcaster_user_id"),
+            "type": "sub",
+            "user": {
+                "id": f"twitch:{twitch_id}",
+                "platform_id": twitch_id,
+                "login": login,
+                "display_name": display_name,
+            },
+            "amount_micros": None,
+            "currency": None,
+            "display_amount": tier,
+            "message": message,
+            "raw": {"event_type": event_type, **(raw or {})},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
     # ── Event handlers ────────────────────────────────────────────────────────
 
     async def _on_subscribe(self, event: dict):
@@ -131,6 +151,7 @@ class SubscriptionTrackerPlugin(BasePlugin):
                 "twitch_id": twitch_id, "display_name": display_name,
                 "tier": tier, "is_gift": is_gift,
             })
+            await self._publish_monetization(event_type, twitch_id, login, display_name, tier, raw=event)
         except Exception as e:
             self.logger.error(f"[SubscriptionTracker] subscribe: {e}")
 
@@ -181,6 +202,7 @@ class SubscriptionTrackerPlugin(BasePlugin):
                 "tier": tier, "cumulative_months": cumulative_months,
                 "streak_months": streak_months,
             })
+            await self._publish_monetization(event_type, twitch_id, login, display_name, tier, raw=event)
         except Exception as e:
             self.logger.error(f"[SubscriptionTracker] resub: {e}")
 
@@ -249,6 +271,7 @@ class SubscriptionTrackerPlugin(BasePlugin):
                 "gifter_id": gifter_id, "gifter_name": gifter_name,
                 "total": total, "cumulative_total": cumulative_total,
             })
+            await self._publish_monetization("gift", gifter_id, gifter_login, gifter_name, message=f"Gifted {total} subscriptions", raw=event)
         except Exception as e:
             self.logger.error(f"[SubscriptionTracker] sub_gift: {e}")
 

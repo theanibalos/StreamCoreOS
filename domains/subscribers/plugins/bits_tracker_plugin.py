@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from core.base_plugin import BasePlugin
 
 
@@ -38,6 +39,7 @@ class BitsTrackerPlugin(BasePlugin):
             event.get("user_login", ""),
             event.get("user_name", ""),
             event.get("bits", 0),
+            event.get("broadcaster_user_id"),
         )
 
     async def _on_bits_use(self, event: dict):
@@ -49,9 +51,10 @@ class BitsTrackerPlugin(BasePlugin):
             event.get("user_login", ""),
             event.get("user_name", ""),
             event.get("bits", 0),
+            event.get("broadcaster_user_id"),
         )
 
-    async def _record(self, twitch_id: str, login: str, display_name: str, bits: int):
+    async def _record(self, twitch_id: str, login: str, display_name: str, bits: int, channel_id: str | None = None):
         if not twitch_id or bits <= 0:
             return
         try:
@@ -69,6 +72,23 @@ class BitsTrackerPlugin(BasePlugin):
                 "twitch_id": twitch_id,
                 "display_name": display_name,
                 "bits": bits,
+            })
+            await self.bus.publish("monetization.event.received", {
+                "platform": "twitch",
+                "channel_id": channel_id,
+                "type": "bits",
+                "user": {
+                    "id": f"twitch:{twitch_id}",
+                    "platform_id": twitch_id,
+                    "login": login,
+                    "display_name": display_name,
+                },
+                "amount_micros": None,
+                "currency": None,
+                "display_amount": f"{bits} bits",
+                "message": "",
+                "raw": {"bits": bits},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
         except Exception as e:
             self.logger.error(f"[BitsTracker] {e}")
