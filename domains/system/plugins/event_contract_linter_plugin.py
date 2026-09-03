@@ -2,7 +2,7 @@ import ast
 import os
 from typing import Optional
 from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 EXCLUDED_PREFIXES = ("_dlq.", "_reply.")
 

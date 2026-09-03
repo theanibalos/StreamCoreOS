@@ -1,5 +1,5 @@
 import time
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 MAX_RESPONSE_CHARS = 450  # Twitch chat hard limit is 500
 

@@ -77,7 +77,7 @@ import asyncio
 import aio_pika
 from aio_pika.abc import AbstractRobustConnection, AbstractRobustChannel, AbstractExchange
 from typing import Callable, Optional
-from core.base_tool import ToolUnavailableError
+from microcoreos.base_tool import ToolUnavailableError
 from tools.event_bus.event_bus_tool import EventBusDriver
 
 

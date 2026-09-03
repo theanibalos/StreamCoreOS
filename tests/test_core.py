@@ -4,10 +4,10 @@ These tests provide confidence without altering the framework's explicit philoso
 """
 import threading
 import pytest
-from core.container import Container
-from core.registry import Registry
-from core.base_plugin import BasePlugin
-from core.base_tool import BaseTool
+from microcoreos.container import Container
+from microcoreos.registry import Registry
+from microcoreos.base_plugin import BasePlugin
+from microcoreos.base_tool import BaseTool
 
 
 # ─── Fixtures ──────────────────────────────────────────────
@@ -45,7 +45,7 @@ class TestContainer:
         tool = FakeTool()
         container.register(tool)
         
-        from core.container import ToolProxy
+        from microcoreos.container import ToolProxy
         proxy = container.get("fake_tool")
         assert isinstance(proxy, ToolProxy)
         assert proxy._tool is tool

@@ -1,11 +1,11 @@
 import time
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class TestAIProviderConfigRequest(BaseModel):
-    provider_id:       Optional[int] = None  # if set and api_key is blank, falls back to the stored key
+    provider_id:       Optional[int] = Field(default=None, description="ID del proveedor para reutilizar API key")
     provider:          str  = Field(min_length=1, max_length=50)
     endpoint_url:      str  = Field(min_length=1, max_length=500)
     model:             str  = Field(min_length=1, max_length=100)

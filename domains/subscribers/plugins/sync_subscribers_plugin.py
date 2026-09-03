@@ -1,4 +1,16 @@
-from core.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel
+from microcoreos.base_plugin import BasePlugin
+
+
+class SyncSubscribersData(BaseModel):
+    synced: int
+
+
+class SyncSubscribersResponse(BaseModel):
+    success: bool
+    data: Optional[SyncSubscribersData] = None
+    error: Optional[str] = None
 
 
 class SyncSubscribersPlugin(BasePlugin):
@@ -19,6 +31,7 @@ class SyncSubscribersPlugin(BasePlugin):
         self.http.add_endpoint(
             "/api/subscribers/sync", "POST", self.execute,
             tags=["Subscribers"],
+            response_model=SyncSubscribersResponse,
         )
 
     async def execute(self, data: dict, context=None):

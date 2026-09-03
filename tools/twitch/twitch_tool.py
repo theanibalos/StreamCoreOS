@@ -29,7 +29,7 @@ ENV VARS (required):
 import os
 import secrets
 
-from core.base_tool import BaseTool
+from microcoreos.base_tool import BaseTool
 from tools.twitch._api import TwitchApiClient
 from tools.twitch._eventsub import TwitchEventSubClient
 

@@ -2,7 +2,7 @@ import ast
 import os
 import re
 import inspect
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class ArchitectureLinterPlugin(BasePlugin):

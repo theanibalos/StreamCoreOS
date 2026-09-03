@@ -1,14 +1,14 @@
 from typing import Optional
-from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from pydantic import BaseModel, Field
+from microcoreos.base_plugin import BasePlugin
 
 
 class UnbanRequest(BaseModel):
-    platform: str = "twitch"
-    channel_id: Optional[str] = None
-    user_id: Optional[str] = None
-    twitch_id: Optional[str] = None
-    display_name: Optional[str] = None
+    platform: str = Field(default="twitch", min_length=1)
+    channel_id: Optional[str] = Field(default=None)
+    user_id: Optional[str] = Field(default=None)
+    twitch_id: Optional[str] = Field(default=None)
+    display_name: Optional[str] = Field(default=None)
 
 
 class UnbanResponse(BaseModel):

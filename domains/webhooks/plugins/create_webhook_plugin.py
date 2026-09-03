@@ -1,18 +1,18 @@
 from typing import Optional, List
-from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from pydantic import BaseModel, Field
+from microcoreos.base_plugin import BasePlugin
 
 class CreateWebhookRequest(BaseModel):
-    name: str
-    url: str
-    method: str = "POST"
-    headers: Optional[str] = None
-    body_template: Optional[str] = None
-    trigger_type: str
-    trigger_value: str
-    filter_field: Optional[str] = None
-    filter_value: Optional[str] = None
-    enabled: bool = True
+    name: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    method: str = Field(default="POST", min_length=1)
+    headers: Optional[str] = Field(default=None)
+    body_template: Optional[str] = Field(default=None)
+    trigger_type: str = Field(min_length=1)
+    trigger_value: str = Field(min_length=1)
+    filter_field: Optional[str] = Field(default=None)
+    filter_value: Optional[str] = Field(default=None)
+    enabled: bool = Field(default=True)
 
 class WebhookData(BaseModel):
     id: int

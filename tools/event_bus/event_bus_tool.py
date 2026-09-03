@@ -29,7 +29,9 @@ CONSUMER IDENTITY (how replicas are recognized — Elastic Monolith core rule):
     distributed — an audit consumer reads the topics/streams directly.)
 
 UNIVERSAL HINTS (kwargs):
-- key: String. Strict ordering (Kafka/SQS).
+- key: String. The ordering unit: same-key publishes reach the transport
+  in call order, on every driver. Across keys nothing is promised (Kafka
+  orders per partition, SQS FIFO per MessageGroupId — same shape).
 - priority: Integer (1-10). Importance (RabbitMQ).
 - delay: Integer (seconds). Delivery schedule.
 - ttl: Float (seconds). Message expiration (Broker-side).
@@ -48,15 +50,14 @@ To swap to Kafka/RabbitMQ/Redis Streams:
     2. publish() is pure fire-and-forget: serialize the EventEnvelope
        (envelope.model_dump_json()) and hand it to the broker. Map hints:
        key → partition key (Kafka), priority → message priority (RabbitMQ),
-       ttl → broker-side expiration. For delay, declare a capability claim:
-       `capabilities = {"delay": "native", ...}` means YOUR publish()
-       persists the delayed envelope broker-side (crash-safe); leave the
-       default "in_bus" and the Bus sleeps the delay for you
+       ttl → broker-side expiration. For delay, declare a capability claim
+       (Issue 30): `capabilities = {"delay": "native", ...}` means YOUR
+       publish() persists the delayed envelope broker-side (crash-safe);
+       leave the default "in_bus" and the Bus sleeps the delay for you
        (publisher-memory only — a crash during the wait loses the event).
     3. On message arrival, deserialize with self._envelope_cls (injected by
-       the Bus via bind() — do NOT import EventEnvelope yourself: the Kernel
-       loads modules by path, so an imported copy is a DIFFERENT class and
-       Pydantic tracing would reject it) and call
+       the Bus via bind(), so a Bus constructed with a custom envelope class
+       still validates against its own) and call
        self._deliver_hook(envelope, callback) — the Bus takes
        over from there (retries, DLQ, tracing all still work).
     4. Install it the same way tools are swapped — file placement, no code
@@ -64,7 +65,7 @@ To swap to Kafka/RabbitMQ/Redis Streams:
        EVENT_BUS_DRIVER={name}. Discovery is generic (ready-made drivers ship
        in extras/available_tools/, e.g. rabbitmq). Explicit injection also
        works: EventBusTool(driver=KafkaDriver()).
-    5. It MUST pass the parity suite: tests/tools/test_event_bus_broker_parity.py.
+    5. It MUST pass the parity suite: tests/tools/event_bus/test_event_bus_broker_parity.py.
 
 Plugins are unaffected: same envelope, same API, same semantics.
 """
@@ -76,151 +77,18 @@ import asyncio
 import inspect
 import os
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional, Dict, List, Tuple, Set
-from pydantic import BaseModel, Field, ConfigDict
-from starlette.concurrency import run_in_threadpool
-from core.base_tool import BaseTool
-from core.context import current_event_id_var, current_identity_var
+from typing import Callable, Optional, Dict, List, Tuple, Set
+from microcoreos import BaseTool
+from microcoreos import current_event_id_var, current_identity_var
+from tools.event_bus.envelope import EventEnvelope, TraceNode, TraceRecord, SubOptions  # noqa: F401 — re-export
+from tools.event_bus.drivers import EventBusDriver, InProcessDriver
 
-
-class EventEnvelope(BaseModel):
-    """The Universal Contract for any message traveling through the system."""
-    model_config = ConfigDict(frozen=True)
-
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    event: str
-    payload: Dict[str, Any]
-    emitter: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    
-    parent_id: Optional[str] = None
-    correlation_id: Optional[str] = None
-    reply_to: Optional[str] = None
-    
-    key: Optional[str] = None       
-    priority: Optional[int] = None  
-    delay: Optional[int] = None     
-    ttl: Optional[float] = None     
-    headers: Dict[str, Any] = Field(default_factory=dict)
-
-
-class TraceNode(BaseModel):
-    """Rich record for observability, capturing both publication and delivery events."""
-    kind: str  # "published" or "delivered"
-    envelope: EventEnvelope
-    subscribers: List[str] = Field(default_factory=list)
-    success: bool = True
-    error: Optional[str] = None
-    attempts: Optional[int] = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class TraceRecord(TraceNode):
-    """Legacy compatibility alias for TraceNode."""
-    pass
-
-
-class SubOptions(BaseModel):
-    """Configuration for a specific subscription."""
-    retries: int = 0
-    backoff: float = 0.5
-
-
-class EventBusDriver:
-    """Interface for all transport implementations (Translators)."""
-
-    # Capability claims. The contract is semantic; the implementation is
-    # free: a driver may implement a Bus semantic with its broker's native
-    # machinery — as long as the parity suite still passes. "in_bus" = the
-    # Bus runs the universal software fallback; "native" = the driver takes
-    # over. Today only "delay" switches behavior: a native delay is
-    # broker-persisted and SURVIVES a publisher crash, while the in_bus
-    # fallback sleeps in the publisher's memory. "retries" and "dlq" stay
-    # in_bus by design (they are already crash-safe: drivers ack only after
-    # the handler + retries finish, so a dead replica's message redelivers).
-    capabilities: Dict[str, str] = {"delay": "in_bus", "retries": "in_bus", "dlq": "in_bus"}
-
-    async def setup(self): pass
-    def bind(self, deliver_hook: Callable, envelope_cls: Optional[type] = None):
-        """Injected by the Bus to handle message delivery.
-
-        envelope_cls is the Bus's OWN EventEnvelope class: drivers must
-        deserialize with it (self._envelope_cls.model_validate_json) instead
-        of importing EventEnvelope, so envelopes always validate against the
-        exact class the Bus uses for tracing.
-        """
-        self._deliver_hook = deliver_hook
-        self._envelope_cls = envelope_cls or EventEnvelope
-
-    async def publish(self, envelope: EventEnvelope) -> None: 
-        """Pure fire-and-forget transport. Returns nothing."""
-        raise NotImplementedError()
-
-    async def subscribe(self, event_name: str, group: Optional[str], callback: Callable): raise NotImplementedError()
-    async def unsubscribe(self, event_name: str, callback: Callable): raise NotImplementedError()
-    async def unsubscribe_all(self, callback: Callable): raise NotImplementedError()
-    def get_status(self, name_resolver: Callable) -> dict: return {"status": "abstract"}
-    async def shutdown(self): pass
-
-
-class InProcessDriver(EventBusDriver):
-    """Memory transport. Simulates groups and handles internal delays."""
-    def __init__(self):
-        self._groups: Dict[str, Dict[Optional[str], List[Callable]]] = {}
-        self._indices: Dict[str, Dict[Optional[str], int]] = {}
-        self._lock = asyncio.Lock()
-
-    async def publish(self, envelope: EventEnvelope) -> None:
-        # Delay is handled by the Bus fallback (capabilities: delay=in_bus).
-        # 1. Resolve Targets (Logic moved to Driver side)
-        targets = []
-        async with self._lock:
-            if envelope.event in self._groups:
-                for group_name, callbacks in self._groups[envelope.event].items():
-                    if not callbacks: continue
-                    if group_name is None:
-                        targets.extend(callbacks)
-                    else:
-                        idx = self._indices[envelope.event].get(group_name, 0)
-                        targets.append(callbacks[idx % len(callbacks)])
-                        self._indices[envelope.event][group_name] = (idx + 1) % len(callbacks)
-
-        # 2. Trigger Delivery Hook (Inversion of Control)
-        for cb in targets:
-            # We don't await here; the driver schedules the delivery
-            asyncio.create_task(self._deliver_hook(envelope, cb))
-
-    async def subscribe(self, event_name: str, group: Optional[str], callback: Callable):
-        async with self._lock:
-            self._groups.setdefault(event_name, {}).setdefault(group, []).append(callback)
-            self._indices.setdefault(event_name, {}).setdefault(group, 0)
-
-    async def unsubscribe(self, event_name: str, callback: Callable):
-        async with self._lock:
-            self._remove_callback(event_name, callback)
-
-    async def unsubscribe_all(self, callback: Callable):
-        async with self._lock:
-            for event in list(self._groups.keys()):
-                self._remove_callback(event, callback)
-
-    def _remove_callback(self, event_name: str, callback: Callable):
-        group_map = self._groups.get(event_name)
-        if not group_map: return
-        for g_name in list(group_map.keys()):
-            group_map[g_name] = [cb for cb in group_map[g_name] if cb != callback]
-            if not group_map[g_name]:
-                del group_map[g_name]
-                if event_name in self._indices and g_name in self._indices[event_name]:
-                    del self._indices[event_name][g_name]
-        if not group_map:
-            del self._groups[event_name]
-
-    def get_status(self, name_resolver: Callable) -> dict:
-        return {
-            event: [name_resolver(cb) for g in groups.values() for cb in g] 
-            for event, groups in self._groups.items()
-        }
+# EventEnvelope, TraceNode, TraceRecord, SubOptions live in envelope.py and
+# EventBusDriver / InProcessDriver live in drivers.py — re-exported above so
+# `from tools.event_bus.event_bus_tool import EventBusTool, EventEnvelope,
+# EventBusDriver, InProcessDriver` keeps working for every existing caller
+# (including the sqlite/redis/kafka/rabbitmq drivers, which import
+# EventBusDriver from THIS module by that exact path).
 
 
 class EventBusTool(BaseTool):
@@ -234,7 +102,15 @@ class EventBusTool(BaseTool):
         self._failure_listeners: list = []
         self._consecutive_failures: dict[tuple[str, str], int] = {}
         self._pending_tasks: Set[asyncio.Task] = set()
+        # Ordering unit → the last publish handed to the transport for it.
+        # See publish(): this is what keeps same-key publishes in call order.
+        self._publish_chain: Dict[str, asyncio.Task] = {}
         self._sub_options: Dict[Tuple[str, Callable], SubOptions] = {}
+        # Chaos/ops pause (Issue 34): owner identities ("domain.Class", or a
+        # bare domain prefix) whose deliveries are held. Deliberately NOT
+        # public API (the contract is frozen — Issue 36): mutated only by the
+        # chaos extras plugin via its sanctioned raw-tool introspection.
+        self._paused_owners: Set[str] = set()
 
         # Bind the delivery hook (and OUR envelope class — see EventBusDriver.bind)
         self._driver.bind(self._deliver, EventEnvelope)
@@ -264,10 +140,8 @@ class EventBusTool(BaseTool):
 
         module = importlib.import_module(f"tools.event_bus.{name}_driver")
         for obj in vars(module).values():
-            # Base matched by NAME: the Kernel loads this file by path, so the
-            # driver's imported EventBusDriver may be a different class object.
             if (isinstance(obj, type) and obj.__module__ == module.__name__
-                    and any(b.__name__ == "EventBusDriver" for b in obj.__mro__[1:])):
+                    and issubclass(obj, EventBusDriver) and obj is not EventBusDriver):
                 return obj()
         raise ValueError(
             f"tools/event_bus/{name}_driver.py defines no EventBusDriver subclass."
@@ -297,8 +171,9 @@ class EventBusTool(BaseTool):
         - add_listener(callback): Sink for all events (record: dict).
         - add_failure_listener(callback): Sink for errors (record: dict).
         
-        CRITICAL: Subscribing callbacks receive an 'EventEnvelope' object.
-        Example: async def on_event(self, event: EventEnvelope): print(event.payload)
+        CRITICAL: Subscribing callbacks receive the event envelope as their single
+        argument — read event.payload. Leave the parameter untyped (no annotation,
+        no import needed): async def on_event(self, event): print(event.payload)
         
         RETRIES & IDEMPOTENCY:
         - If 'retries' > 0, the handler will be re-executed on failure with exponential backoff.
@@ -327,14 +202,6 @@ class EventBusTool(BaseTool):
         - Each auto-unsubscribe publishes 'system.subscriber.dropped'
           (payload: event, subscriber, error, consecutive_failures) so the drop
           is observable — subscribe to it for alerting/monitoring.
-
-        WELL-KNOWN EVENTS:
-        - "overlay.vars.set" — publish a flat dict of variables to push them to all
-          live overlays (OBS browser sources). Persisted in the overlay_vars table,
-          broadcast instantly via SSE, readable in overlay JS as data.stats[key].
-          Example: await self.bus.publish("overlay.vars.set", {{"juego.actual": "Elden Ring"}})
-          Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
-          reads the variables from event.payload.
 
         ACTIVE TRANSPORT: {driver} — capability claims: {caps}
         ("native" = the broker implements it, crash-safe; "in_bus" = software
@@ -391,13 +258,56 @@ class EventBusTool(BaseTool):
         
         print(f"[EventBus] 📣 {envelope.event} [{envelope.id[:8]}]")
 
-        # 2. Hand over to Driver (Fire and Forget)
-        task = asyncio.create_task(self._transport_publish(envelope))
+        # 2. Hand over to Driver — fire and forget for the CALLER, ordered
+        #    for the transport.
+        #
+        #    Publication stays decoupled: publish() returns without waiting for
+        #    the broker. What must not leak out of that is the ORDER. These
+        #    hand-offs used to race each other, so the order messages reached
+        #    the transport was the order threads happened to win in — and a
+        #    durable queue then stored, and delivered, that scrambled order
+        #    faithfully. Three publishes in a row could arrive 1, 0, 2.
+        #
+        #    Each publish now chains onto the previous one for its ordering
+        #    unit. The chain is built HERE, synchronously on the event loop,
+        #    which is the one point in this path where order is deterministic —
+        #    not left to task start order or lock fairness.
+        #
+        #    The unit is the partition key, falling back to the event name:
+        #    the guarantee every broker actually makes (Kafka orders per
+        #    partition, SQS FIFO per MessageGroupId, RabbitMQ per queue).
+        #    Different keys still publish in parallel; only same-key ones queue.
+        unit = envelope.key or envelope.event
+        previous = self._publish_chain.get(unit)
+        task = asyncio.create_task(self._transport_publish_after(previous, envelope))
+        self._publish_chain[unit] = task
         self._pending_tasks.add(task)
         task.add_done_callback(self._pending_tasks.discard)
+        task.add_done_callback(lambda t, u=unit: self._release_chain(u, t))
+
+    def _release_chain(self, unit: str, task: asyncio.Task) -> None:
+        """Drop a finished chain tail so `_publish_chain` cannot grow forever.
+
+        Only while it IS still the tail: if a later publish under the same unit
+        has already chained onto this task, removing it here would let the next
+        one start unordered.
+        """
+        if self._publish_chain.get(unit) is task:
+            del self._publish_chain[unit]
+
+    async def _transport_publish_after(self, previous, envelope: EventEnvelope) -> None:
+        if previous is not None:
+            # Wait for the predecessor to reach the transport, but never inherit
+            # its fate: one publish failing must not silently drop every later
+            # message under the same key.
+            try:
+                await previous
+            except Exception:
+                pass
+        await self._transport_publish(envelope)
 
     async def _transport_publish(self, envelope: EventEnvelope) -> None:
-        """Universal software fallbacks + hand-off to the driver.
+        """Universal software fallbacks (Issue 30) + hand-off to the driver.
 
         The Bus sleeps the delay ONLY when the driver does not claim it
         natively — a native delay is broker-persisted and survives a
@@ -440,6 +350,18 @@ class EventBusTool(BaseTool):
     async def _do_deliver(self, envelope: EventEnvelope, callback: Callable):
         sub_name = self._get_name(callback)
 
+        # Chaos/ops pause (Issue 34): hold the delivery while this
+        # subscriber's owner is paused — BEFORE the TTL check, so a message
+        # held past its TTL still expires honestly on resume. Drivers ack
+        # only after this task finishes, so a durable transport's reader
+        # stops claiming further messages: the backlog accumulates
+        # BROKER-side and drains on resume. (In-process: deliveries pile up
+        # as pending tasks in this process' memory — gone on a crash, like
+        # everything in-process.)
+        while any(sub_name == p or sub_name.startswith(p + ".")
+                  for p in self._paused_owners):
+            await asyncio.sleep(0.2)
+
         # Feature 1: TTL Check
         if envelope.ttl is not None:
             age = (datetime.now(timezone.utc) - envelope.timestamp).total_seconds()
@@ -469,7 +391,11 @@ class EventBusTool(BaseTool):
                     if inspect.iscoroutinefunction(callback):
                         result = await callback(envelope)
                     else:
-                        result = await run_in_threadpool(callback, envelope)
+                        # stdlib, not starlette: the bus must not depend on
+                        # the HTTP tool's framework — they are swapped
+                        # separately. to_thread copies the context, which
+                        # the event-id and identity vars ride on.
+                        result = await asyncio.to_thread(callback, envelope)
 
                     if envelope.reply_to and result is not None:
                         await self.publish(

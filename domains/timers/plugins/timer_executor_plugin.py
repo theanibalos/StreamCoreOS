@@ -1,6 +1,6 @@
 import time
 from datetime import datetime, timedelta, timezone
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # Key for tracking chat line timestamps in the state tool
 MSG_LOG_KEY = "chat_message_log"

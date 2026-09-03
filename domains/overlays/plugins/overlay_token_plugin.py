@@ -1,7 +1,7 @@
 import secrets
 from typing import Optional, Any
 from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # Persisted in the overlay_feed_token table (migration 003), single row id=1.
 # The feed reads the same row on every connect. Both plugins compose through

@@ -1,7 +1,7 @@
 import pytest
-from core.container import ToolProxy, Container
-from core.base_tool import ToolUnavailableError
-from core.registry import Registry
+from microcoreos.container import ToolProxy, Container
+from microcoreos.base_tool import ToolUnavailableError
+from microcoreos.registry import Registry
 
 pytestmark = pytest.mark.anyio
 

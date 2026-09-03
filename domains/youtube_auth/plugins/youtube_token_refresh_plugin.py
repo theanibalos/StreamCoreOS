@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class YouTubeTokenRefreshPlugin(BasePlugin):

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 _DEFAULT_PROMPT = "You are a helpful Twitch chat assistant. Be concise and reply in under 40 words."

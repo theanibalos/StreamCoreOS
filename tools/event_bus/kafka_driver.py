@@ -94,7 +94,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.errors import KafkaError, TopicAlreadyExistsError, for_code
 
-from core.base_tool import ToolUnavailableError
+from microcoreos.base_tool import ToolUnavailableError
 from tools.event_bus.event_bus_tool import EventBusDriver
 
 

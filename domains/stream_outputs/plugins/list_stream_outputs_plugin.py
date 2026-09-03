@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class StreamOutputData(BaseModel):
@@ -20,12 +20,6 @@ class StreamOutputData(BaseModel):
     updated_at: str
 
 
-class ListStreamOutputsResponse(BaseModel):
-    success: bool
-    data: Optional[list[StreamOutputData]] = None
-    error: Optional[str] = None
-
-
 def serialize_stream_output(row: dict) -> dict:
     secret = row.get("stream_key_secret") or ""
     return {
@@ -39,10 +33,16 @@ def serialize_stream_output(row: dict) -> dict:
         "stream_key_configured": bool(secret),
         "stream_key_preview": secret[-4:] if secret else None,
         "status": row["status"],
-        "settings": json.loads(row.get("settings") or "{}"),
+        "settings": json.loads(row.get("settings") or "{}") if isinstance(row.get("settings"), str) else (row.get("settings") or {}),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+class ListStreamOutputsResponse(BaseModel):
+    success: bool
+    data: Optional[list[StreamOutputData]] = None
+    error: Optional[str] = None
 
 
 class ListStreamOutputsPlugin(BasePlugin):

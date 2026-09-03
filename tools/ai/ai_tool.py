@@ -1,7 +1,7 @@
 import json
 import re
 import httpx
-from core.base_tool import BaseTool
+from microcoreos.base_tool import BaseTool
 
 
 # ── Structured error ──────────────────────────────────────────────────────────
@@ -513,6 +513,8 @@ AI Tool (ai):
         - is_configured() -> bool
         - get_config() -> dict | None  (never exposes api_key)
         - load_config(config: dict)
+        - patch_config(fields: dict)
+        - await test_config(config: dict, max_tokens?) -> str
         - get_chat_cooldown() -> int
         - get_chat_personality() -> dict
     - LOCAL ENDPOINTS:

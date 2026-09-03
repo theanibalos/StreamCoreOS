@@ -1,5 +1,5 @@
 import re
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # Cache namespaces for data loaded from DB
 _NS = "moderation_rules"

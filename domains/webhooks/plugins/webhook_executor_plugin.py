@@ -1,7 +1,7 @@
 import json
 import asyncio
 import httpx
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 class WebhookExecutorPlugin(BasePlugin):
     """

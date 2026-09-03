@@ -38,7 +38,7 @@ from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class ScheduleOneShotRequest(BaseModel):

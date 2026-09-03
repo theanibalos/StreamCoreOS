@@ -1,6 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 VALID_TYPES = {"word_filter", "link_filter", "caps_filter", "spam_filter", "ai_filter"}
 VALID_ACTIONS = {"timeout", "ban", "delete"}

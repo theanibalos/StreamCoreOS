@@ -2,7 +2,7 @@ import sys
 import signal
 import asyncio
 from dotenv import load_dotenv
-from core.kernel import Kernel
+from microcoreos.kernel import Kernel
 
 async def _main():
     load_dotenv()

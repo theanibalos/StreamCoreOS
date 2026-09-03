@@ -26,7 +26,7 @@ These are the most frequent errors. Check these first before writing any code.
 1. **`main.py` is sacred** — Never modify. It only boots the Kernel.
 2. **No hardcoded imports** — Plugins request tools by `__init__` parameter name matching the tool's `name` property.
 3. **No framework patterns** — No Routers, Controllers, or Services. Only Tools (infrastructure) and Plugins (business logic).
-4. **No cross-domain imports** — Domains communicate exclusively via `event_bus`.
+4. **No cross-domain Python imports** — No `from domains.X import ...`. Async/reactive inter-domain flows use `event_bus`. As a modular monolith, database tables are shared in SQLite and queryable directly via `db`.
 5. **Tools never import other tools** — Move cross-tool orchestration to a plugin.
 6. **No logic in `__init__` or `setup()`** — DI and resource allocation only.
 7. **`async def` for I/O, `def` for CPU** — Kernel auto-threads sync methods. Never `time.sleep()` in async.
@@ -56,7 +56,7 @@ domains/{name}/
   plugins/                ← 1 file = 1 feature
 ```
 
-*Domains MUST NOT import from each other.*
+*Domains MUST NOT import Python code/models from each other.*
 
 ### Entity vs Request Schema — where each lives
 
@@ -109,7 +109,7 @@ Never use bare `str`, `int`, or `float` fields without constraints in a request 
 ```python
 from typing import Optional
 from pydantic import BaseModel, Field, EmailStr
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # ── Request schema lives HERE, not in models/ ──────────────
 class CreateProductRequest(BaseModel):
@@ -219,7 +219,7 @@ The plugin handles `ServiceUnavailableError` like any other exception and return
 **Never add a global timeout in the kernel or HTTP layer** — long operations (video processing, bulk exports) are legitimate. Each tool is responsible for its own timeouts.
 
 ```python
-from core.base_tool import BaseTool
+from microcoreos.base_tool import BaseTool
 
 class MyServiceTool(BaseTool):
     @property

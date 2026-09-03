@@ -1,12 +1,12 @@
 import json
 from typing import Optional, Any
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class CreateOverlayRequest(BaseModel):
     name: str = Field(..., min_length=1)
-    config: Optional[Any] = None
+    config: Optional[Any] = Field(default=None)
 
 
 class OverlayData(BaseModel):

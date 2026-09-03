@@ -4,7 +4,7 @@ import secrets
 import time
 from collections import deque
 from typing import Optional
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # ── Contract constants (see StreamCoreOS-Front/OVERLAY_FEED_CONTRACT.md) ──────
 _CONTRACT_VERSION = 1

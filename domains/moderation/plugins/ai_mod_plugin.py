@@ -1,4 +1,4 @@
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 _NS = "ai_mod_rules"
 _REGULARS_NS = "ai_mod_regulars"

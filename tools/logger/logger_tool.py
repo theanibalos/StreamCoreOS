@@ -25,10 +25,10 @@ REPLACEMENT STANDARD (plugins unaffected):
        Sink failures must be swallowed (never let observability crash business).
 """
 
-from core.base_tool import BaseTool
-from core.context import current_identity_var
+from microcoreos import BaseTool
+from microcoreos import current_identity_var, current_event_id_var
 import datetime
-from typing import List, Callable
+from typing import List, Callable, Optional
 
 class LoggerTool(BaseTool):
     """
@@ -69,13 +69,29 @@ class LoggerTool(BaseTool):
                 Use it to attribute errors to specific plugins for health tracking.
         """
 
+    def _get_current_trace_id(self) -> Optional[str]:
+        """Extracts current trace_id from OpenTelemetry or current_event_id_var."""
+        try:
+            from opentelemetry import trace
+            span = trace.get_current_span()
+            ctx = span.get_span_context()
+            if ctx.is_valid:
+                return format(ctx.trace_id, "032x")
+        except Exception:
+            pass
+        return current_event_id_var.get()
+
     def _broadcast_to_sinks(self, level: str, message: str):
         """Sends the log to all registered observers."""
         timestamp = datetime.datetime.now().isoformat()
         identity = current_identity_var.get()
+        trace_id = self._get_current_trace_id()
         for sink in self._sinks:
             try:
-                sink(level, message, timestamp, identity)
+                try:
+                    sink(level, message, timestamp, identity, trace_id)
+                except TypeError:
+                    sink(level, message, timestamp, identity)
             except Exception as e:
                 # We use print here to avoid recursion if a sink fails
                 print(f"[Logger] Sink Failure: {e}")

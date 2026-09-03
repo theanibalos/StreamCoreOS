@@ -2,7 +2,7 @@ import json
 import time
 from typing import Optional
 from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class TestAIProviderResponse(BaseModel):

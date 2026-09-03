@@ -26,7 +26,7 @@ PLACEHOLDERS: PostgreSQL uses $1, $2, $3... (NOT '?' like SQLite).
 import os
 import asyncio
 import asyncpg
-from core.base_tool import BaseTool
+from microcoreos.base_tool import BaseTool
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -1,4 +1,12 @@
-from core.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel
+from microcoreos.base_plugin import BasePlugin
+
+
+class TwitchLogoutResponse(BaseModel):
+    success: bool
+    data: Optional[dict] = None
+    error: Optional[str] = None
 
 
 class TwitchLogoutPlugin(BasePlugin):
@@ -21,6 +29,7 @@ class TwitchLogoutPlugin(BasePlugin):
             "POST",
             self.execute,
             tags=["Twitch Auth"],
+            response_model=TwitchLogoutResponse,
         )
 
     async def execute(self, data: dict, context=None):

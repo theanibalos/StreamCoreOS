@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class YouTubeOAuthCallbackResponse(BaseModel):

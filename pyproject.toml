@@ -1,28 +1,22 @@
 [project]
-name = "microcoreos"
+name = "streamcoreos"
 version = "0.1.0"
-description = "Atomic Microkernel Architecture optimized for AI-Driven Development"
+description = "StreamCoreOS built on MicroCoreOS"
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "aiosqlite>=0.20.0",
-    "apscheduler>=3.10,<4",
-    "asyncpg>=0.29.0",
-    "bcrypt>=3.2.2",
-    "fastapi>=0.115.0",
-    "pydantic[email]>=2.10.0",
-    "pyjwt>=2.9.0",
-    "python-dotenv>=1.0.0",
-    "uvicorn>=0.30.0",
+    "microcoreos[all]",
     "httpx>=0.27.0",
-    "websockets>=13.0",
+    "grpcio>=1.68.0",
+    "grpcio-tools>=1.68.0",
+    "protobuf>=5.29.0",
     "edge-tts>=7.2.8",
-    "python-multipart>=0.0.29",
-    "redis>=8.0.1",
-    "aio-pika>=9.4",
-    "aiokafka>=0.14.0",
+    "pyrtmp>=0.3.1",
 ]
+
+[tool.uv.sources]
+microcoreos = { path = "/home/anibalos/Documents/Original/MicroCoreOS", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

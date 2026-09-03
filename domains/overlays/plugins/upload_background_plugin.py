@@ -1,6 +1,8 @@
 import os
 import uuid
-from core.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel
+from microcoreos.base_plugin import BasePlugin
 
 UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "../../../uploads/backgrounds")
 UPLOADS_DIR = os.path.abspath(UPLOADS_DIR)
@@ -13,6 +15,17 @@ ALLOWED_TYPES = {
     "video/mp4": ".mp4",
     "video/webm": ".webm",
 }
+
+
+class UploadBackgroundData(BaseModel):
+    url: str
+    type: str
+
+
+class UploadBackgroundResponse(BaseModel):
+    success: bool
+    data: Optional[UploadBackgroundData] = None
+    error: Optional[str] = None
 
 
 class UploadBackgroundPlugin(BasePlugin):
@@ -28,6 +41,7 @@ class UploadBackgroundPlugin(BasePlugin):
         self.http.add_endpoint(
             "/api/overlays/upload-background", "POST", self.execute,
             tags=["Overlays"],
+            response_model=UploadBackgroundResponse,
             has_files=True,
         )
 

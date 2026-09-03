@@ -30,7 +30,7 @@ docker compose -f dev_infra/docker-compose.yml up -d    # Start dev infrastructu
 2. **1 file = 1 feature** — each plugin lives in `domains/{domain}/plugins/{feature}_plugin.py`.
 3. **DI by parameter name** — `__init__(self, http, db, logger)` injects the tools named `http`, `db`, `logger`.
 4. **Schemas inline** — request and response schemas go at the top of the plugin file, never in `models/`.
-5. **No cross-domain imports** — domains communicate only through `event_bus`.
+5. **No cross-domain Python imports** — No `from domains.X import ...`. Async/reactive events go through `event_bus`. As a modular monolith, shared SQLite database tables can be queried directly via `db`.
 6. **Return envelope** — always `{"success": bool, "data": ..., "error": ...}`.
 7. **Placeholders** — always `$1, $2, $3...` in SQL (PostgreSQL-style; SQLite converts internally).
 
@@ -39,7 +39,7 @@ docker compose -f dev_infra/docker-compose.yml up -d    # Start dev infrastructu
 ```python
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 class CreateThingRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)

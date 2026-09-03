@@ -1,5 +1,5 @@
 import os
-from core.base_tool import BaseTool
+from microcoreos.base_tool import BaseTool
 from tools.tts.errors import TTSError
 from tools.tts.providers.base import TTSProvider
 from tools.tts.providers.edge_tts import EdgeTTSProvider

@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class YouTubeChatPollerPlugin(BasePlugin):
@@ -31,10 +31,23 @@ class YouTubeChatPollerPlugin(BasePlugin):
         live_chat_id = None
         page_token = None
         first_page = True
+        quota_blocked_until = 0.0
         while not self._stop.is_set():
             try:
+                now_ts = asyncio.get_running_loop().time()
+                if quota_blocked_until and now_ts < quota_blocked_until:
+                    await asyncio.sleep(min(300, quota_blocked_until - now_ts))
+                    continue
+
                 if not self.youtube.get_session():
                     await asyncio.sleep(5)
+                    continue
+
+                if not await self._should_poll_youtube_chat():
+                    live_chat_id = None
+                    page_token = None
+                    first_page = True
+                    await asyncio.sleep(30)
                     continue
 
                 if not live_chat_id:
@@ -42,39 +55,84 @@ class YouTubeChatPollerPlugin(BasePlugin):
                     page_token = None
                     first_page = True
                     if not live_chat_id:
-                        await asyncio.sleep(15)
+                        await asyncio.sleep(60)
                         continue
                     self.logger.info(f"[YouTubeChatPoller] Live chat detected: {live_chat_id}")
 
-                resp = await self.youtube.list_chat_messages(live_chat_id, page_token=page_token)
-                page_token = resp.get("nextPageToken") or page_token
-                wait_s = max(1.0, int(resp.get("pollingIntervalMillis", 5000)) / 1000)
-
-                items = resp.get("items", [])
-                if first_page:
-                    # Initial request returns recent events. Mark them as seen so we only emit new messages.
-                    self._seen.update(i.get("id", "") for i in items)
-                    first_page = False
-                else:
-                    for item in items:
-                        await self._handle_item(item, live_chat_id)
-
-                if resp.get("offlineAt"):
-                    self.logger.info("[YouTubeChatPoller] Live chat is offline/ended")
+                try:
+                    page_token, first_page = await self._stream_chat(live_chat_id, page_token, first_page)
                     live_chat_id = None
                     page_token = None
-                    await asyncio.sleep(15)
-                else:
-                    await asyncio.sleep(wait_s)
+                    first_page = True
+                    await asyncio.sleep(5)
+                except Exception as stream_error:
+                    msg = str(stream_error)
+                    if "quotaExceeded" in msg or "youtube.quota" in msg:
+                        raise
+                    self.logger.warning(f"[YouTubeChatPoller] streamList failed, falling back to list polling: {msg}")
+
+                    resp = await self.youtube.list_chat_messages(live_chat_id, page_token=page_token)
+                    page_token = resp.get("nextPageToken") or page_token
+                    wait_s = max(5.0, int(resp.get("pollingIntervalMillis", 5000)) / 1000)
+
+                    items = resp.get("items", [])
+                    first_page = await self._handle_response_items(items, live_chat_id, first_page)
+
+                    if resp.get("offlineAt"):
+                        self.logger.info("[YouTubeChatPoller] Live chat is offline/ended")
+                        live_chat_id = None
+                        page_token = None
+                        await asyncio.sleep(15)
+                    else:
+                        await asyncio.sleep(wait_s)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 msg = str(e)
+                if "quotaExceeded" in msg or "youtube.quota" in msg:
+                    quota_blocked_until = asyncio.get_running_loop().time() + 3600
+                    self.logger.warning(
+                        "[YouTubeChatPoller] Cuota de YouTube agotada. Pausando lecturas de chat por 1 hora."
+                    )
+                    live_chat_id = None
+                    page_token = None
+                    await asyncio.sleep(300)
+                    continue
+
                 self.logger.error(f"[YouTubeChatPoller] {msg}")
                 if "liveChatEnded" in msg or "liveChatNotFound" in msg or "liveChatDisabled" in msg:
                     live_chat_id = None
                     page_token = None
                 await asyncio.sleep(10)
+
+    async def _stream_chat(self, live_chat_id: str, page_token: str | None, first_page: bool):
+        self.logger.info(f"[YouTubeChatPoller] Connecting streamList for live chat: {live_chat_id}")
+        async for resp in self.youtube.stream_chat_messages(live_chat_id, page_token=page_token):
+            if self._stop.is_set() or not await self._should_poll_youtube_chat():
+                break
+            page_token = resp.get("nextPageToken") or page_token
+            first_page = await self._handle_response_items(resp.get("items", []), live_chat_id, first_page)
+            if resp.get("offlineAt"):
+                self.logger.info("[YouTubeChatPoller] Live chat is offline/ended")
+                break
+        return page_token, first_page
+
+    async def _handle_response_items(self, items: list[dict], live_chat_id: str, first_page: bool) -> bool:
+        if first_page:
+            # Initial response returns recent events. Mark them as seen so we only emit new messages.
+            self._seen.update(i.get("id", "") for i in items)
+            return False
+        for item in items:
+            await self._handle_item(item, live_chat_id)
+        return False
+
+    async def _should_poll_youtube_chat(self) -> bool:
+        row = await self.db.query_one(
+            """SELECT id FROM stream_outputs
+               WHERE platform='youtube' AND enabled=1 AND status='live'
+               LIMIT 1"""
+        )
+        return bool(row)
 
     async def _handle_item(self, item: dict, live_chat_id: str):
         message_id = item.get("id", "")
@@ -86,7 +144,7 @@ class YouTubeChatPollerPlugin(BasePlugin):
 
         snippet = item.get("snippet", {})
         author = item.get("authorDetails", {})
-        msg_type = snippet.get("type", "")
+        msg_type = self._normalize_type(snippet.get("type", ""))
 
         if msg_type == "chatEndedEvent":
             return
@@ -157,6 +215,23 @@ class YouTubeChatPollerPlugin(BasePlugin):
             })
 
         await self._publish_monetization(item, msg_type, display_name, user_id, text)
+
+    def _normalize_type(self, msg_type: str) -> str:
+        grpc_types = {
+            "TEXT_MESSAGE_EVENT": "textMessageEvent",
+            "TOMBSTONE": "tombstone",
+            "CHAT_ENDED_EVENT": "chatEndedEvent",
+            "NEW_SPONSOR_EVENT": "newSponsorEvent",
+            "MEMBER_MILESTONE_CHAT_EVENT": "memberMilestoneChatEvent",
+            "MEMBERSHIP_GIFTING_EVENT": "membershipGiftingEvent",
+            "GIFT_MEMBERSHIP_RECEIVED_EVENT": "giftMembershipReceivedEvent",
+            "USER_BANNED_EVENT": "userBannedEvent",
+            "SUPER_CHAT_EVENT": "superChatEvent",
+            "SUPER_STICKER_EVENT": "superStickerEvent",
+            "POLL_EVENT": "pollEvent",
+            "GIFT_EVENT": "giftEvent",
+        }
+        return grpc_types.get(msg_type, msg_type)
 
     def _text_for(self, snippet: dict, msg_type: str) -> str:
         if msg_type == "textMessageEvent":

@@ -2,7 +2,7 @@ import re
 import json
 import asyncio
 import base64
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 

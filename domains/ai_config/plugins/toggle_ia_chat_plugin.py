@@ -1,12 +1,23 @@
-from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel, Field
+from microcoreos.base_plugin import BasePlugin
 
 _NS = "ia_config"
 _KEY = "chat_ia_enabled"
 
 
 class SetIAEnabledRequest(BaseModel):
+    enabled: bool = Field(description="Estado de activación del comando !ia")
+
+
+class IAEnabledData(BaseModel):
     enabled: bool
+
+
+class IAEnabledResponse(BaseModel):
+    success: bool
+    data: Optional[IAEnabledData] = None
+    error: Optional[str] = None
 
 
 class ToggleIAChatPlugin(BasePlugin):
@@ -28,11 +39,13 @@ class ToggleIAChatPlugin(BasePlugin):
         self.http.add_endpoint(
             "/api/ai/ia/enabled", "GET", self._get,
             tags=["AI Config"],
+            response_model=IAEnabledResponse,
         )
         self.http.add_endpoint(
             "/api/ai/ia/enabled", "PUT", self._set,
             tags=["AI Config"],
             request_model=SetIAEnabledRequest,
+            response_model=IAEnabledResponse,
         )
 
     async def _load_from_db(self):

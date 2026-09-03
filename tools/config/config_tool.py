@@ -39,7 +39,7 @@ REPLACEMENT STANDARD (e.g. Vault, Consul, AWS Parameter Store — plugins unaffe
 
 import os
 from typing import Optional
-from core.base_tool import BaseTool
+from microcoreos import BaseTool
 
 
 class ConfigTool(BaseTool):

@@ -1,7 +1,7 @@
 import json
 from typing import Optional, Any
 from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class OverlayData(BaseModel):

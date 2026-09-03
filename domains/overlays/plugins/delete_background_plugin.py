@@ -1,7 +1,14 @@
 import os
-from core.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel
+from microcoreos.base_plugin import BasePlugin
 
 UPLOADS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../uploads/backgrounds"))
+
+
+class DeleteBackgroundResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
 
 
 class DeleteBackgroundPlugin(BasePlugin):
@@ -13,6 +20,7 @@ class DeleteBackgroundPlugin(BasePlugin):
         self.http.add_endpoint(
             "/api/overlays/backgrounds/{filename}", "DELETE", self.execute,
             tags=["Overlays"],
+            response_model=DeleteBackgroundResponse,
         )
 
     async def execute(self, data: dict, context=None):

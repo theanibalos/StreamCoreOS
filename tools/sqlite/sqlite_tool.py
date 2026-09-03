@@ -1,10 +1,12 @@
 """
-SQLite Tool — Drop-in Replacement for PostgreSQL in MicroCoreOS
+SQLite Tool — PostgreSQL-Compatible `db` Tool for MicroCoreOS
 ================================================================
 
-100% COMPATIBLE with the PostgreSQL gold-standard contract.
+100% COMPATIBLE with the PostgreSQL gold-standard contract AT THE
+TOOL-API LEVEL: same methods, same PostgreSQL-style placeholders.
 Plugins write PostgreSQL-style SQL ($1, $2...) and this tool
 transparently converts placeholders to SQLite's native '?'.
+SQL text itself is NEVER dialect-translated (see migration note below).
 
 PUBLIC CONTRACT (IDENTICAL to PostgreSQL — same SQL, same swap):
 ─────────────────────────────────────────────────────────────────
@@ -21,211 +23,110 @@ PUBLIC CONTRACT (IDENTICAL to PostgreSQL — same SQL, same swap):
 
     ok = await db.health_check()
 
+ERRORS (IDENTICAL to PostgreSQL — same classification, same swap):
+─────────────────────────────────────────────────────────────────
+    Every failure raises DatabaseError carrying `kind` from a CLOSED
+    vocabulary (see ERROR_KINDS), plus best-effort `table` / `columns`:
+
+        try:
+            await db.execute("INSERT INTO users (email) VALUES ($1)", [email])
+        except Exception as e:
+            if getattr(e, "kind", None) == "unique_violation":
+                ...
+
+    Plugins branch on `kind`, NEVER on str(e): the message text is
+    engine-specific ("UNIQUE constraint failed: users.email" here,
+    'duplicate key value violates unique constraint "users_email_key"' on
+    PostgreSQL), so text matching breaks silently on the swap.
+
 PLACEHOLDERS: Plugins ALWAYS use $1, $2, $3... (PostgreSQL-style).
               This tool converts them internally to '?' for SQLite.
-              This enables direct SQLite <-> PostgreSQL swap without changing a line.
+              That is the whole of what the swap gives you for free: no plugin
+              changes a tool call, a signature or an error branch.
 
-⚠ MIGRATION FILES ARE NOT CROSS-COMPATIBLE:
-  The .sql files in domains/*/migrations/ may contain engine-specific DDL
-  (e.g. PostgreSQL's SERIAL, TIMESTAMPTZ, JSONB vs SQLite's INTEGER PRIMARY KEY
-  AUTOINCREMENT, TEXT). When swapping engines, migration files will likely need
-  to be rewritten. This is by design — migration SQL is cheap to regenerate.
+⚠ WHAT THE SWAP DOES *NOT* DO — THIS IS NOT AN ORM:
+  Neither this tool nor the PostgreSQL tool translates SQL dialects. Every
+  migration in domains/*/migrations/ and every query string in a plugin runs
+  VERBATIM on whichever engine is active. The tool normalizes the placeholder
+  and the error `kind`; the SQL you wrote is the SQL that executes.
+
+  So the swap is cheap but not automatic, and that is the deliberate trade:
+  no abstraction layer to maintain or fight, in exchange for one explicit
+  review pass per swap. The pass is finite and fully enumerable precisely
+  because nothing is generated or hidden — every table and every query is
+  somewhere you can grep:
+
+      domains/*/migrations/*.sql        every table
+      domains/*/plugins/*_plugin.py     every query (db.query, db.query_one,
+                                        db.execute, db.execute_many, tx.)
+      every `except` around a db./tx.   engine wording differs; branch on
+                                        `kind`, never on str(e)
+
+  Engine-specific SQL is a valid choice — it commits you to that engine.
+  Portable SQL (e.g. CURRENT_TIMESTAMP, not NOW()) keeps the swap free.
+  Either way the review happens: docs/ELASTIC_DEPLOYMENT.md, Stage 1.
 """
 
 import os
 import re
-import uuid
 import asyncio
 import aiosqlite
-from contextvars import ContextVar
-from core.base_tool import BaseTool, ToolUnavailableError
+from microcoreos import BaseTool
+
+from tools.sqlite.errors import DatabaseError, DatabaseConnectionError, _classify_error
+from tools.sqlite.transaction import Transaction, _normalize_sql, _normalize_sql_many, _write_lock_held_var
+from tools.sqlite.migrations import run_migrations
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CONTEXT
+# ERRORS, TRANSACTION, MIGRATIONS — split into sibling modules
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# tools/sqlite/errors.py       — DatabaseError, DatabaseConnectionError,
+#                                 ERROR_KINDS, error-message classification.
+# tools/sqlite/transaction.py  — Transaction, placeholder normalization
+#                                 (_normalize_sql, _normalize_sql_many), and
+#                                 the write-lock reentrancy ContextVar.
+# tools/sqlite/migrations.py   — run_migrations(tool), invoked from setup().
+#
+# DatabaseError and _normalize_sql are re-exported above (imported into this
+# module's namespace) because external code imports them from
+# tools.sqlite.sqlite_tool, not from their new module — see tests/tools/sqlite/test_sqlite_tool.py
+# and tests/tools/sqlite/test_sqlite_concurrency.py.
+#
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# COLUMN TYPE NORMALIZATION (describe_schema contract)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Tracks if the current task holds the SQLite write lock to allow reentrancy
-_write_lock_held_var: ContextVar[bool] = ContextVar("sqlite_write_lock_held", default=False)
+# Closed vocabulary shared with the PostgreSQL tool: any engine type not
+# recognized here falls back to "text". Checked in this order (a category
+# earlier in the list wins if a type string happens to start with more than
+# one prefix, which doesn't occur for the prefixes below but keeps the match
+# deterministic).
+_TYPE_PREFIXES: list[tuple[str, tuple[str, ...]]] = [
+    ("int", ("BIGINT", "BIGSERIAL", "SMALLINT", "INTEGER", "INT", "SERIAL")),
+    ("float", ("REAL", "FLOAT", "DOUBLE", "NUMERIC", "DECIMAL")),
+    ("bool", ("BOOL", "BOOLEAN")),
+    ("timestamp", ("TIMESTAMPTZ", "TIMESTAMP", "DATETIME", "DATE", "TIME")),
+    ("json", ("JSONB", "JSON")),
+    ("blob", ("BLOB", "BYTEA")),
+]
 
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# EXCEPTIONS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class DatabaseError(Exception):
-    """Generic database error. Wraps aiosqlite exceptions."""
-    pass
-
-
-class DatabaseConnectionError(DatabaseError, ToolUnavailableError):
-    """Connection error to the SQLite file.
-
-    Inherits ToolUnavailableError so ToolProxy marks the tool DEAD immediately
-    (infrastructure failure), unlike plain DatabaseError (likely business error).
+def _normalize_column_type(raw_type: str) -> str:
     """
-    pass
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PLACEHOLDER NORMALIZATION
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-_PG_PLACEHOLDER = re.compile(r'\$(\d+)')
-
-def _normalize_sql(sql: str, params: list | None = None) -> tuple[str, list]:
+    Maps the type string as written in CREATE TABLE (what PRAGMA table_info
+    reports verbatim) to the closed vocabulary:
+    text/int/float/bool/timestamp/json/blob. Strips any "(n)" precision
+    suffix and matches by prefix, case-insensitively. Anything unrecognized
+    (VARCHAR, CHAR, TEXT, ...) maps to "text".
     """
-    Converts PostgreSQL placeholders ($1, $2...) to SQLite (?).
-    Expands params to match the positional placeholders.
-    """
-    params = params or []
-    matches = _PG_PLACEHOLDER.findall(sql)
-    if not matches:
-        return sql, params
-        
-    new_params = []
-    for m in matches:
-        idx = int(m) - 1
-        if 0 <= idx < len(params):
-            new_params.append(params[idx])
-        else:
-            new_params.append(None)
-            
-    sql = _PG_PLACEHOLDER.sub('?', sql)
-    return sql, new_params
-
-def _normalize_sql_many(sql: str, params_list: list[list]) -> tuple[str, list[list]]:
-    matches = _PG_PLACEHOLDER.findall(sql)
-    if not matches:
-        return sql, params_list
-        
-    sql = _PG_PLACEHOLDER.sub('?', sql)
-    new_params_list = []
-    for params in params_list:
-        new_params = []
-        for m in matches:
-            idx = int(m) - 1
-            if 0 <= idx < len(params):
-                new_params.append(params[idx])
-            else:
-                new_params.append(None)
-        new_params_list.append(new_params)
-        
-    return sql, new_params_list
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TRANSACTION CONTEXT MANAGER
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class Transaction:
-    """
-    Explicit transaction over the SQLite connection.
-
-    Usage:
-        async with db.transaction() as tx:
-            await tx.execute("INSERT INTO ...", [...])
-            await tx.execute("UPDATE ...", [...])
-            rows = await tx.query("SELECT ...", [...])
-        # Auto-COMMIT on block exit.
-        # Auto-ROLLBACK on any exception.
-
-    The context manager handles:
-    1. Opening a real SQLite transaction (SAVEPOINT).
-    2. RELEASE (commit) if everything succeeds.
-    3. ROLLBACK if an exception occurs.
-    """
-
-    def __init__(self, db: aiosqlite.Connection, lock: asyncio.Lock) -> None:
-        self._db: aiosqlite.Connection = db
-        self._lock: asyncio.Lock = lock
-        self._savepoint_name: str | None = None
-        self._acquired_lock: bool = False
-
-    async def __aenter__(self) -> "Transaction":
-        try:
-            # Check for reentrancy (nested transactions)
-            if not _write_lock_held_var.get():
-                await self._lock.acquire()
-                self._acquired_lock = True
-                _write_lock_held_var.set(True)
-
-            # Use SAVEPOINTs to support nested transactions
-            self._savepoint_name = f"sp_{uuid.uuid4().hex}"
-            await self._db.execute(f"SAVEPOINT {self._savepoint_name}")
-        except Exception as e:
-            if self._acquired_lock:
-                _write_lock_held_var.set(False)
-                self._lock.release()
-            raise DatabaseConnectionError(f"Failed to start transaction: {e}") from e
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> bool:
-        try:
-            if exc_type is None:
-                # No errors → RELEASE SAVEPOINT (equivalent to COMMIT)
-                await self._db.execute(f"RELEASE SAVEPOINT {self._savepoint_name}")
-            else:
-                # Errors → ROLLBACK TO SAVEPOINT
-                await self._db.execute(f"ROLLBACK TO SAVEPOINT {self._savepoint_name}")
-        except Exception:
-            pass
-        finally:
-            # Only the transaction that acquired the lock should release it
-            if self._acquired_lock:
-                _write_lock_held_var.set(False)
-                if self._lock.locked():
-                    self._lock.release()
-        return False
-
-    # ─── Transaction API ──────────────────────────────────
-
-    async def query(self, sql: str, params: list | None = None) -> list[dict]:
-        """SELECT within the transaction. Returns list[dict]."""
-        sql, params = _normalize_sql(sql, params)
-        try:
-            cursor = await self._db.execute(sql, params)
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            rows = await cursor.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
-        except Exception as e:
-            raise DatabaseError(f"Transaction query failed: {e}") from e
-
-    async def query_one(self, sql: str, params: list | None = None) -> dict | None:
-        """SELECT a single record within the transaction. Returns dict or None."""
-        sql, params = _normalize_sql(sql, params)
-        try:
-            cursor = await self._db.execute(sql, params)
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            row = await cursor.fetchone()
-            return dict(zip(columns, row)) if row is not None else None
-        except Exception as e:
-            raise DatabaseError(f"Transaction query_one failed: {e}") from e
-
-    async def execute(self, sql: str, params: list | None = None) -> int | None:
-        """
-        INSERT/UPDATE/DELETE within the transaction.
-
-        - If the SQL contains RETURNING, returns the first column value
-          of the first row (typically the generated ID).
-        - If INSERT without RETURNING, returns lastrowid.
-        - Otherwise, returns the number of affected rows.
-        """
-        sql, params = _normalize_sql(sql, params)
-        try:
-            if "RETURNING" in sql.upper():
-                cursor = await self._db.execute(sql, params)
-                row = await cursor.fetchone()
-                if row is not None:
-                    return row[0]
-                return None
-            else:
-                cursor = await self._db.execute(sql, params)
-                if sql.strip().upper().startswith("INSERT"):
-                    return cursor.lastrowid
-                return cursor.rowcount
-        except Exception as e:
-            raise DatabaseError(f"Transaction execute failed: {e}") from e
+    bare = re.sub(r"\(.*\)", "", raw_type or "").strip().upper()
+    for category, prefixes in _TYPE_PREFIXES:
+        if any(bare.startswith(prefix) for prefix in prefixes):
+            return category
+    return "text"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -233,6 +134,7 @@ class Transaction:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class SqliteTool(BaseTool):
+
     """
     SQLite persistence tool for MicroCoreOS.
 
@@ -298,117 +200,17 @@ class SqliteTool(BaseTool):
 
         print("[System] SqliteTool: Ready (WAL mode, FK enabled).")
 
-    # ─── LIFECYCLE: on_boot_complete() ────────────────────
+        await self._run_migrations()
+
+    # ─── MIGRATIONS: run from setup(), NOT from on_boot_complete() ──
     #
-    # Runs AFTER all tools and plugins are loaded.
-    # Responsibility: execute pending SQL migrations.
-    #
-    # Migrations are located in: domains/*/migrations/*.sql
-    # Applied in alphabetical order, each within its own transaction.
-    # If a migration fails, that migration is rolled back
-    # and execution stops (raise) to prevent an inconsistent state.
+    # The algorithm and the WHY-setup()/topological-order/per-migration-
+    # transaction rationale live in tools/sqlite/migrations.py::run_migrations —
+    # moved there verbatim, this is just the call site.
     #
 
-    async def on_boot_complete(self, container) -> None:
-        # Issue 20: in production, replicas must NOT race to migrate at boot.
-        # Migrations run as a pipeline step instead:
-        #   DB_AUTO_MIGRATE=true uv run main.py --boot-tool db
-        if os.getenv("DB_AUTO_MIGRATE", "true").strip().lower() != "true":
-            print("[System] SqliteTool: DB_AUTO_MIGRATE=false — skipping migrations (pipeline runs `DB_AUTO_MIGRATE=true uv run main.py --boot-tool db`).")
-            return
-        print("[System] SqliteTool: Checking for pending migrations...")
-        domains_dir = os.path.abspath("domains")
-        if not os.path.exists(domains_dir):
-            return
-
-        # ── 1. Discover ALL migration files across all domains ──────────
-        migrations = {}  # key: "domain/filename" → value: {"path": ..., "depends": [...]}
-        for domain in sorted(os.listdir(domains_dir)):
-            migrations_dir = os.path.join(domains_dir, domain, "migrations")
-            if not os.path.isdir(migrations_dir):
-                continue
-
-            for filename in sorted(f for f in os.listdir(migrations_dir) if f.endswith(".sql")):
-                key = f"{domain}/{filename}"
-                filepath = os.path.join(migrations_dir, filename)
-
-                # Parse "-- depends: domain/filename" from first lines
-                depends = []
-                with open(filepath, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.lower().startswith("-- depends:"):
-                            dep = line.split(":", 1)[1].strip()
-                            # Allow "-- depends: users/001_create_users_table" (with or without .sql)
-                            if not dep.endswith(".sql"):
-                                dep += ".sql"
-                            depends.append(dep)
-                        elif line.startswith("--"):
-                            continue  # skip other comments
-                        else:
-                            break  # stop parsing after first non-comment line
-
-                migrations[key] = {"path": filepath, "depends": depends, "domain": domain, "filename": filename}
-
-        # ── 2. Topological sort using graphlib ──────────────────────────
-        from graphlib import TopologicalSorter
-
-        graph = {}
-        for key, info in migrations.items():
-            graph[key] = set(info["depends"])
-
-        try:
-            sorter = TopologicalSorter(graph)
-            ordered_keys = list(sorter.static_order())
-        except Exception as e:
-            print(f"  [Migration] ⚠️  Circular dependency detected: {e}")
-            # Fallback to alphabetical
-            ordered_keys = sorted(migrations.keys())
-
-        # ── 3. Apply in topological order ───────────────────────────────
-        for key in ordered_keys:
-            if key not in migrations:
-                continue  # dependency references a migration that doesn't exist (yet)
-
-            info = migrations[key]
-            domain = info["domain"]
-            filename = info["filename"]
-
-            # Check if already applied
-            already_applied = await self.query_one(
-                "SELECT 1 FROM _migrations_history WHERE domain = $1 AND filename = $2",
-                [domain, filename],
-            )
-            if already_applied:
-                continue
-
-            print(f"  [Migration] Applying {key}...")
-
-            with open(info["path"], "r", encoding="utf-8") as f:
-                lines = f.readlines()
-                sql_script = "\n".join(line for line in lines if not line.strip().startswith("--"))
-
-            # Each migration in its own transaction
-            try:
-                async with self.transaction():
-                    # Manually split and execute to ensure atomicity via our Transaction CM
-                    # This handles triggers if we are careful, but for now we split by ';'
-                    # which is what the user originally had but now inside our safe TX.
-                    statements = [s.strip() for s in sql_script.split(";") if s.strip()]
-                    for statement in statements:
-                        await self._db.execute(statement)
-                    
-                    # Register successful migration
-                    await self._db.execute(
-                        "INSERT INTO _migrations_history (domain, filename) VALUES (?, ?)",
-                        [domain, filename],
-                    )
-                    # transaction __aexit__ will COMMIT
-            except Exception as e:
-                # transaction __aexit__ will ROLLBACK
-                raise DatabaseError(f"Migration failed for {key}: {e}") from e
-
-            print(f"  [Migration] ✅ Applied {key}")
+    async def _run_migrations(self) -> None:
+        await run_migrations(self)
 
     # ─── LIFECYCLE: shutdown() ────────────────────────────
     #
@@ -442,18 +244,18 @@ class SqliteTool(BaseTool):
         sql, params = _normalize_sql(sql, params)
         for attempt in range(3):
             try:
-                cursor = await self._db.execute(sql, params)
-                columns = [desc[0] for desc in cursor.description] if cursor.description else []
-                rows = await cursor.fetchall()
-                return [dict(zip(columns, row)) for row in rows]
+                async with self._db.execute(sql, params) as cursor:
+                    columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                    rows = await cursor.fetchall()
+                    return [dict(zip(columns, row)) for row in rows]
             except aiosqlite.OperationalError as e:
                 if "database is locked" in str(e) or "database is busy" in str(e):
                     if attempt < 2:
                         await asyncio.sleep(0.05 * (attempt + 1))
                         continue
-                raise DatabaseError(f"Query failed: {e}") from e
+                raise DatabaseError(f"Query failed: {e}", **_classify_error(e)) from e
             except Exception as e:
-                raise DatabaseError(f"Query failed: {e}") from e
+                raise DatabaseError(f"Query failed: {e}", **_classify_error(e)) from e
 
     # ─── PUBLIC API: query_one() ──────────────────────────
     #
@@ -476,18 +278,18 @@ class SqliteTool(BaseTool):
         sql, params = _normalize_sql(sql, params)
         for attempt in range(3):
             try:
-                cursor = await self._db.execute(sql, params)
-                columns = [desc[0] for desc in cursor.description] if cursor.description else []
-                row = await cursor.fetchone()
-                return dict(zip(columns, row)) if row is not None else None
+                async with self._db.execute(sql, params) as cursor:
+                    columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                    row = await cursor.fetchone()
+                    return dict(zip(columns, row)) if row is not None else None
             except aiosqlite.OperationalError as e:
                 if "database is locked" in str(e) or "database is busy" in str(e):
                     if attempt < 2:
                         await asyncio.sleep(0.05 * (attempt + 1))
                         continue
-                raise DatabaseError(f"Query failed: {e}") from e
+                raise DatabaseError(f"Query failed: {e}", **_classify_error(e)) from e
             except Exception as e:
-                raise DatabaseError(f"Query failed: {e}") from e
+                raise DatabaseError(f"Query failed: {e}", **_classify_error(e)) from e
 
     # ─── PUBLIC API: execute() ────────────────────────────
     #
@@ -524,43 +326,60 @@ class SqliteTool(BaseTool):
 
     async def execute(self, sql: str, params: list | None = None) -> int | None:
         sql, params = _normalize_sql(sql, params)
-        
+
         # Reentrancy check: if the lock is already held by this task, don't acquire it again
         if _write_lock_held_var.get():
-            return await self._do_execute(sql, params)
+            # Nested inside an active db.transaction(): join it instead of
+            # committing here. SQLite's COMMIT closes the WHOLE underlying
+            # transaction regardless of how many SAVEPOINTs are open, so a
+            # commit at this point would silently finalize the outer
+            # transaction early — the outer block's later ROLLBACK TO
+            # SAVEPOINT (on a subsequent failure) would then have nothing
+            # left to undo, breaking atomicity for every statement it already
+            # ran. The outer Transaction.__aexit__ owns commit/rollback here.
+            return await self._do_execute(sql, params, commit=False)
 
         async with self._write_lock:
             token = _write_lock_held_var.set(True)
             try:
-                return await self._do_execute(sql, params)
+                return await self._do_execute(sql, params, commit=True)
             finally:
                 _write_lock_held_var.reset(token)
 
-    async def _do_execute(self, sql: str, params: list | None) -> int | None:
-        """Internal execution logic with retry capability."""
+    async def _do_execute(self, sql: str, params: list | None, commit: bool = True) -> int | None:
+        """Internal execution logic with retry capability.
+
+        commit=False when called from within an already-open outer
+        transaction (see the reentrancy branch in execute()) — the caller
+        owns finalizing the transaction in that case.
+        """
         for attempt in range(3):
             try:
                 if re.search(r"\bRETURNING\b", sql.upper()):
-                    cursor = await self._db.execute(sql, params)
-                    row = await cursor.fetchone()
-                    await self._db.commit()
+                    async with self._db.execute(sql, params) as cursor:
+                        row = await cursor.fetchone()
+                    if commit:
+                        await self._db.commit()
                     if row is not None:
                         return row[0]
                     return None
                 else:
-                    cursor = await self._db.execute(sql, params)
-                    await self._db.commit()
-                    if sql.strip().upper().startswith("INSERT"):
-                        return cursor.lastrowid
-                    return cursor.rowcount
+                    async with self._db.execute(sql, params) as cursor:
+                        # Read while the cursor is open: closing invalidates both.
+                        result = (cursor.lastrowid
+                                  if sql.strip().upper().startswith("INSERT")
+                                  else cursor.rowcount)
+                    if commit:
+                        await self._db.commit()
+                    return result
             except aiosqlite.OperationalError as e:
                 if "database is locked" in str(e) or "database is busy" in str(e):
                     if attempt < 2:
                         await asyncio.sleep(0.05 * (attempt + 1))
                         continue
-                raise DatabaseError(f"Execute failed: {e}") from e
+                raise DatabaseError(f"Execute failed: {e}", **_classify_error(e)) from e
             except Exception as e:
-                raise DatabaseError(f"Execute failed: {e}") from e
+                raise DatabaseError(f"Execute failed: {e}", **_classify_error(e)) from e
 
     # ─── PUBLIC API: execute_many() ───────────────────────
     #
@@ -581,26 +400,33 @@ class SqliteTool(BaseTool):
 
     async def execute_many(self, sql: str, params_list: list[list]) -> None:
         sql, params_list = _normalize_sql_many(sql, params_list)
-        
+
         # Reentrancy check
         if _write_lock_held_var.get():
-            await self._do_execute_many(sql, params_list)
+            # See execute()'s reentrancy branch: join the outer transaction
+            # instead of committing here.
+            await self._do_execute_many(sql, params_list, commit=False)
             return
 
         async with self._write_lock:
             token = _write_lock_held_var.set(True)
             try:
-                await self._do_execute_many(sql, params_list)
+                await self._do_execute_many(sql, params_list, commit=True)
             finally:
                 _write_lock_held_var.reset(token)
 
-    async def _do_execute_many(self, sql: str, params_list: list[list]) -> None:
-        """Internal batch execution logic."""
+    async def _do_execute_many(self, sql: str, params_list: list[list], commit: bool = True) -> None:
+        """Internal batch execution logic.
+
+        commit=False when called from within an already-open outer
+        transaction — the caller owns finalizing it in that case.
+        """
         try:
             await self._db.executemany(sql, params_list)
-            await self._db.commit()
+            if commit:
+                await self._db.commit()
         except Exception as e:
-            raise DatabaseError(f"Execute many failed: {e}") from e
+            raise DatabaseError(f"Execute many failed: {e}", **_classify_error(e)) from e
 
     # ─── PUBLIC API: transaction() ────────────────────────
     #
@@ -642,20 +468,107 @@ class SqliteTool(BaseTool):
         try:
             if self._db is None:
                 return False
-            cursor = await self._db.execute("SELECT 1")
-            await cursor.fetchone()
+            async with self._db.execute("SELECT 1") as cursor:
+                await cursor.fetchone()
             return True
         except Exception:
             return False
+
+    # ─── PUBLIC API: describe_schema() ────────────────────
+    #
+    # Introspects the live schema of the active database, normalized to the
+    # same closed vocabulary and shape the PostgreSQL tool produces, so the
+    # same migration yields an identical description on either engine.
+    #
+    # Returns: dict
+    #   {table_name: {"internal": bool, "columns": [...], "unique": [...],
+    #                 "foreign_keys": [...]}}
+    #
+
+    async def describe_schema(self) -> dict:
+        try:
+            # sqlite_% covers sqlite_master, sqlite_sequence, sqlite_stat*...
+            # engine-owned, never surfaced (not even as internal).
+            tables = await self.query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+
+            schema: dict = {}
+            for row in tables:
+                table_name = row["name"]
+
+                # PRAGMA statements don't accept placeholders; table_name is
+                # never external input here, it comes straight out of
+                # sqlite_master, so interpolation is safe.
+                columns_info = await self.query(f"PRAGMA table_info({table_name})")
+                columns = [
+                    {
+                        "name": col["name"],
+                        "type": _normalize_column_type(col["type"]),
+                        # A PRIMARY KEY is reported NOT nullable regardless of what
+                        # PRAGMA says. SQLite reports notnull=0 for an INTEGER
+                        # PRIMARY KEY (rowid alias) and even tolerates NULL in a
+                        # TEXT PRIMARY KEY — both are documented legacy quirks, not
+                        # schema intent. PostgreSQL makes every PK column NOT NULL,
+                        # so normalizing here is what keeps describe_schema()
+                        # identical across engines (see the cross-engine test in
+                        # tests/tools/db/test_db_parity.py).
+                        "nullable": not col["notnull"] and not col["pk"],
+                        "default": col["dflt_value"],
+                        "primary_key": col["pk"] > 0,
+                    }
+                    # table_info already returns columns in physical (cid) order.
+                    for col in columns_info
+                ]
+
+                # UNIQUE constraints: index_list gives every index on the
+                # table; origin != 'pk' drops the implicit PK index (already
+                # captured per-column above, not repeated here).
+                index_list = await self.query(f"PRAGMA index_list({table_name})")
+                unique: list[list[str]] = []
+                for idx in index_list:
+                    if not idx["unique"] or idx["origin"] == "pk":
+                        continue
+                    index_columns = await self.query(f"PRAGMA index_info({idx['name']})")
+                    # index_info rows aren't guaranteed pre-sorted; seqno is
+                    # the declared column order within the constraint.
+                    ordered = sorted(index_columns, key=lambda c: c["seqno"])
+                    unique.append([c["name"] for c in ordered])
+                unique.sort(key=lambda cols: cols[0])
+
+                fk_list = await self.query(f"PRAGMA foreign_key_list({table_name})")
+                foreign_keys = [
+                    {
+                        "column": fk["from"],
+                        "references_table": fk["table"],
+                        "references_column": fk["to"],
+                    }
+                    # Compound FKs share an "id" across rows in the PRAGMA
+                    # output; the contract wants them flattened, one entry
+                    # per column, so no grouping by id here.
+                    for fk in fk_list
+                ]
+
+                schema[table_name] = {
+                    "internal": table_name.startswith("_"),
+                    "columns": columns,
+                    "unique": unique,
+                    "foreign_keys": foreign_keys,
+                }
+
+            return dict(sorted(schema.items()))
+        except Exception as e:
+            raise DatabaseConnectionError(f"Failed to describe schema: {e}") from e
 
     # ─── INTERFACE DESCRIPTION ────────────────────────────
 
     def get_interface_description(self) -> str:
         return """
         Async SQLite Persistence Tool (sqlite):
-        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
-          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
-          ($1, $2...) and converts them transparently to SQLite's native '?'.
+        - PURPOSE: PostgreSQL-compatible relational storage (drop-in swap at the
+          TOOL-API level: same methods, same placeholders). Accepts PostgreSQL-style
+          placeholders ($1, $2...) and converts them transparently to SQLite's
+          native '?'. SQL text itself is NEVER dialect-translated.
         - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
         - CAPABILITIES:
             - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
@@ -667,9 +580,29 @@ class SqliteTool(BaseTool):
             - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
               Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
             - await health_check() → bool: Verify database connectivity.
+            - await describe_schema() → dict: Live schema of the active database:
+              {table: {internal, columns, unique, foreign_keys}}.
+              Column types are normalized to a closed vocabulary
+              (text/int/float/bool/timestamp/json/blob) so the same migration
+              yields the same description on any engine.
+              Tables whose name starts with "_" are marked internal;
+              engine-owned tables are excluded.
         - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+          Every DatabaseError carries a CLASSIFIED, engine-independent contract:
+            - kind: one of unique_violation / foreign_key_violation /
+              not_null_violation / check_violation / unknown (CLOSED vocabulary —
+              the same values on any engine, so the swap keeps behavior).
+            - table / columns: the target of the violation, filled in only where
+              every engine can report it (unique and NOT NULL); FOREIGN KEY and
+              CHECK carry kind only.
+          Branch on the kind, NEVER on str(e) — the message text is engine-specific:
+            except Exception as e:
+                if getattr(e, "kind", None) == "unique_violation": ...
         - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
-          topological sort (alphabetical by default). To declare that one migration must
+          topological sort (alphabetical by default). Migrations run VERBATIM (no
+          dialect translation). Engine-specific SQL commits you to that engine;
+          portable SQL (e.g. CURRENT_TIMESTAMP, not NOW()) keeps the
+          SQLite <-> PostgreSQL swap free. To declare that one migration must
           run before another, add as the first comment line:
             "-- depends: other_domain/001_file.sql"
           Works for same-domain or cross-domain dependencies. .sql extension is optional.

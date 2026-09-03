@@ -1,16 +1,16 @@
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 VALID_ROLES = {"mod", "vip", "regular", "sub"}
 
 
 class UpdateModRuleRequest(BaseModel):
     value: Optional[str] = Field(default=None, max_length=2000)
-    action: Optional[str] = None
+    action: Optional[str] = Field(default=None)
     duration_s: Optional[int] = Field(default=None, ge=1, le=1209600)
-    enabled: Optional[bool] = None
-    exempt_roles: Optional[list[str]] = None
+    enabled: Optional[bool] = Field(default=None)
+    exempt_roles: Optional[list[str]] = Field(default=None)
 
 
 class ModRuleData(BaseModel):

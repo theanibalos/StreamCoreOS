@@ -27,7 +27,7 @@ En las arquitecturas tradicionales de capas, eso significa explicar:
 
 ```python
 # domains/products/plugins/create_product_plugin.py
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 class CreateProductPlugin(BasePlugin):
     def __init__(self, http_server, db, logger, event_bus):

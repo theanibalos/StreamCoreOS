@@ -26,8 +26,11 @@ TRANSPORT MAPPING:
         starting at "$" (broadcast: each subscriber sees every NEW message;
         destroyed on unsubscribe). Only broadcast subscriptions reach the
         driver without a group: RPC replies, broadcast=True.
-    delay                  → applied driver-side before XADD (Streams have no
-        native delayed delivery)
+    delay                  → NATIVE (capability claim, Issue 30): the envelope
+        is parked in the sorted set "bus:__delayed__" scored by due time and
+        promoted to its streams by an atomic Lua script that every replica
+        polls — the delay is REDIS-persisted and survives a publisher crash
+        ("__delayed__" is therefore a reserved event name).
     key / priority         → accepted but no-ops: a stream is already totally
         ordered, and Streams have no message priority
     ttl                    → enforced Bus-side at delivery (age check)
@@ -37,6 +40,8 @@ CONFIGURATION (env vars):
     REDIS_HOST / REDIS_PORT / REDIS_DB / REDIS_PASSWORD / REDIS_CONNECT_TIMEOUT
     (same variables as the Redis state tool — one Redis serves both)
     EVENT_BUS_STREAM_MAXLEN   default "10000" (approximate cap per stream)
+    EVENT_BUS_DELAY_POLL_MS   default "500" — how often each replica promotes
+        due delayed envelopes (delivery accuracy of delay=n is ± this)
     EVENT_BUS_CLAIM_IDLE_MS   default "60000" — pending entries idle longer
         than this are reclaimed from dead consumers. RAISE it above the
         worst-case handler duration (including Bus retries/backoff): a live
@@ -57,7 +62,7 @@ import asyncio
 import redis.asyncio as aioredis
 from redis import exceptions as redis_exceptions
 from typing import Callable, Optional
-from core.base_tool import ToolUnavailableError
+from microcoreos import ToolUnavailableError
 from tools.event_bus.event_bus_tool import EventBusDriver
 
 
@@ -82,6 +87,24 @@ class _Subscription:
 
 class RedisStreamsDriver(EventBusDriver):
     STREAM_PREFIX = "bus:"
+    DELAYED_KEY = "bus:__delayed__"
+
+    capabilities = {"delay": "native", "retries": "in_bus", "dlq": "in_bus"}
+
+    # Atomically promotes due envelopes: ZSET → the event's stream.
+    # Atomic per script run (Redis is single-threaded), so N replicas can poll
+    # concurrently without double-promoting, and a replica dying mid-poll
+    # cannot lose an envelope (it is either still parked or fully promoted).
+    # KEYS[1]=delayed zset, ARGV[1]=now, ARGV[2]=stream prefix, ARGV[3]=maxlen
+    _PROMOTE_LUA = """
+        local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)
+        for i, raw in ipairs(due) do
+            local env = cjson.decode(raw)
+            redis.call('XADD', ARGV[2] .. env.event, 'MAXLEN', '~', ARGV[3], '*', 'json', raw)
+            redis.call('ZREM', KEYS[1], raw)
+        end
+        return #due
+    """
 
     def __init__(self) -> None:
         self._host: str = os.getenv("REDIS_HOST", "localhost")
@@ -90,9 +113,11 @@ class RedisStreamsDriver(EventBusDriver):
         self._password: str = os.getenv("REDIS_PASSWORD", "")
         self._connect_timeout: float = float(os.getenv("REDIS_CONNECT_TIMEOUT", "5"))
         self._maxlen: int = int(os.getenv("EVENT_BUS_STREAM_MAXLEN", "10000"))
+        self._delay_poll_s: float = int(os.getenv("EVENT_BUS_DELAY_POLL_MS", "500")) / 1000.0
         self._claim_idle_ms: int = int(os.getenv("EVENT_BUS_CLAIM_IDLE_MS", "60000"))
         self._redis: aioredis.Redis | None = None
         self._subs: list[_Subscription] = []
+        self._promoter_task: asyncio.Task | None = None
 
     # ─── LIFECYCLE ────────────────────────────────────────
 
@@ -112,9 +137,19 @@ class RedisStreamsDriver(EventBusDriver):
             raise EventBusConnectionError(
                 f"Cannot connect to Redis broker at {self._host}:{self._port}/{self._db}: {e}"
             ) from e
+        # Every replica promotes: delayed envelopes left by a dead publisher
+        # still fire as long as ANY replica is alive (the native-delay claim).
+        self._promoter_task = asyncio.create_task(self._promote_delayed())
         print("[System] RedisStreamsDriver: Distributed transport ready.")
 
     async def shutdown(self) -> None:
+        if self._promoter_task is not None:
+            self._promoter_task.cancel()
+            try:
+                await self._promoter_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._promoter_task = None
         for sub in self._subs:
             await self._stop_subscription(sub)
         self._subs.clear()
@@ -126,13 +161,36 @@ class RedisStreamsDriver(EventBusDriver):
 
     async def publish(self, envelope) -> None:
         if envelope.delay and envelope.delay > 0:
-            await asyncio.sleep(envelope.delay)
+            # Native delay: park it in Redis NOW (crash-safe), scored by due
+            # time; the promoter loop moves it to the streams when due.
+            try:
+                await self._redis.zadd(
+                    self.DELAYED_KEY,
+                    {envelope.model_dump_json(): time.time() + envelope.delay},
+                )
+            except (redis_exceptions.ConnectionError, redis_exceptions.TimeoutError) as e:
+                raise EventBusConnectionError(f"Redis broker unreachable: {e}") from e
+            return
         fields = {"json": envelope.model_dump_json()}
         try:
             await self._redis.xadd(f"{self.STREAM_PREFIX}{envelope.event}", fields,
                                    maxlen=self._maxlen, approximate=True)
         except (redis_exceptions.ConnectionError, redis_exceptions.TimeoutError) as e:
             raise EventBusConnectionError(f"Redis broker unreachable: {e}") from e
+
+    async def _promote_delayed(self) -> None:
+        """Poll loop: run the atomic promotion script every DELAY_POLL_MS."""
+        while True:
+            try:
+                await self._redis.eval(
+                    self._PROMOTE_LUA, 1, self.DELAYED_KEY,
+                    time.time(), self.STREAM_PREFIX, self._maxlen,
+                )
+            except asyncio.CancelledError:
+                raise
+            except redis_exceptions.RedisError:
+                pass  # broker hiccup: next tick retries, envelopes stay parked
+            await asyncio.sleep(self._delay_poll_s)
 
     # ─── TRANSPORT: subscribe / readers ───────────────────
 

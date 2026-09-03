@@ -1,11 +1,11 @@
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class UpdateVarRequest(BaseModel):
     value: Optional[str] = Field(default=None, max_length=500)
-    enabled: Optional[bool] = None
+    enabled: Optional[bool] = Field(default=None)
 
 
 class VarData(BaseModel):

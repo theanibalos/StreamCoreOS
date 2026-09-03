@@ -1,6 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 _USERLEVELS = r"^(everyone|subscriber|vip|regular|moderator|broadcaster)$"

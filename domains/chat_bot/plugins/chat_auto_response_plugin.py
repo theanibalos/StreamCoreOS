@@ -1,4 +1,4 @@
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 _FOLLOW_MSG = "Thanks for the follow, {user}! Welcome to the community PogChamp"

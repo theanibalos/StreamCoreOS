@@ -2,7 +2,7 @@ import re
 import random as _random
 from datetime import datetime, timezone
 from urllib.parse import urlencode
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 _VAR_PATTERN = re.compile(r'\{var:([a-z0-9_]+)\}')
 _RANDOM_PATTERN = re.compile(r'\{random (\d+)-(\d+)\}')

@@ -20,14 +20,21 @@ PUBLIC CONTRACT (what plugins use):
         has_files=False,                  # Optional: if True, enables multipart/form-data
     )
 
-    # Serve static files from a directory
+    # Serve static files from a directory. Only DEFAULT_STATIC_EXTENSIONS are
+    # served; pass allow_extensions to narrow or widen that set.
     http.mount_static("/static", "./public")
+
+    # Serve a UI: html=True resolves directory requests to their index.html.
+    # Mounts are applied after every endpoint, so "/" does not shadow the API.
+    http.mount_static("/", "./ui", html=True)
 
     # WebSocket endpoint
     http.add_ws_endpoint(
         path="/ws/chat",
-        on_connect=self.on_ws_connect,     # called when client connects (receives WebSocket)
+        on_connect=self.on_ws_connect,     # receives a WebSocketConnection (types.py)
         on_disconnect=self.on_ws_disconnect,  # optional, called on disconnect
+        auth_validator=self._validate,     # optional; rejects BEFORE the handshake.
+                                           # on_connect then takes (conn, auth_payload)
     )
 
     # Server-Sent Events endpoint
@@ -44,7 +51,8 @@ HANDLER SIGNATURE:
 
     async def execute(self, data: dict, context: HttpContext) -> dict:
         # 'data' is a flat dict merging: path params + query params + body
-        # If has_files=True, 'data["_files"]' contains the list of UploadFile objects.
+        # If has_files=True, 'data["_files"]' holds UploadedFile objects (types.py):
+        #   .filename  .content_type  .stream (sync, for storage clients)  await .read()
         # 'context' is an HttpContext handle for response manipulation
         return {"success": True, "data": {...}}
 
@@ -55,10 +63,10 @@ RESPONSE CONTRACT:
     # Success (HTTP 200 by default)
     return {"success": True, "data": {...}}
 
-    # Business error (HTTP 200 — client checks the 'success' field)
+    # Business error (HTTP 400 by default — set_status() was never called)
     return {"success": False, "error": "User not found"}
 
-    # Explicit HTTP status override via context
+    # More specific status: set_status() always wins over the default
     context.set_status(404)
     return {"success": False, "error": "User not found"}
 
@@ -81,11 +89,19 @@ RESPONSE CONTRACT:
 HttpContext API:
 ────────────────────────────────────────────────────────────────────────────────
 
-    context.set_status(code: int)           → Override HTTP status code (default: 200)
+    context.set_status(code: int)           → Override HTTP status code
+                                               (default: 200 on success, 400 on
+                                               success:false unless overridden)
     context.set_cookie(key, value, ...)     → Set a response cookie
     context.set_header(key, value)          → Add a custom response header
     context.redirect(url, status=302)       → Redirect to another URL
     context.set_binary_response(content, media_type) → Return raw binary data
+    context.client_ip                       → Best-effort caller IP (property, not a
+                                               call) — a raw signal for the PLUGIN's own
+                                               policy (identity-aware rate limiting,
+                                               audit logging...). See INSTRUCTIONS_FOR_AI.md's
+                                               Rate Limiting Pattern: this tool never
+                                               decides a policy, it only exposes the signal.
 
 
 AUTH VALIDATOR CONTRACT:
@@ -100,23 +116,35 @@ AUTH VALIDATOR CONTRACT:
     # The returned payload is injected into data["_auth"] for the handler to use.
     # The token is extracted from: Authorization: Bearer <token>  OR  Cookie: access_token=<token>
 
+    # WHY THIS IS A CALLBACK. This tool must never import an auth tool: they are
+    # swapped separately, and one of them is not even installed by default
+    # (`microcoreos add auth`). A plugin receives both by injection and wires
+    # them together itself — composition lives in the plugin layer, never
+    # between tools. That decoupling is what let auth move out of the default
+    # project without one line changing here.
+
 
 REPLACEMENT STANDARD (implement this to swap the backend):
 ────────────────────────────────────────────────────────────────────────────────
 
     To create an aiohttp-based implementation:
 
-    1. Create tools/aiohttp_server/aiohttp_server_tool.py
+    1. Create tools/aiohttp_server/aiohttp_server_tool.py  lint:no-path
     2. name = "http"                               ← same injection key, plugins are unaffected
     3. Implement the public methods:
           add_endpoint(path, method, handler, tags, request_model, response_model, auth_validator, has_files)
-          mount_static(path, directory_path)
-          add_ws_endpoint(path, on_connect, on_disconnect)
+          mount_static(path, directory_path, html=False, allow_extensions=None)
+          add_ws_endpoint(path, on_connect, on_disconnect, auth_validator)
           add_sse_endpoint(path, generator, tags, auth_validator)
     4. Handler contract: handler(data: dict, context: HttpContext) → dict
        - data: flat merge of path params + query params + body (+ _files if applicable)
-       - context: instance of HttpContext (or a compatible duck-type)
-    5. Honor context.status_code and context.binary_content for the HTTP response
+       - context: instance of HttpContext (or a compatible duck-type), constructed with
+         client_ip= the best-effort caller IP for this backend's own request object
+         (see pipeline.py's _extract_client_ip for the header trust order to mirror)
+    5. Honor context.status_code and context.binary_content for the HTTP response.
+       If the handler never called context.set_status() and the result dict has
+       success: False, default to HTTP 400 instead of 200 (context._status_explicit
+       tracks whether set_status() was called).
     6. For auth: call auth_validator(token), inject payload into data["_auth"]
     7. On auth failure: return HTTP 401 with {"success": False, "error": "..."}
     8. On unhandled exception: return HTTP 500 with {"success": False, "error": "Internal server error"}
@@ -125,135 +153,34 @@ REPLACEMENT STANDARD (implement this to swap the backend):
 """
 
 import os
-import uuid
+import stat
 import asyncio
 import inspect
 import uvicorn
-from typing import Optional, Any, Callable
-from pydantic import BaseModel
+from typing import Optional, Callable
 from fastapi.exceptions import RequestValidationError
-from core.base_tool import BaseTool
-from core.context import current_identity_var, current_event_id_var
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, File, UploadFile
+from microcoreos import BaseTool
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, File, UploadFile, Security
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.concurrency import run_in_threadpool
 
+# HttpContext and the request-processing pipeline were split out into their
+# own modules (mechanical move, no behavior change). Re-exported here since
+# external code imports HttpContext from this module.
+from tools.http_server.context import HttpContext  # noqa: F401 — re-export
+from tools.http_server.pipeline import _process_request, _sse_response, _extract_ws_token
+from tools.http_server.types import UploadedFile, WebSocketConnection  # noqa: F401 — re-export
 
-def _serialize(obj):
-    """Recursively convert Pydantic models to dicts so JSONResponse can serialize them."""
-    if isinstance(obj, BaseModel):
-        return _serialize(obj.model_dump())
-    if isinstance(obj, dict):
-        return {k: _serialize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_serialize(i) for i in obj]
-    return obj
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# HTTP CONTEXT
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class HttpContext:
-    """
-    Response manipulation handle provided to every HTTP handler.
-    Passed as the second argument: async def execute(self, data: dict, context: HttpContext)
-
-    Use to override the status code, set cookies, or add custom headers.
-    All mutations are applied to the response before it is sent to the client.
-    """
-
-    def __init__(self) -> None:
-        self._status_code: int = 200
-        self._cookies: list[dict] = []
-        self._headers: dict[str, str] = {}
-
-    def set_status(self, code: int) -> None:
-        """
-        Override the HTTP response status code. Default is 200.
-
-        Examples:
-            context.set_status(201)  # Created
-            context.set_status(404)  # Not Found
-            context.set_status(204)  # No Content
-        """
-        self._status_code = code
-
-    def set_cookie(
-        self,
-        key: str,
-        value: str,
-        max_age: int = 3600,
-        httponly: bool = True,
-        samesite: str = "lax",
-        secure: bool = True,
-        path: str = "/",
-    ) -> None:
-        """
-        Set a cookie on the HTTP response.
-        
-        Defaults:
-            httponly=True: Prevents JavaScript access (XSS protection).
-            samesite="lax": Prevents most CSRF attacks.
-            secure=True: Cookie only sent over HTTPS. Set to False for local HTTP development.
-        """
-        self._cookies.append({
-            "key": key,
-            "value": value,
-            "max_age": max_age,
-            "httponly": httponly,
-            "samesite": samesite,
-            "secure": secure,
-            "path": path,
-        })
-
-    def set_header(self, key: str, value: str) -> None:
-        """Add a custom header to the HTTP response."""
-        self._headers[key] = value
-
-    def redirect(self, url: str, status: int = 302) -> None:
-        """
-        Redirect the browser to the given URL.
-        The handler's return value is ignored when this is called.
-
-        Example:
-            context.redirect("http://localhost:5173/")
-            context.redirect("/dashboard", status=301)
-        """
-        self._redirect_url = url
-        self._status_code = status
-
-    def apply_to(self, response: Any) -> None:
-        """Apply all accumulated cookies and headers to the given response object."""
-        for key, value in self._headers.items():
-            response.headers[key] = value
-        for cookie in self._cookies:
-            response.set_cookie(**cookie)
-
-    def set_binary_response(self, content: bytes, media_type: str = "application/octet-stream") -> None:
-        """
-        Instruct the tool to return raw binary data instead of the default JSON envelope.
-        The handler's return value will be ignored.
-        """
-        self._binary_content = content
-        self._media_type = media_type
-
-    @property
-    def binary_content(self) -> tuple[bytes, str] | None:
-        content = getattr(self, "_binary_content", None)
-        if content is not None:
-            return content, getattr(self, "_media_type", "application/octet-stream")
-        return None
-
-    @property
-    def status_code(self) -> int:
-        return self._status_code
-
-    @property
-    def redirect_url(self) -> str | None:
-        return getattr(self, "_redirect_url", None)
+# Extensions mount_static() serves when the caller declares none.
+DEFAULT_STATIC_EXTENSIONS = frozenset({
+    "html", "htm", "css", "js", "mjs", "json", "txt", "xml", "webmanifest",
+    "svg", "png", "jpg", "jpeg", "gif", "webp", "avif", "ico",
+    "woff", "woff2", "ttf", "otf",
+    "mp4", "webm", "mp3", "ogg", "wasm", "pdf",
+})
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -267,6 +194,23 @@ class HttpServerTool(BaseTool):
         self._port: int = int(os.getenv("HTTP_PORT", 5000))
         self._server: Optional[uvicorn.Server] = None
         self._pending_endpoints: list[dict] = []
+        self._pending_mounts: list[dict] = []
+        self._pre_mount_hooks: list[Callable] = []
+        # Documentation-only security scheme: shows the "Authorize" button in
+        # Swagger UI (/docs) and marks protected routes with a lock icon.
+        # auto_error=False is critical — actual token validation still happens
+        # in _process_request via auth_validator; this dependency must never
+        # short-circuit with its own 401/403 before that runs.
+        self._bearer_scheme = HTTPBearer(
+            auto_error=False,
+            description="Paste the token as-is (JWT, no 'Bearer ' prefix — Swagger adds it).",
+        )
+        # Chaos/ops pause (Issue 34): owner identities ("domain.Class", or a
+        # bare domain prefix) whose endpoints answer 503 without dispatching
+        # (routes stay mounted — the "service" is simply down for callers).
+        # Mirror of the event bus's set; mutated only by the chaos extras
+        # plugin via its sanctioned raw-tool introspection.
+        self._paused_owners: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -309,11 +253,25 @@ class HttpServerTool(BaseTool):
             response.headers["X-Frame-Options"] = "DENY"
             return response
 
-        cors_origins_raw = os.getenv("HTTP_CORS_ORIGINS", "*")
         cors_origins = [o.strip() for o in cors_origins_raw.split(",")] if cors_origins_raw != "*" else ["*"]
+        # Cookie auth from a different origin needs this on; it is off by
+        # default because turning it on makes every cross-origin request
+        # carry the session cookie.
+        allow_credentials = os.getenv("HTTP_CORS_CREDENTIALS", "false").strip().lower() == "true"
+
+        if allow_credentials and "*" in cors_origins:
+            # Starlette answers this pair by echoing the caller's Origin back,
+            # so every site could send the session cookie — and the preflight
+            # would approve the X-Requested-With that the CSRF guard needs.
+            raise ValueError(
+                "HTTP_CORS_CREDENTIALS=true requires an explicit HTTP_CORS_ORIGINS list. "
+                "With '*' every origin would be allowed to send the session cookie."
+            )
+
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
+            allow_credentials=allow_credentials,
             allow_methods=["*"],
             allow_headers=["*"],
         )
@@ -325,7 +283,9 @@ class HttpServerTool(BaseTool):
         Endpoints are buffered (not registered immediately in add_endpoint) to allow
         FastAPI to sort static paths before parameterized paths, preventing routing conflicts.
         """
+        self._run_pre_mount_hooks()
         self._register_all_endpoints()
+        self._register_all_static_mounts()
         host = os.getenv("HTTP_HOST", "127.0.0.1")
         log_level = os.getenv("HTTP_LOG_LEVEL", "warning")
         config = uvicorn.Config(self.app, host=host, port=self._port, log_level=log_level)
@@ -363,26 +323,54 @@ class HttpServerTool(BaseTool):
           'data' = flat merge of [path params] + [query params] + [body/form fields].
           Special keys in 'data':
             - data["_auth"]: contains the payload from auth_validator if successful.
-            - data["_files"]: list of FastAPI UploadFile objects (only if has_files=True).
+            - data["_files"]: list of UploadedFile objects (only if has_files=True).
+                Fields: .filename, .content_type, .stream (sync file object), await .read().
         - SECURITY DEFAULTS:
             - Cookies set via context.set_cookie are 'Secure=True', 'HttpOnly=True', 'SameSite=Lax'.
             - CSRF Guard: Mutations (POST/PUT/DELETE) using cookie auth REQUIRE 'X-Requested-With' header.
+            - Swagger UI (/docs): endpoints with auth_validator show a lock icon and accept
+              tokens via the "Authorize" button (documentation-only; real check unaffected).
         - CAPABILITIES:
             - add_endpoint(path, method, handler, tags=None, request_model=None,
                            response_model=None, auth_validator=None, has_files=False):
                 - has_files: if True, enables multipart/form-data. Request model fields 
                   become Form fields. To use a file: file = data["_files"][0]; 
                   await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
-            - mount_static(path, directory_path): Serve static files from a directory.
-            - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
-            - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
+            - mount_static(path, directory_path, html=False, allow_extensions=None):
+                Serve static files from a directory. Deny by default: only files whose
+                extension is allowed are served (default DEFAULT_STATIC_EXTENSIONS; pass
+                a set to declare your own, or "*" to serve everything). Dotfiles are
+                always refused except under '.well-known/'. Use html=True to serve
+                index.html for directory requests, which a UI/SPA mounted at "/" needs.
+                Raises ValueError if the directory does not exist.
+            - add_ws_endpoint(path, on_connect, on_disconnect=None, auth_validator=None):
+                WebSocket support. on_connect receives a WebSocketConnection: send_text,
+                send_json, receive_text, receive_json, close, query_params, path_params.
+                With auth_validator the token is read from the Authorization header, the
+                `token` query param, then the access_token cookie; an invalid one is
+                closed with 1008 BEFORE the handshake and on_connect takes (conn, payload).
+            - add_sse_endpoint(path, generator, tags=None, auth_validator=None):
                 Server-Sent Events. generator yields formatted strings: "data: {...}\\n\\n".
+            - register_pre_mount_hook(hook): hook(endpoints: list[dict]) is called once in
+                on_boot_complete(), before routes are mounted, with every buffered endpoint
+                (method, path, owner) — the first point where all plugins' add_endpoint()
+                calls are guaranteed to have run. Used for boot-time checks across ALL
+                registered routes (e.g. the architecture linter's route-collision scan).
         - HttpContext CAPABILITIES (inside handler):
-            - context.set_status(code: int): Override HTTP status (default: 200).
+            - context.set_status(code: int): Override HTTP status. Default is 200 on
+              success:true; 400 on success:false unless set_status() is called.
             - context.redirect(url: str, status=302): Redirect to another URL.
             - context.set_cookie(key, value, max_age=3600, ...): Set secure response cookie.
             - context.set_header(key, value): Add custom response header.
             - context.set_binary_response(content: bytes, media_type: str): Return raw file.
+            - context.raw_body: Exact inbound HTTP request body bytes. Use for webhook
+              signature verification; providers sign bytes, not a re-serialized dict.
+            - context.get_header(key, default=None): Read inbound request headers
+              case-insensitively (e.g. X-Signature for signed webhooks).
+            - context.client_ip: Best-effort caller IP (property). Raw signal only — the
+              plugin decides what to do with it (e.g. state.increment() keyed by IP for
+              an identity-aware business rule). Never security-authoritative on its own;
+              see context.py's client_ip docstring for the trust order and its limits.
         - RESPONSE CONTRACT:
             - Standard: return {"success": bool, "data": ..., "error": ...}
             - WARNING: All values in 'data' must be JSON-serializable. Pydantic model 
@@ -417,35 +405,213 @@ class HttpServerTool(BaseTool):
             "has_files": has_files,
         })
 
-    def mount_static(self, path: str, directory_path: str) -> None:
-        """Serves static files from a local directory."""
-        if os.path.exists(directory_path):
-            self.app.mount(path, StaticFiles(directory=directory_path), name=path)
+    def register_pre_mount_hook(self, hook: Callable[[list[dict]], None]) -> None:
+        """
+        Registers a callback invoked once, in on_boot_complete(), with the full
+        list of buffered endpoints — the first point where every plugin's
+        add_endpoint() calls are guaranteed to have run (add_endpoint only
+        buffers; per-plugin on_boot() calls race each other, but they all
+        finish before any tool's on_boot_complete does).
+        Each endpoint dict has: method, path, owner (the registering plugin's
+        identity, or its handler's class name as a fallback).
+        Used by cross-cutting boot-time checks (e.g. the architecture linter's
+        route-collision scan) that need visibility into ALL endpoints, not
+        just the ones the calling plugin registered itself.
+        """
+        self._pre_mount_hooks.append(hook)
 
-    def add_ws_endpoint(self, path: str, on_connect: Callable, on_disconnect: Optional[Callable] = None) -> None:
-        """Registers a WebSocket endpoint."""
+    def _run_pre_mount_hooks(self) -> None:
+        if not self._pre_mount_hooks:
+            return
+        endpoints = []
+        for ep in self._pending_endpoints:
+            owner_obj = getattr(ep["handler"], "__self__", None)
+            owner = getattr(owner_obj, "_identity", None) or (
+                owner_obj.__class__.__name__ if owner_obj is not None else repr(ep["handler"])
+            )
+            endpoints.append({"method": ep["method"], "path": ep["path"], "owner": owner})
+        for hook in self._pre_mount_hooks:
+            hook(endpoints)
+
+    def mount_static(
+        self,
+        path: str,
+        directory_path: str,
+        html: bool = False,
+        allow_extensions: Optional[set] = None,
+        optional: bool = False,
+    ) -> None:
+        """Serves static files from a local directory. Deny by default.
+
+        Only files whose extension is in allow_extensions are reachable;
+        everything else 404s. Dot-prefixed segments ('.env', '.git/config') are
+        always refused, except under '.well-known/'.
+
+            allow_extensions=None                   # DEFAULT_STATIC_EXTENSIONS
+            allow_extensions={"html", "css", "js"}  # exactly these
+            allow_extensions="*"                    # serve everything
+
+        html=True serves 'index.html' for directory requests, which is what a
+        UI or SPA mounted at "/" needs. Off by default: it also makes a miss
+        render '404.html' when that file exists.
+
+        optional=True skips the mount gracefully with a warning if directory_path
+        does not exist yet (e.g. unbuilt frontend in dev), instead of raising ValueError.
+
+        The mount is buffered and applied in on_boot_complete(), after every
+        endpoint. Starlette matches routes in registration order and a Mount
+        matches its whole subtree, so mounting "/" earlier would shadow the API.
+
+        Raises ValueError if the directory does not exist and optional is False.
+        """
+        if not os.path.isdir(directory_path):
+            if optional:
+                print(
+                    f"[HttpServer] ⚠️  mount_static: optional directory not found: {directory_path!r} "
+                    f"(skipping mount)"
+                )
+                return
+            raise ValueError(
+                f"mount_static: directory not found: {directory_path!r} "
+                f"(resolved to {os.path.abspath(directory_path)!r})"
+            )
+
+
+        if allow_extensions is None:
+            allow_extensions = DEFAULT_STATIC_EXTENSIONS
+        elif allow_extensions != "*":
+            allow_extensions = frozenset(e.lstrip(".").lower() for e in allow_extensions)
+
+        self._pending_mounts.append({
+            "path": path,
+            "directory_path": directory_path,
+            "html": html,
+            "allow_extensions": allow_extensions,
+        })
+
+    class _AllowlistedStaticFiles(StaticFiles):
+        """
+        StaticFiles restricted to declared extensions. Plain StaticFiles serves
+        everything under the directory; this serves only what was allowed.
+
+        Blocked files return "no result" rather than raising, so they 404
+        exactly like missing ones and existence is never confirmed.
+
+        '.well-known/' bypasses both checks: it is public by spec and its ACME
+        challenge tokens have no extension.
+        """
+
+        _WELL_KNOWN = ".well-known"
+
+        def __init__(self, *args, allow_extensions, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.allow_extensions = allow_extensions
+
+        def lookup_path(self, path: str):
+            # get_path() normalizes the mount root to "." and strips traversal,
+            # so "" and "." are structural rather than dot-prefixed names.
+            segments = [s for s in path.split(os.sep) if s not in ("", ".")]
+            exempt = bool(segments) and segments[0] == self._WELL_KNOWN
+
+            if not exempt and any(s.startswith(".") for s in segments):
+                return "", None
+
+            full_path, stat_result = super().lookup_path(path)
+
+            # Directories pass through unchecked: html mode resolves them by
+            # re-entering here with "<dir>/index.html", which is checked.
+            if stat_result is None or stat.S_ISDIR(stat_result.st_mode):
+                return full_path, stat_result
+
+            if exempt or self.allow_extensions == "*":
+                return full_path, stat_result
+
+            ext = os.path.splitext(segments[-1])[1].lstrip(".").lower()
+            if ext not in self.allow_extensions:
+                return "", None
+
+            return full_path, stat_result
+
+    def _register_all_static_mounts(self) -> None:
+        """
+        Applies buffered static mounts. Must run after _register_all_endpoints():
+        a Mount swallows every route registered after it within its subtree.
+        """
+        for m in self._pending_mounts:
+            self.app.mount(
+                m["path"],
+                self._AllowlistedStaticFiles(
+                    directory=m["directory_path"],
+                    html=m["html"],
+                    allow_extensions=m["allow_extensions"],
+                ),
+                name=m["path"],
+            )
+            print(f"[HttpServer] Static mount — {m['path']!r} → {m['directory_path']!r} (html={m['html']})")
+
+    def add_ws_endpoint(
+        self,
+        path: str,
+        on_connect: Callable,
+        on_disconnect: Optional[Callable] = None,
+        auth_validator: Optional[Callable] = None,
+    ) -> None:
+        """
+        Registers a WebSocket endpoint.
+
+        auth_validator has the same contract as add_endpoint's: it receives the
+        token and returns a payload, or a falsy value to reject. It runs BEFORE
+        the handshake is accepted — a rejected connection is closed with 1008
+        and on_connect never sees it.
+
+        Browsers cannot set headers on a WebSocket handshake, so the token is
+        read from the Authorization header, the `token` query parameter, then
+        the access_token cookie, in that order. The query parameter is there
+        because browsers have no other option; it lands in access logs and
+        proxy logs, so prefer short-lived tokens for it.
+
+        on_connect receives a WebSocketConnection (see types.py) plus, when
+        auth_validator is set, the payload it returned.
+        """
         @self.app.websocket(path)
         async def ws_handler(websocket: WebSocket):
+            auth_payload = None
+            if auth_validator:
+                token = _extract_ws_token(websocket)
+                if token:
+                    if inspect.iscoroutinefunction(auth_validator):
+                        auth_payload = await auth_validator(token)
+                    else:
+                        auth_payload = await run_in_threadpool(auth_validator, token)
+                if not auth_payload:
+                    # Rejected before accept(): no handshake, nothing to close
+                    # gracefully, and on_connect is never reached.
+                    await websocket.close(code=1008)
+                    print(f"[HttpServer] 🛡️ WebSocket rejected on {path}: invalid or missing token")
+                    return
+
             await websocket.accept()
+            conn = WebSocketConnection(websocket)
+            args = (conn, auth_payload) if auth_validator else (conn,)
             try:
                 if inspect.iscoroutinefunction(on_connect):
-                    await on_connect(websocket)
+                    await on_connect(*args)
                 else:
-                    await run_in_threadpool(on_connect, websocket)
+                    await run_in_threadpool(on_connect, *args)
             except WebSocketDisconnect:
                 if on_disconnect:
                     if inspect.iscoroutinefunction(on_disconnect):
-                        await on_disconnect(websocket)
+                        await on_disconnect(conn)
                     else:
-                        await run_in_threadpool(on_disconnect, websocket)
+                        await run_in_threadpool(on_disconnect, conn)
             except Exception as e:
                 print(f"[HttpServer] WebSocket error on {path}: {e}")
                 if on_disconnect:
                     try:
                         if inspect.iscoroutinefunction(on_disconnect):
-                            await on_disconnect(websocket)
+                            await on_disconnect(conn)
                         else:
-                            await run_in_threadpool(on_disconnect, websocket)
+                            await run_in_threadpool(on_disconnect, conn)
                     except Exception:
                         pass
 
@@ -462,50 +628,31 @@ class HttpServerTool(BaseTool):
         generator: async generator callable(data: dict) that yields pre-formatted SSE strings,
                    e.g. "data: {...}\\n\\n". The generator's finally block runs on client disconnect.
         """
-        from fastapi.responses import StreamingResponse
-
-        async def sse_handler(request: Request):
-            data: dict = {}
-            data.update(request.query_params)
-            data.update(request.path_params)
-
-            if auth_validator:
-                token = self._extract_bearer_token(request)
-                if not token:
-                    return JSONResponse(
-                        status_code=401,
-                        content={"success": False, "error": "Missing authorization token"},
-                    )
-                if inspect.iscoroutinefunction(auth_validator):
-                    payload = await auth_validator(token)
-                else:
-                    payload = await run_in_threadpool(auth_validator, token)
-                if not payload:
-                    return JSONResponse(
-                        status_code=401,
-                        content={"success": False, "error": "Invalid or expired token"},
-                    )
-                data["_auth"] = payload
-
-            async def event_stream():
-                gen = generator(data)
-                try:
-                    async for chunk in gen:
-                        if await request.is_disconnected():
-                            break
-                        yield chunk
-                finally:
-                    await gen.aclose()
-
-            return StreamingResponse(
-                event_stream(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
+        if auth_validator:
+            # Documentation-only Bearer dependency (see add_endpoint) so Swagger
+            # UI marks this SSE route as protected. Real auth check is below.
+            async def sse_handler(
+                request: Request,
+                _bearer_auth: Optional[HTTPAuthorizationCredentials] = Security(self._bearer_scheme),
+            ):
+                return await _sse_response(request, generator, auth_validator)
+        else:
+            async def sse_handler(request: Request):
+                return await _sse_response(request, generator, auth_validator)
 
         clean_path = path.replace("/", "_")
         sse_handler.__name__ = f"sse{clean_path}"
-        self.app.add_api_route(path, sse_handler, methods=["GET"], tags=tags or [])
+        # Declare the real media type in OpenAPI: without response_class +
+        # responses, FastAPI would advertise application/json for a route that
+        # actually emits text/event-stream, and contract-driven consumers
+        # (probes, generated clients) would treat it as a normal JSON endpoint.
+        from fastapi.responses import StreamingResponse
+        self.app.add_api_route(
+            path, sse_handler, methods=["GET"], tags=tags or [],
+            response_class=StreamingResponse,
+            responses={200: {"content": {"text/event-stream": {}},
+                             "description": "Server-Sent Events stream"}},
+        )
 
     # ── Endpoint registration ────────────────────────────────────────────────────
 
@@ -555,18 +702,18 @@ class HttpServerTool(BaseTool):
         # __signature__ is overridden below to control what Swagger shows.
         if request_model and method == "GET":
             async def fastapi_wrapper(request: Request, params: request_model = Depends(), **kwargs):
-                return await self._process_request(request, params, handler, auth_validator)
+                return await _process_request(request, params, handler, auth_validator, self._paused_owners)
         elif has_files:
             # If we have files and a request model, we want the model fields to show up as Form fields.
             # We pass kwargs to _process_request which will contain both path params and Form params.
             async def fastapi_wrapper(request: Request, files: Optional[list[UploadFile]] = File(None), **kwargs):
-                return await self._process_request(request, kwargs, handler, auth_validator, files=files)
+                return await _process_request(request, kwargs, handler, auth_validator, self._paused_owners, files=files)
         elif request_model:
             async def fastapi_wrapper(request: Request, body: request_model = None, **kwargs):
-                return await self._process_request(request, body, handler, auth_validator)
+                return await _process_request(request, body, handler, auth_validator, self._paused_owners)
         else:
             async def fastapi_wrapper(request: Request, **kwargs):
-                return await self._process_request(request, None, handler, auth_validator)
+                return await _process_request(request, None, handler, auth_validator, self._paused_owners)
 
         # Override __signature__ to control OpenAPI documentation.
         # Always remove **kwargs; add explicit path params and Form params if present.
@@ -603,6 +750,20 @@ class HttpServerTool(BaseTool):
                     )
                 )
 
+        # 3. Add a documentation-only Bearer security dependency for protected
+        # routes, so Swagger UI (/docs) shows the lock icon + honors the
+        # "Authorize" button by sending "Authorization: Bearer <token>".
+        # Real auth is still enforced in _process_request; this is metadata only.
+        if auth_validator:
+            params.append(
+                inspect.Parameter(
+                    "_bearer_auth",
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    default=Security(self._bearer_scheme),
+                    annotation=Optional[HTTPAuthorizationCredentials],
+                )
+            )
+
         fastapi_wrapper.__signature__ = sig.replace(parameters=params)
 
         fastapi_wrapper.__name__ = operation_id
@@ -614,178 +775,3 @@ class HttpServerTool(BaseTool):
             response_model=response_model,
             operation_id=operation_id,
         )
-
-    # ── Request processing pipeline ──────────────────────────────────────────────
-
-    async def _process_request(
-        self,
-        request: Request,
-        body_data: Any,
-        handler: Callable,
-        auth_validator: Optional[Callable],
-        files: Optional[list] = None,
-    ) -> Any:
-        """
-        Core request processing pipeline. Executed for every incoming HTTP request.
-
-        Phases:
-            1. Data Assembly   — merge path params + query params + body into one flat dict
-            2. Context Seeding — set causality ContextVars (event_id, identity)
-            3. Authentication  — validate token if auth_validator is provided → inject into data["_auth"]
-            4. Dispatch        — call the plugin handler (async or sync)
-            5. Response        — serialize result as JSONResponse with the correct status code
-        """
-        # ── Phase 1: Data Assembly ─────────────────────────────────────────────
-        data: dict = {}
-        # 1. Query parameters always come from the request object
-        data.update(request.query_params)
-
-        # 2. Path parameters always included
-        data.update(request.path_params)
-
-        # 3. Body/Form data
-        # If body_data is provided (from FastAPI DI), it contains body/form fields
-        if body_data is not None:
-            if hasattr(body_data, "model_dump"):
-                data.update(body_data.model_dump())
-            elif hasattr(body_data, "dict"):
-                data.update(body_data.dict())
-            elif isinstance(body_data, dict):
-                data.update(body_data)
-        else:
-            # Fallback: manual extraction if no DI model was used
-            content_type = request.headers.get("Content-Type", "")
-            if "application/json" in content_type:
-                try:
-                    raw_json = await request.json()
-                    if isinstance(raw_json, dict):
-                        data.update(raw_json)
-                except Exception: pass
-            elif "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
-                try:
-                    form = await request.form()
-                    for key, value in form.items():
-                        if not hasattr(value, "filename"): # Only take non-field data
-                            data[key] = value
-                except Exception: pass
-
-        if files is not None:
-            data["_files"] = files
-
-        # ── Phase 2: Causality Context Seeding ────────────────────────────────
-        # Honor X-Request-ID from an upstream MicroCoreOS service if present,
-        # so the entire cross-service call chain shares the same root event ID.
-        # If absent (first hop or external client), generate a fresh UUID.
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        # Same identity scheme as the event bus: prefer the kernel-stamped
-        # "domain.ClassName" so emitters and subscribers share one format.
-        owner = getattr(handler, "__self__", None)
-        if owner is not None:
-            base = getattr(owner, "_identity", None) or owner.__class__.__name__
-            identity = f"{base}.{handler.__name__}"
-        else:
-            identity = getattr(handler, "__name__", "unknown")
-        id_token = current_event_id_var.set(request_id)
-        ident_token = current_identity_var.set(identity)
-        print(
-            f"[HttpServer] → {request.method} {request.url.path}"
-            f"  req={request_id[:8]}  identity={identity}"
-        )
-
-        try:
-            context = HttpContext()
-
-            # ── Phase 3: Authentication ────────────────────────────────────────
-            if auth_validator:
-                token = self._extract_bearer_token(request)
-                if not token:
-                    return JSONResponse(
-                        status_code=401,
-                        content={"success": False, "error": "Missing authorization token"},
-                    )
-                if inspect.iscoroutinefunction(auth_validator):
-                    payload = await auth_validator(token)
-                else:
-                    payload = await run_in_threadpool(auth_validator, token)
-
-                if not payload:
-                    return JSONResponse(
-                        status_code=401,
-                        content={"success": False, "error": "Invalid or expired token"},
-                    )
-                data["_auth"] = payload
-
-            # ── Phase 4: Handler Dispatch ──────────────────────────────────────
-            if inspect.iscoroutinefunction(handler):
-                result = await handler(data, context)
-            else:
-                result = await run_in_threadpool(handler, data, context)
-
-            print(
-                f"[HttpServer] ← {request.method} {request.url.path}"
-                f"  req={request_id[:8]}  status={context.status_code}"
-            )
-
-            # ── Phase 5: Response ──────────────────────────────────────────────
-            if context.redirect_url:
-                from fastapi.responses import RedirectResponse
-                redirect_response = RedirectResponse(
-                    url=context.redirect_url, status_code=context.status_code
-                )
-                for key, value in context._headers.items():
-                    redirect_response.headers[key] = value
-                for cookie in context._cookies:
-                    redirect_response.set_cookie(**cookie)
-                return redirect_response
-
-            binary = context.binary_content
-            if binary:
-                from fastapi.responses import Response
-                content, media_type = binary
-                response = Response(content=content, media_type=media_type, status_code=context.status_code)
-                context.apply_to(response)
-                return response
-
-            json_response = JSONResponse(status_code=context.status_code, content=_serialize(result))
-            context.apply_to(json_response)
-            return json_response
-
-        except Exception as e:
-            # Unhandled exception: log the real error server-side, return generic message to client.
-            print(f"[HttpServer] 💥 Unhandled exception in '{identity}': {e}")
-            return JSONResponse(
-                status_code=500,
-                content={"success": False, "error": "Internal server error"},
-            )
-        finally:
-            current_identity_var.reset(ident_token)
-            current_event_id_var.reset(id_token)
-
-    # ── Utilities ────────────────────────────────────────────────────────────────
-
-    def _extract_bearer_token(self, request: Request) -> Optional[str]:
-        """
-        Extracts the Bearer token from the request.
-        Priority: 
-          1. Authorization header (Bearer) -> Preferred for Apps/CLI, immune to CSRF.
-          2. access_token cookie -> Subject to CSRF, requires X-Requested-With guard.
-        """
-        # 1. Bearer Token (Highest security, default for non-browser clients)
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            return auth_header[7:]
-
-        # 2. Cookie Auth (Web clients)
-        token = request.cookies.get("access_token")
-        if token:
-            # CSRF Guard: If it's a mutation method (POST/PUT/DELETE) and we are 
-            # using cookies, we MUST verify the request was initiated by our own 
-            # JavaScript. An attacker-controlled form cannot add custom headers.
-            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
-                if not request.headers.get("X-Requested-With"):
-                    print(f"[HttpServer] 🛡️ CSRF block: Mutation {request.method} "
-                          f"via cookie missing X-Requested-With header.")
-                    return None
-            return token
-
-        return None

@@ -1,7 +1,9 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel, Field
 
 # Internal event_bus events to forward as alerts
 _BUS_EVENTS = [
@@ -21,6 +23,21 @@ _EXCLUDED_TWITCH_EVENTS = {
     "stream.online",
     "stream.offline",
 }
+
+
+class TestAlertRequest(BaseModel):
+    event_type: str = Field(default="channel.subscribe", min_length=1)
+    data: Optional[dict] = Field(default=None)
+
+
+class TestAlertData(BaseModel):
+    event_type: str
+
+
+class TestAlertResponse(BaseModel):
+    success: bool
+    data: Optional[TestAlertData] = None
+    error: Optional[str] = None
 
 
 class DashboardAlertsPlugin(BasePlugin):
@@ -61,6 +78,8 @@ class DashboardAlertsPlugin(BasePlugin):
         self.http.add_endpoint(
             "/api/dashboard/alerts/test", "POST", self._test_alert,
             tags=["Dashboard"],
+            request_model=TestAlertRequest,
+            response_model=TestAlertResponse,
         )
 
     async def _test_alert(self, data: dict, context=None):

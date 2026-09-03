@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class TtsSettingsData(BaseModel):
@@ -26,15 +26,15 @@ class TtsSettingsResponse(BaseModel):
 
 
 class UpdateTtsSettingsRequest(BaseModel):
-    enabled:            Optional[bool]      = None
+    enabled:            Optional[bool]      = Field(default=None)
     default_voice:      Optional[str]       = Field(default=None, max_length=200)
     max_message_length: Optional[int]       = Field(default=None, ge=10, le=500)
-    skip_commands:      Optional[bool]      = None
-    skip_links:         Optional[bool]      = None
-    sub_only:           Optional[bool]      = None
-    mod_bypass:         Optional[bool]      = None
+    skip_commands:      Optional[bool]      = Field(default=None)
+    skip_links:         Optional[bool]      = Field(default=None)
+    sub_only:           Optional[bool]      = Field(default=None)
+    mod_bypass:         Optional[bool]      = Field(default=None)
     cooldown_seconds:   Optional[int]       = Field(default=None, ge=0, le=3600)
-    blocked_words:      Optional[list[str]] = None
+    blocked_words:      Optional[list[str]] = Field(default=None)
     redemption_title:   Optional[str]       = Field(default=None, max_length=100)
 
 

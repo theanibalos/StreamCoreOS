@@ -1,5 +1,5 @@
 import time
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class ChatBadgesPlugin(BasePlugin):
@@ -26,6 +26,7 @@ class ChatBadgesPlugin(BasePlugin):
             "GET",
             self.execute,
             tags=["Chat"],
+            response_model=dict[str, dict[str, str]],
         )
 
     async def execute(self, data: dict, context=None) -> dict:

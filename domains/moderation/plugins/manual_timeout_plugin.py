@@ -1,14 +1,14 @@
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class TimeoutRequest(BaseModel):
-    platform: str = "twitch"
-    channel_id: Optional[str] = None
-    user_id: Optional[str] = None
-    twitch_id: Optional[str] = None
-    display_name: Optional[str] = None
+    platform: str = Field(default="twitch", min_length=1)
+    channel_id: Optional[str] = Field(default=None)
+    user_id: Optional[str] = Field(default=None)
+    twitch_id: Optional[str] = Field(default=None)
+    display_name: Optional[str] = Field(default=None)
     duration_s: int = Field(default=600, ge=1, le=1209600)
     reason: Optional[str] = Field(default="Manual timeout", max_length=500)
 

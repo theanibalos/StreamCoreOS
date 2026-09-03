@@ -133,6 +133,7 @@ async def test_execute_insert_with_returning(db_with_table):
 
 
 async def test_transaction_raises_when_no_connection(db):
+    await db._db.close()
     db._db = None
     with pytest.raises(Exception):
         async with db.transaction():
@@ -146,6 +147,7 @@ async def test_health_check_active(db):
 
 
 async def test_health_check_no_connection(db):
+    await db._db.close()
     db._db = None
     assert await db.health_check() is False
 

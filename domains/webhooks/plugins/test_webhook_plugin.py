@@ -1,13 +1,13 @@
 import json
 from typing import Optional
-from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from pydantic import BaseModel, Field
+from microcoreos.base_plugin import BasePlugin
 
 class TestWebhookRequest(BaseModel):
-    url: str
-    method: str = "POST"
-    headers: Optional[str] = None
-    body_template: Optional[str] = None
+    url: str = Field(min_length=1)
+    method: str = Field(default="POST", min_length=1)
+    headers: Optional[str] = Field(default=None)
+    body_template: Optional[str] = Field(default=None)
 
 class TestWebhookResponse(BaseModel):
     success: bool

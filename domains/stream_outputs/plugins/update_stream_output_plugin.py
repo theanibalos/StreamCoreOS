@@ -1,20 +1,54 @@
 import json
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
-from domains.stream_outputs.plugins.list_stream_outputs_plugin import StreamOutputData, serialize_stream_output
+from microcoreos.base_plugin import BasePlugin
+
+
+class StreamOutputData(BaseModel):
+    id: int
+    name: str
+    platform: str
+    channel_id: str
+    enabled: bool
+    overlay_id: Optional[int] = None
+    rtmp_url: Optional[str] = None
+    stream_key_configured: bool
+    stream_key_preview: Optional[str] = None
+    status: str
+    settings: dict
+    created_at: str
+    updated_at: str
+
+
+def serialize_stream_output(row: dict) -> dict:
+    secret = row.get("stream_key_secret") or ""
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "platform": row["platform"],
+        "channel_id": row["channel_id"],
+        "enabled": bool(row["enabled"]),
+        "overlay_id": row.get("overlay_id"),
+        "rtmp_url": row.get("rtmp_url"),
+        "stream_key_configured": bool(secret),
+        "stream_key_preview": secret[-4:] if secret else None,
+        "status": row["status"],
+        "settings": json.loads(row.get("settings") or "{}") if isinstance(row.get("settings"), str) else (row.get("settings") or {}),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 class UpdateStreamOutputRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1)
     platform: Optional[str] = Field(default=None, min_length=1)
     channel_id: Optional[str] = Field(default=None, min_length=1)
-    enabled: Optional[bool] = None
-    overlay_id: Optional[int] = None
-    rtmp_url: Optional[str] = None
-    stream_key_secret: Optional[str] = None
-    status: Optional[str] = None
-    settings: Optional[dict] = None
+    enabled: Optional[bool] = Field(default=None)
+    overlay_id: Optional[int] = Field(default=None)
+    rtmp_url: Optional[str] = Field(default=None)
+    stream_key_secret: Optional[str] = Field(default=None)
+    status: Optional[str] = Field(default=None)
+    settings: Optional[dict] = Field(default=None)
 
 
 class UpdateStreamOutputResponse(BaseModel):
@@ -58,6 +92,8 @@ class UpdateStreamOutputPlugin(BasePlugin):
                 if field not in data:
                     continue
                 value = data[field]
+                if value is None and field in {"name", "platform", "channel_id", "status"}:
+                    continue
                 if field == "enabled":
                     value = 1 if value else 0
                 elif field == "settings":

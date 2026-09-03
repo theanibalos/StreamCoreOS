@@ -37,7 +37,7 @@ async def db(monkeypatch):
     await tool.setup()
     await tool.execute(
         """
-        CREATE TABLE stream_outputs (
+        CREATE TABLE IF NOT EXISTS stream_outputs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             platform TEXT NOT NULL,
@@ -141,3 +141,55 @@ async def test_update_and_delete_missing_stream_output_return_404_shape(plugins)
     deleted = await plugins["delete"].execute({"id": 999}, delete_context)
     assert deleted == {"success": False, "error": "Stream output not found"}
     assert delete_context.status == 404
+
+
+async def test_stream_tool_and_runtime_status(db):
+    from tools.stream_tool.stream_tool import StreamTool
+    from domains.stream_outputs.plugins.start_stream_output_plugin import StartStreamOutputPlugin
+    from domains.stream_outputs.plugins.stop_stream_output_plugin import StopStreamOutputPlugin
+    from domains.stream_outputs.plugins.start_active_stream_outputs_plugin import StartActiveStreamOutputsPlugin
+    from domains.stream_outputs.plugins.stop_active_stream_outputs_plugin import StopActiveStreamOutputsPlugin
+    from domains.stream_outputs.plugins.stream_runtime_status_plugin import StreamRuntimeStatusPlugin
+
+    http = FakeHttp()
+    logger = FakeLogger()
+    tool = StreamTool()
+    tool.db = db
+    await tool.setup()
+
+    # Insert test outputs
+    await db.execute(
+        """
+        INSERT INTO stream_outputs (id, name, platform, channel_id, enabled, rtmp_url, stream_key_secret, status)
+        VALUES (1, 'Twitch', 'twitch', 'user1', 1, 'rtmp://live.twitch.tv/app', 'live_key_123', 'stopped'),
+               (2, 'YouTube', 'youtube', 'UC123', 0, 'rtmp://a.rtmp.youtube.com/live2', 'live_key_456', 'stopped')
+        """
+    )
+
+    start_plugin = StartStreamOutputPlugin(http, tool, logger)
+    stop_plugin = StopStreamOutputPlugin(http, tool, logger)
+    start_active_plugin = StartActiveStreamOutputsPlugin(http, tool, logger)
+    stop_active_plugin = StopActiveStreamOutputsPlugin(http, tool, logger)
+    runtime_plugin = StreamRuntimeStatusPlugin(http, tool, logger)
+
+    await start_plugin.on_boot()
+    await stop_plugin.on_boot()
+    await start_active_plugin.on_boot()
+    await stop_active_plugin.on_boot()
+    await runtime_plugin.on_boot()
+
+    # Test runtime status
+    status = await runtime_plugin.execute({})
+    assert status["success"] is True
+    assert status["data"]["obs_connected"] is False
+    assert status["data"]["live_outputs_count"] == 0
+    assert status["data"]["enabled_outputs_count"] == 1
+
+    # Test stop output
+    stopped = await stop_plugin.execute({"id": 1})
+    assert stopped["success"] is True
+    assert stopped["data"]["status"] == "stopped"
+
+    # Test stop active
+    stopped_all = await stop_active_plugin.execute({})
+    assert stopped_all["success"] is True

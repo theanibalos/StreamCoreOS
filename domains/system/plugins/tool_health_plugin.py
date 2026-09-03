@@ -1,5 +1,5 @@
 import asyncio
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class ToolHealthPlugin(BasePlugin):

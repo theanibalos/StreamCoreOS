@@ -1,7 +1,7 @@
 import re
 from datetime import datetime, timedelta
 from typing import Optional
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class EchoReminderPlugin(BasePlugin):

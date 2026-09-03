@@ -1,6 +1,6 @@
 import asyncio
 import json
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # Raw Twitch EventSub types that reach every plugin's wildcard listener but
 # should NOT be forwarded to alert-widget overlays: channel.chat.message

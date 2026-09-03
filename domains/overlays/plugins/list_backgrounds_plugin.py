@@ -1,10 +1,25 @@
 import os
-from core.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel
+from microcoreos.base_plugin import BasePlugin
 
 UPLOADS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../uploads/backgrounds"))
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 VIDEO_EXTS = {".mp4", ".webm"}
+
+
+class BackgroundFileInfo(BaseModel):
+    filename: str
+    url: str
+    type: str
+    size: int
+
+
+class ListBackgroundsResponse(BaseModel):
+    success: bool
+    data: Optional[list[BackgroundFileInfo]] = None
+    error: Optional[str] = None
 
 
 class ListBackgroundsPlugin(BasePlugin):
@@ -16,6 +31,7 @@ class ListBackgroundsPlugin(BasePlugin):
         self.http.add_endpoint(
             "/api/overlays/backgrounds", "GET", self.execute,
             tags=["Overlays"],
+            response_model=ListBackgroundsResponse,
         )
 
     async def execute(self, data: dict, context=None):

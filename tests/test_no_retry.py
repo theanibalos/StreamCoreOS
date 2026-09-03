@@ -1,6 +1,6 @@
 import pytest
-from core.container import ToolProxy
-from core.registry import Registry
+from microcoreos.container import ToolProxy
+from microcoreos.registry import Registry
 
 pytestmark = pytest.mark.anyio
 

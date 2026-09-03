@@ -36,7 +36,7 @@ Un plugin SOLO puede importar de stdlib y de `core.base_plugin`. Nada más.
 # ✅ Permitido
 import asyncio
 import json
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # ❌ NUNCA — aunque sea "infraestructura compartida"
 from tools.xxx import YYY

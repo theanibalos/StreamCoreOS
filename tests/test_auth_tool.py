@@ -105,3 +105,19 @@ def test_init_with_short_secret_raises(monkeypatch):
     monkeypatch.setenv("AUTH_SECRET_KEY", "too-short")
     with pytest.raises(ValueError, match="at least 32 characters"):
         AuthTool()
+
+
+def test_generate_opaque_token(tool):
+    raw, hashed = tool.generate_opaque_token()
+    assert isinstance(raw, str) and len(raw) >= 48
+    assert isinstance(hashed, str) and len(hashed) == 64
+    assert tool.hash_opaque_token(raw) == hashed
+
+
+@pytest.mark.anyio
+async def test_hash_password_handles_long_passwords(tool):
+    long_pwd = "A" * 128
+    h = await tool.hash_password(long_pwd)
+    assert await tool.verify_password(long_pwd, h) is True
+    assert await tool.verify_password(long_pwd + "X", h) is False
+

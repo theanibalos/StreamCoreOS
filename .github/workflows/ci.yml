@@ -27,10 +27,10 @@ jobs:
 
       - name: Verify core compilation (Syntax Check)
         run: |
-          uv run python -c "from core.kernel import Kernel; print('✅ Kernel OK')"
-          uv run python -c "from core.container import Container; print('✅ Container OK')"
-          uv run python -c "from core.base_plugin import BasePlugin; print('✅ BasePlugin OK')"
-          uv run python -c "from core.base_tool import BaseTool; print('✅ BaseTool OK')"
+          uv run python -c "from microcoreos.kernel import Kernel; print('✅ Kernel OK')"
+          uv run python -c "from microcoreos.container import Container; print('✅ Container OK')"
+          uv run python -c "from microcoreos.base_plugin import BasePlugin; print('✅ BasePlugin OK')"
+          uv run python -c "from microcoreos.base_tool import BaseTool; print('✅ BaseTool OK')"
 
       - name: Run Core Tests
         run: uv run pytest tests/ -v --tb=short

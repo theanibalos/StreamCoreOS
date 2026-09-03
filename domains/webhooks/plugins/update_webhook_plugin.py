@@ -1,6 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 # No usamos el request_model en add_endpoint para este plugin
 # porque queremos recibir un diccionario crudo y procesarlo dinámicamente.

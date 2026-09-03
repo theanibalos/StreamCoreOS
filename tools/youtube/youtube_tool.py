@@ -1,11 +1,18 @@
+import importlib
+import json
 import os
 import secrets
+import sys
 import time
 from urllib.parse import urlencode
 
+import grpc
 import httpx
+from google.protobuf.json_format import MessageToDict
+from grpc_tools import protoc
+import grpc_tools
 
-from core.base_tool import BaseTool
+from microcoreos.base_tool import BaseTool
 
 
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -33,6 +40,7 @@ class YouTubeTool(BaseTool):
         self._channel_id: str | None = None
         self._channel_title: str | None = None
         self._available = False
+        self._grpc_modules = None
         self.on_token_refreshed = None
 
     async def setup(self) -> None:
@@ -242,6 +250,75 @@ class YouTubeTool(BaseTool):
             params["pageToken"] = page_token
         return await self.get("/liveChat/messages", params)
 
+    def _load_grpc_stream_modules(self):
+        if self._grpc_modules:
+            return self._grpc_modules
+
+        base_dir = os.path.dirname(__file__)
+        proto_path = os.path.join(base_dir, "stream_list.proto")
+        gen_dir = os.path.join(base_dir, "_generated")
+        os.makedirs(gen_dir, exist_ok=True)
+        init_path = os.path.join(gen_dir, "__init__.py")
+        if not os.path.exists(init_path):
+            open(init_path, "w").close()
+
+        pb2_path = os.path.join(gen_dir, "stream_list_pb2.py")
+        pb2_grpc_path = os.path.join(gen_dir, "stream_list_pb2_grpc.py")
+        if not os.path.exists(pb2_path) or not os.path.exists(pb2_grpc_path):
+            proto_include = os.path.join(os.path.dirname(grpc_tools.__file__), "_proto")
+            res = protoc.main([
+                "grpc_tools.protoc",
+                f"-I{base_dir}",
+                f"-I{proto_include}",
+                f"--python_out={gen_dir}",
+                f"--grpc_python_out={gen_dir}",
+                proto_path,
+            ])
+            if res != 0:
+                raise RuntimeError(f"Could not generate YouTube streamList gRPC client (protoc exit {res})")
+
+        if gen_dir not in sys.path:
+            sys.path.insert(0, gen_dir)
+        pb2 = importlib.import_module("stream_list_pb2")
+        pb2_grpc = importlib.import_module("stream_list_pb2_grpc")
+        self._grpc_modules = (pb2, pb2_grpc)
+        return self._grpc_modules
+
+    async def stream_chat_messages(self, live_chat_id: str, page_token: str | None = None, max_results: int = 500):
+        """Recommended YouTube live chat streamList client using gRPC.
+
+        Yields dicts shaped like REST liveChatMessages.list responses.
+        """
+        self._check_available()
+        token = await self._ensure_token()
+        pb2, pb2_grpc = self._load_grpc_stream_modules()
+
+        creds = grpc.ssl_channel_credentials()
+        async with grpc.aio.secure_channel("youtube.googleapis.com:443", creds) as channel:
+            stub = pb2_grpc.V3DataLiveChatMessageServiceStub(channel)
+            metadata = (("authorization", f"Bearer {token}"),)
+            while True:
+                request = pb2.LiveChatMessageListRequest(
+                    live_chat_id=live_chat_id,
+                    max_results=max(200, min(2000, max_results)),
+                    page_token=page_token or "",
+                )
+                request.part.extend(["id", "snippet", "authorDetails"])
+                try:
+                    async for response in stub.StreamList(request, metadata=metadata):
+                        data = MessageToDict(
+                            response,
+                            preserving_proto_field_name=False,
+                            always_print_fields_with_no_presence=False,
+                        )
+                        page_token = data.get("nextPageToken") or page_token
+                        yield data
+                    return
+                except grpc.aio.AioRpcError as e:
+                    detail = e.details() or ""
+                    code = e.code().name if e.code() else "UNKNOWN"
+                    raise RuntimeError(f"YouTube gRPC streamList failed {code}: {detail}") from e
+
     async def send_message(self, live_chat_id: str, text: str) -> dict:
         self.require_scopes(["https://www.googleapis.com/auth/youtube.force-ssl"])
         return await self.post("/liveChat/messages", body={
@@ -274,6 +351,8 @@ class YouTubeTool(BaseTool):
         YouTube Tool (youtube): OAuth + YouTube Live Chat via YouTube Data API.
         Env: YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI.
         Methods: get_auth_url, consume_state, exchange_code, refresh_user_token,
-        connect, disconnect, get_session, get_user_info, get_active_broadcast,
-        get_live_chat_id, list_chat_messages, send_message, delete_message, ban_user.
+        require_scopes, get_required_scopes, connect, disconnect, get_session,
+        is_connected, get, post, delete, get_user_info, get_active_broadcast,
+        get_live_chat_id, list_chat_messages, stream_chat_messages, send_message,
+        delete_message, ban_user.
         """

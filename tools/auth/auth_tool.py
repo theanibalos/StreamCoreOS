@@ -13,6 +13,8 @@ PUBLIC CONTRACT (what plugins use):
     token   = auth.create_token({"sub": "1"}, expires_delta=60)   # sync
     payload = auth.decode_token(token)    # sync — raises on invalid/expired
     payload = auth.validate_token(token)  # sync — returns None, never raises
+    raw, hashed = auth.generate_opaque_token()           # sync — returns (raw_token, sha256_hash)
+    hashed  = auth.hash_opaque_token(raw_token)          # sync — SHA-256 digest for DB storage/lookup
 
 REPLACEMENT STANDARD (plugins unaffected):
 ────────────────────────────────────────────────────────────────────────────────
@@ -28,13 +30,30 @@ REPLACEMENT STANDARD (plugins unaffected):
        from decode_token. validate_token returns None instead of raising.
 """
 
-import os
 import asyncio
+import base64
+import hashlib
+import os
+import secrets
 import bcrypt
 import jwt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from core.base_tool import BaseTool
+from microcoreos.base_tool import BaseTool
+
+
+def _prehash(password: str) -> bytes:
+    """
+    bcrypt hashes at most 72 bytes and stops at the first NUL, both silently:
+    two passwords sharing a 72-byte prefix verify against the same hash.
+    Hashing first makes every input a fixed 44-byte, NUL-free digest, so the
+    whole password decides the result. base64 rather than hex to stay well
+    under the limit. This is passlib's bcrypt_sha256 construction.
+
+    Changing this function invalidates every stored hash — they can only be
+    reissued by a password reset, since the plaintext is not recoverable.
+    """
+    return base64.b64encode(hashlib.sha256(password.encode("utf-8")).digest())
 
 
 class AuthError(Exception):
@@ -74,9 +93,12 @@ class AuthTool(BaseTool):
         - PURPOSE: Manage system security, password hashing, and JWT token lifecycle.
         - CAPABILITIES:
             - await hash_password(password: str) -> str: Securely hashes a plain-text
-                password using bcrypt. Async — runs in a thread (bcrypt is CPU-bound).
+                password: SHA-256 first, then bcrypt, so the whole password counts
+                regardless of length (bare bcrypt silently ignores everything past
+                72 bytes). Async — runs in a thread (bcrypt is CPU-bound).
             - await verify_password(password: str, hashed_password: str) -> bool:
                 Verifies if a password matches its hash. Async — runs in a thread.
+                Only hashes produced by this tool's hash_password() verify.
             - create_token(data: dict, expires_delta: Optional[int] = None) -> str:
                 Generates a JWT signed token. 'data' should contain claims (e.g. {'sub': user_id}).
                 'expires_delta' is optional minutes until expiration.
@@ -86,18 +108,32 @@ class AuthTool(BaseTool):
             - validate_token(token: str) -> dict | None:
                 Safe, non-throwing token validation. Returns the decoded payload
                 if valid, or None if expired/invalid. Ideal for middleware guards.
+            - generate_opaque_token(nbytes: int = 48) -> tuple[str, str]:
+                Generates a cryptographically secure random token and its SHA-256 hash.
+                Returns (raw_token, token_hash).
+            - hash_opaque_token(raw_token: str) -> str:
+                Calculates the SHA-256 digest of an opaque token (refresh token, API key)
+                for safe database storage and lookup.
         """
+
+    def generate_opaque_token(self, nbytes: int = 48) -> tuple[str, str]:
+        raw_token = secrets.token_urlsafe(nbytes)
+        token_hash = self.hash_opaque_token(raw_token)
+        return raw_token, token_hash
+
+    def hash_opaque_token(self, raw_token: str) -> str:
+        return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
     async def hash_password(self, password: str) -> str:
         # bcrypt is CPU-bound (~100ms by design) — run in a thread so it
         # never blocks the event loop under concurrent requests.
         return await asyncio.to_thread(
-            lambda: bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+            lambda: bcrypt.hashpw(_prehash(password), bcrypt.gensalt()).decode()
         )
 
     async def verify_password(self, password: str, hashed_password: str) -> bool:
         return await asyncio.to_thread(
-            bcrypt.checkpw, password.encode(), hashed_password.encode()
+            bcrypt.checkpw, _prehash(password), hashed_password.encode()
         )
 
     def create_token(self, data: dict, expires_delta: Optional[int] = None) -> str:

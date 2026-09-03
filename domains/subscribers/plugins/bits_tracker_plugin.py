@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class BitsTrackerPlugin(BasePlugin):

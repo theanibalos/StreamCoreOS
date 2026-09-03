@@ -1,18 +1,54 @@
 import json
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
-from domains.stream_outputs.plugins.list_stream_outputs_plugin import StreamOutputData, serialize_stream_output
+from microcoreos.base_plugin import BasePlugin
+
+
+class StreamOutputData(BaseModel):
+    id: int
+    name: str
+    platform: str
+    channel_id: str
+    enabled: bool
+    overlay_id: Optional[int] = None
+    rtmp_url: Optional[str] = None
+    stream_key_configured: bool
+    stream_key_preview: Optional[str] = None
+    status: str
+    settings: dict
+    created_at: str
+    updated_at: str
+
+
+def serialize_stream_output(row: dict) -> dict:
+    secret = row.get("stream_key_secret") or ""
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "platform": row["platform"],
+        "channel_id": row["channel_id"],
+        "enabled": bool(row["enabled"]),
+        "overlay_id": row.get("overlay_id"),
+        "rtmp_url": row.get("rtmp_url"),
+        "stream_key_configured": bool(secret),
+        "stream_key_preview": secret[-4:] if secret else None,
+        "status": row["status"],
+        "settings": json.loads(row.get("settings") or "{}") if isinstance(row.get("settings"), str) else (row.get("settings") or {}),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 class CreateStreamOutputRequest(BaseModel):
     name: str = Field(min_length=1)
     platform: str = Field(min_length=1)
-    channel_id: str = Field(min_length=1)
-    enabled: bool = True
-    overlay_id: Optional[int] = None
-    rtmp_url: Optional[str] = None
-    stream_key_secret: Optional[str] = None
+    # For connected Twitch/YouTube accounts the frontend/backend can fill this
+    # from platform_connections, so the user does not have to type it manually.
+    channel_id: str = Field(default="")
+    enabled: bool = Field(default=True)
+    overlay_id: Optional[int] = Field(default=None)
+    rtmp_url: Optional[str] = Field(default=None)
+    stream_key_secret: Optional[str] = Field(default=None)
     settings: dict = Field(default_factory=dict)
 
 

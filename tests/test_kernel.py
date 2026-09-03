@@ -1,8 +1,8 @@
 import pytest
 import asyncio
-from core.kernel import Kernel
-from core.base_plugin import BasePlugin
-from core.base_tool import BaseTool
+from microcoreos.kernel import Kernel
+from microcoreos.base_plugin import BasePlugin
+from microcoreos.base_tool import BaseTool
 
 pytestmark = pytest.mark.anyio
 
@@ -83,7 +83,7 @@ async def test_call_maybe_async(kernel):
 async def test_boot_success(kernel, monkeypatch):
     """Prueba que el kernel arranque tools y plugins correctamente cuando todo existe."""
     
-    def fake_load_modules(directory, base_class):
+    def fake_load_modules(directory, base_class, *args, **kwargs):
         if base_class == BaseTool:
             return [(DummyTool, None)]
         elif base_class == BasePlugin:
@@ -109,7 +109,7 @@ async def test_boot_success(kernel, monkeypatch):
 async def test_boot_missing_dependencies(kernel, monkeypatch):
     """Verifies that when a tool required by a plugin is missing, the plugin is marked DEAD without blocking boot."""
     
-    def fake_load_modules(directory, base_class):
+    def fake_load_modules(directory, base_class, *args, **kwargs):
         # Load the plugin but no tools
         if base_class == BaseTool:
             return []

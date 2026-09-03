@@ -1,4 +1,16 @@
-from core.base_plugin import BasePlugin
+from typing import Optional
+from pydantic import BaseModel
+from microcoreos.base_plugin import BasePlugin
+
+
+class SyncBitsData(BaseModel):
+    synced: int
+
+
+class SyncBitsResponse(BaseModel):
+    success: bool
+    data: Optional[SyncBitsData] = None
+    error: Optional[str] = None
 
 
 class SyncBitsPlugin(BasePlugin):
@@ -18,6 +30,7 @@ class SyncBitsPlugin(BasePlugin):
         self.http.add_endpoint(
             "/api/bits/sync", "POST", self.execute,
             tags=["Subscribers"],
+            response_model=SyncBitsResponse,
         )
 
     async def execute(self, data: dict, context=None):

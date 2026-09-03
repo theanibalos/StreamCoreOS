@@ -1,4 +1,4 @@
-from core.base_tool import BaseTool
+from microcoreos import BaseTool
 
 
 class RegistryTool(BaseTool):

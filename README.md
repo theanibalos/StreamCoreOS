@@ -306,7 +306,7 @@ Full observability: tool/plugin health, event bus traces, live log stream, metri
 # domains/my_domain/plugins/my_feature_plugin.py
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 class MyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)

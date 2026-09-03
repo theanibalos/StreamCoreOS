@@ -2,81 +2,9 @@
 
 > This file is ALL you need to build a plugin. For advanced topics (testing, observability, creating tools), see [INSTRUCTIONS_FOR_AI.md](INSTRUCTIONS_FOR_AI.md).
 
-## ⚡ Plugin Quick Start
-
-**Location**: `domains/{domain}/plugins/{feature}_plugin.py` — 1 file = 1 feature.
-
-### Template
-
-```python
-from typing import Optional
-from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
-
-# Request/Response schemas live HERE, not in models/
-class CreateThingRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-
-class ThingData(BaseModel):
-    id: int
-    name: str
-
-class CreateThingResponse(BaseModel):
-    success: bool
-    data: Optional[ThingData] = None
-    error: Optional[str] = None
-
-class CreateThingPlugin(BasePlugin):
-    def __init__(self, http, db, event_bus, logger):
-        self.http = http
-        self.db = db
-        self.bus = event_bus
-        self.logger = logger
-
-    async def on_boot(self):
-        self.http.add_endpoint(
-            "/things", "POST", self.execute,
-            tags=["Things"],
-            request_model=CreateThingRequest,
-            response_model=CreateThingResponse,
-        )
-
-    async def execute(self, data: dict, context=None):
-        try:
-            req = CreateThingRequest(**data)
-            thing_id = await self.db.execute(
-                "INSERT INTO things (name) VALUES ($1) RETURNING id", [req.name]
-            )
-            await self.bus.publish("thing.created", {"id": thing_id})
-            return {"success": True, "data": {"id": thing_id, "name": req.name}}
-        except Exception as e:
-            # Technical error logged server-side, safe message for client
-            self.logger.error(f"Failed to create thing: {e}")
-            return {"success": False, "error": "Database error"}
-```
-
-### New Domain Structure
-
-```
-domains/{name}/
-  __init__.py
-  models/{name}.py        <- Entity: DB mirror only (Pydantic BaseModel)
-  migrations/001_xxx.sql  <- Raw SQL, auto-executed on boot
-  plugins/                <- 1 file = 1 feature
-```
-
-### Critical Rules
-
-1. **Never modify `main.py`** — Kernel auto-discovers everything.
-2. **DI by name** — `__init__` param names must match tool `name` properties.
-3. **Schemas inline** — Request AND response schemas go in the plugin file, not in `models/`.
-4. **No cross-domain imports** — Use `event_bus` for inter-domain communication.
-5. **Return format** — Always `{"success": bool, "data": ..., "error": ...}`.
-6. **Use `Field`** — Never bare `str`/`int` in request schemas. Use `Field(min_length=1)` etc.
-7. **SQL placeholders** — Always `$1, $2, $3...` (never `?`).
-8. **Always pass `response_model=`** to `add_endpoint` — generates OpenAPI docs.
-9. **Never expose sensitive fields** — Define response schema with only safe fields.
-10. **No hardcoded imports** — Never `from tools.x import X`. Use DI.
+## ⚡ Operating Context
+This file contains the technical signature of active tools and domains in the system.
+For plugin development guides, critical rules, and syntax examples, see [AGENTS.md](AGENTS.md).
 
 ---
 
@@ -135,6 +63,8 @@ AI Tool (ai):
         - is_configured() -> bool
         - get_config() -> dict | None  (never exposes api_key)
         - load_config(config: dict)
+        - patch_config(fields: dict)
+        - await test_config(config: dict, max_tokens?) -> str
         - get_chat_cooldown() -> int
         - get_chat_personality() -> dict
     - LOCAL ENDPOINTS:
@@ -193,26 +123,54 @@ HTTP Server Tool (http):
           'data' = flat merge of [path params] + [query params] + [body/form fields].
           Special keys in 'data':
             - data["_auth"]: contains the payload from auth_validator if successful.
-            - data["_files"]: list of FastAPI UploadFile objects (only if has_files=True).
+            - data["_files"]: list of UploadedFile objects (only if has_files=True).
+                Fields: .filename, .content_type, .stream (sync file object), await .read().
         - SECURITY DEFAULTS:
             - Cookies set via context.set_cookie are 'Secure=True', 'HttpOnly=True', 'SameSite=Lax'.
             - CSRF Guard: Mutations (POST/PUT/DELETE) using cookie auth REQUIRE 'X-Requested-With' header.
+            - Swagger UI (/docs): endpoints with auth_validator show a lock icon and accept
+              tokens via the "Authorize" button (documentation-only; real check unaffected).
         - CAPABILITIES:
             - add_endpoint(path, method, handler, tags=None, request_model=None,
                            response_model=None, auth_validator=None, has_files=False):
                 - has_files: if True, enables multipart/form-data. Request model fields 
                   become Form fields. To use a file: file = data["_files"][0]; 
                   await s3.upload_fileobj(file.filename, file.file, content_type=file.content_type)
-            - mount_static(path, directory_path): Serve static files from a directory.
-            - add_ws_endpoint(path, on_connect, on_disconnect=None): WebSocket support.
-            - add_sse_endpoint(path, generator, tags=None, auth_validator=None): 
+            - mount_static(path, directory_path, html=False, allow_extensions=None):
+                Serve static files from a directory. Deny by default: only files whose
+                extension is allowed are served (default DEFAULT_STATIC_EXTENSIONS; pass
+                a set to declare your own, or "*" to serve everything). Dotfiles are
+                always refused except under '.well-known/'. Use html=True to serve
+                index.html for directory requests, which a UI/SPA mounted at "/" needs.
+                Raises ValueError if the directory does not exist.
+            - add_ws_endpoint(path, on_connect, on_disconnect=None, auth_validator=None):
+                WebSocket support. on_connect receives a WebSocketConnection: send_text,
+                send_json, receive_text, receive_json, close, query_params, path_params.
+                With auth_validator the token is read from the Authorization header, the
+                `token` query param, then the access_token cookie; an invalid one is
+                closed with 1008 BEFORE the handshake and on_connect takes (conn, payload).
+            - add_sse_endpoint(path, generator, tags=None, auth_validator=None):
                 Server-Sent Events. generator yields formatted strings: "data: {...}\n\n".
+            - register_pre_mount_hook(hook): hook(endpoints: list[dict]) is called once in
+                on_boot_complete(), before routes are mounted, with every buffered endpoint
+                (method, path, owner) — the first point where all plugins' add_endpoint()
+                calls are guaranteed to have run. Used for boot-time checks across ALL
+                registered routes (e.g. the architecture linter's route-collision scan).
         - HttpContext CAPABILITIES (inside handler):
-            - context.set_status(code: int): Override HTTP status (default: 200).
+            - context.set_status(code: int): Override HTTP status. Default is 200 on
+              success:true; 400 on success:false unless set_status() is called.
             - context.redirect(url: str, status=302): Redirect to another URL.
             - context.set_cookie(key, value, max_age=3600, ...): Set secure response cookie.
             - context.set_header(key, value): Add custom response header.
             - context.set_binary_response(content: bytes, media_type: str): Return raw file.
+            - context.raw_body: Exact inbound HTTP request body bytes. Use for webhook
+              signature verification; providers sign bytes, not a re-serialized dict.
+            - context.get_header(key, default=None): Read inbound request headers
+              case-insensitively (e.g. X-Signature for signed webhooks).
+            - context.client_ip: Best-effort caller IP (property). Raw signal only — the
+              plugin decides what to do with it (e.g. state.increment() keyed by IP for
+              an identity-aware business rule). Never security-authoritative on its own;
+              see context.py's client_ip docstring for the trust order and its limits.
         - RESPONSE CONTRACT:
             - Standard: return {"success": bool, "data": ..., "error": ...}
             - WARNING: All values in 'data' must be JSON-serializable. Pydantic model 
@@ -222,22 +180,31 @@ HTTP Server Tool (http):
 ### 🔧 Tool: `telemetry` (Status: ✅)
 ```text
 Telemetry Tool (telemetry):
-        - PURPOSE: OpenTelemetry distributed tracing. Auto-instruments all tool calls via ToolProxy.
-          No changes needed in plugins or existing tools to get basic spans.
+        - PURPOSE: OpenTelemetry distributed tracing AND metrics. Auto-instruments all tool
+          calls via ToolProxy. No changes needed in plugins or existing tools to get basic
+          spans or metrics.
         - ACTIVATION: Set OTEL_ENABLED=true. Degrades gracefully if disabled or packages missing.
         - ENV VARS:
             - OTEL_ENABLED: "true" to activate (default: "false").
-            - OTEL_SERVICE_NAME: Service name in traces (default: "microcoreos").
-            - OTEL_EXPORTER_OTLP_ENDPOINT: OTLP/gRPC endpoint (e.g. "http://jaeger:4317").
-              If not set, traces are printed to console (development mode).
+            - OTEL_SERVICE_NAME: Service name in traces/metrics (default: "microcoreos").
+            - OTEL_EXPORTER_OTLP_ENDPOINT: OTLP/gRPC endpoint (e.g. "http://otel-collector:4317").
+              If not set, traces and metrics are printed to console (development mode).
         - CAPABILITIES:
             - get_tracer(scope: str) -> Tracer: Named tracer for custom spans inside a plugin.
                 Usage: tracer = self.telemetry.get_tracer("my_plugin")
                        with tracer.start_as_current_span("my_operation"): ...
                 Returns a no-op tracer if OTel is disabled — safe to use unconditionally.
+            - get_meter(scope: str) -> Meter: Named meter for custom metrics inside a plugin.
+                Usage: meter = self.telemetry.get_meter("my_plugin")
+                       counter = meter.create_counter("orders_created")
+                       counter.add(1)
+                Returns a no-op meter if OTel is disabled — safe to use unconditionally.
         - AUTO-INSTRUMENTATION (zero config):
             Every tool call (db.execute, event_bus.publish, auth.create_token, etc.)
-            gets a span automatically via ToolProxy. No plugin changes needed.
+            gets a span automatically via ToolProxy, AND is recorded as an OTel histogram
+            (tool_call_duration_ms) and counter (tool_call_total) with tool/method/success
+            attributes — the same record already exposed at registry.get_metrics() / GET
+            /system/metrics, now also exported over OTLP. No plugin changes needed.
         - DRIVER-LEVEL INSTRUMENTATION (optional, per tool):
             Tools can implement on_instrument(tracer_provider) in BaseTool to add
             framework-specific spans (SQL query text, HTTP route, etc.).
@@ -315,8 +282,19 @@ Twitch Tool (twitch):
 YouTube Tool (youtube): OAuth + YouTube Live Chat via YouTube Data API.
         Env: YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI.
         Methods: get_auth_url, consume_state, exchange_code, refresh_user_token,
-        connect, disconnect, get_session, get_user_info, get_active_broadcast,
-        get_live_chat_id, list_chat_messages, send_message, delete_message, ban_user.
+        require_scopes, get_required_scopes, connect, disconnect, get_session,
+        is_connected, get, post, delete, get_user_info, get_active_broadcast,
+        get_live_chat_id, list_chat_messages, stream_chat_messages, send_message,
+        delete_message, ban_user.
+```
+
+### 🔧 Tool: `stream_tool` (Status: ✅)
+```text
+Stream Tool (stream_tool): emisión/restream centralizada.
+        Si existe rtmp_engine, usa RTMP ingest local + relays FFmpeg por pipe.
+        Si no existe, usa FFmpeg leyendo STREAM_INPUT_URL.
+        Entrada OBS: rtmp://localhost:1935/live/{obs_stream_key}.
+        Métodos: start_output(id), stop_output(id), start_active_outputs(), stop_active_outputs(), set_fallback_video(path), get_runtime_status().
 ```
 
 ### 🔧 Tool: `context_manager` (Status: ✅)
@@ -326,6 +304,9 @@ Context Manager Tool (context_manager):
         - CAPABILITIES:
             - Reads the system registry.
             - Exports active tools, health status, and domain models to AI_CONTEXT.md.
+            - Embeds the plugin authoring guide (tools/context/authoring_guide.md):
+              executor rules plus one complete template per deliverable type, so the
+              manifest alone is enough to write a plugin or its tests.
             - Regenerates AI_CONTEXT.md on every boot — always up to date with the live system.
 ```
 
@@ -414,11 +395,20 @@ Scheduler Tool (scheduler):
                 e.g. "*/5 * * * *" = every 5 min, "0 9 * * 1-5" = weekdays at 09:00.
                 Returns job_id (auto-generated if not provided).
                 Providing a stable job_id prevents duplicates on restart.
+            - add_interval_job(seconds: float, callback, job_id?: str, *, minutes, hours,
+                               max_instances=1, coalesce=True, misfire_grace_time=1) -> str:
+                Schedule a recurring job on a fixed interval. Use this for sub-minute
+                rates, which a 5-field cron expression cannot express (its unit is the
+                minute). seconds accepts fractions: 0.25 = 4x/second.
+                At max_instances=1 a run that overlaps the previous one is DROPPED, and
+                a run later than misfire_grace_time is DROPPED — silently, as far as the
+                callback is concerned. Both are logged as "Run DROPPED". Raise
+                max_instances if the job must not skip.
             - add_one_shot(run_at: datetime, callback, job_id?: str) -> str:
                 Schedule a one-time job at a specific datetime (timezone-aware).
                 Returns job_id. IN-MEMORY: lost if the process restarts before firing.
                 For one-shots that must survive restarts, publish to the bus:
-                "system.one_shot.schedule" (durable scheduling service, system domain).
+                "scheduler.one_shot.schedule" (durable scheduling service — install extras/available_domains/scheduler).
             - remove_job(job_id: str) -> bool:
                 Remove a job by ID. Returns True if removed, False if not found.
             - list_jobs() -> list[dict]:
@@ -432,6 +422,28 @@ Scheduler Tool (scheduler):
           worker, never in the job callback.
         - SWAP: replace with Celery beat by creating a new tool with name = "scheduler"
           and the same 4-method API. Plugins do not change.
+```
+
+### 🔧 Tool: `rtmp_engine` (Status: ✅)
+```text
+RTMP Engine Tool (rtmp_engine):
+        - PURPOSE: Standalone RTMP Ingress Server (Port 1935) + FFmpeg Passthrough Relays.
+        - CAPABILITIES:
+            - is_ffmpeg_available() -> bool: Returns True if FFmpeg binary is installed.
+            - is_obs_connected() -> bool: Returns True if OBS is currently streaming to server.
+            - set_obs_connected(connected, stream_key, flv_header) -> None: Updates OBS connection state.
+            - set_fallback_config(config) -> None: Configure standby mode assets.
+            - cache_metadata(chunk) -> None: Cache FLV metadata tag.
+            - cache_avc_config(chunk) -> None: Cache H.264 sequence header.
+            - cache_aac_config(chunk) -> None: Cache AAC sequence header.
+            - start_relay(dest_id, rtmp_url, stream_key, platform) -> dict: Spawns relay.
+            - stop_relay(dest_id) -> bool: Terminates relay process.
+            - stop_all_relays() -> int: Terminates all active relay processes.
+            - get_relay_status(dest_id) -> dict: Get current status of a specific relay.
+            - get_all_relays() -> dict: Get status of all relays.
+            - get_source_status() -> dict: Current source: obs, fallback, or waiting.
+            - broadcast_flv_bytes(chunk, from_obs=False) -> None: Forward FLV bytes to all relays.
+            - close() -> None: Gracefully close RTMP server and relays.
 ```
 
 ### 🔧 Tool: `event_bus` (Status: ✅)
@@ -451,8 +463,9 @@ Universal Event Bus (event_bus):
         - add_listener(callback): Sink for all events (record: dict).
         - add_failure_listener(callback): Sink for errors (record: dict).
         
-        CRITICAL: Subscribing callbacks receive an 'EventEnvelope' object.
-        Example: async def on_event(self, event: EventEnvelope): print(event.payload)
+        CRITICAL: Subscribing callbacks receive the event envelope as their single
+        argument — read event.payload. Leave the parameter untyped (no annotation,
+        no import needed): async def on_event(self, event): print(event.payload)
         
         RETRIES & IDEMPOTENCY:
         - If 'retries' > 0, the handler will be re-executed on failure with exponential backoff.
@@ -482,14 +495,6 @@ Universal Event Bus (event_bus):
           (payload: event, subscriber, error, consecutive_failures) so the drop
           is observable — subscribe to it for alerting/monitoring.
 
-        WELL-KNOWN EVENTS:
-        - "overlay.vars.set" — publish a flat dict of variables to push them to all
-          live overlays (OBS browser sources). Persisted in the overlay_vars table,
-          broadcast instantly via SSE, readable in overlay JS as data.stats[key].
-          Example: await self.bus.publish("overlay.vars.set", {"juego.actual": "Elden Ring"})
-          Subscribers receive it like any other event: async def on_event(self, event: EventEnvelope)
-          reads the variables from event.payload.
-
         ACTIVE TRANSPORT: RabbitMQDriver — capability claims: {'delay': 'native', 'retries': 'in_bus', 'dlq': 'in_bus'}
         ("native" = the broker implements it, crash-safe; "in_bus" = software
         fallback in this process' memory).
@@ -498,9 +503,10 @@ Universal Event Bus (event_bus):
 ### 🔧 Tool: `db` (Status: ✅)
 ```text
 Async SQLite Persistence Tool (sqlite):
-        - PURPOSE: Drop-in replacement for PostgreSQL. Lightweight relational data
-          storage using SQLite with async access. Accepts PostgreSQL-style placeholders
-          ($1, $2...) and converts them transparently to SQLite's native '?'.
+        - PURPOSE: PostgreSQL-compatible relational storage (drop-in swap at the
+          TOOL-API level: same methods, same placeholders). Accepts PostgreSQL-style
+          placeholders ($1, $2...) and converts them transparently to SQLite's
+          native '?'. SQL text itself is NEVER dialect-translated.
         - PLACEHOLDERS: Use $1, $2, $3... (SAME as PostgreSQL — swap-compatible).
         - CAPABILITIES:
             - await query(sql, params?) → list[dict]: Read multiple rows (SELECT).
@@ -512,9 +518,29 @@ Async SQLite Persistence Tool (sqlite):
             - async with transaction() as tx: Explicit transaction block with auto-commit/rollback.
               Inside tx: tx.query(), tx.query_one(), tx.execute() — same signatures.
             - await health_check() → bool: Verify database connectivity.
+            - await describe_schema() → dict: Live schema of the active database:
+              {table: {internal, columns, unique, foreign_keys}}.
+              Column types are normalized to a closed vocabulary
+              (text/int/float/bool/timestamp/json/blob) so the same migration
+              yields the same description on any engine.
+              Tables whose name starts with "_" are marked internal;
+              engine-owned tables are excluded.
         - EXCEPTIONS: Raises DatabaseError or DatabaseConnectionError on failure.
+          Every DatabaseError carries a CLASSIFIED, engine-independent contract:
+            - kind: one of unique_violation / foreign_key_violation /
+              not_null_violation / check_violation / unknown (CLOSED vocabulary —
+              the same values on any engine, so the swap keeps behavior).
+            - table / columns: the target of the violation, filled in only where
+              every engine can report it (unique and NOT NULL); FOREIGN KEY and
+              CHECK carry kind only.
+          Branch on the kind, NEVER on str(e) — the message text is engine-specific:
+            except Exception as e:
+                if getattr(e, "kind", None) == "unique_violation": ...
         - MIGRATIONS: SQL files in domains/*/migrations/*.sql are auto-applied on boot via
-          topological sort (alphabetical by default). To declare that one migration must
+          topological sort (alphabetical by default). Migrations run VERBATIM (no
+          dialect translation). Engine-specific SQL commits you to that engine;
+          portable SQL (e.g. CURRENT_TIMESTAMP, not NOW()) keeps the
+          SQLite <-> PostgreSQL swap free. To declare that one migration must
           run before another, add as the first comment line:
             "-- depends: other_domain/001_file.sql"
           Works for same-domain or cross-domain dependencies. .sql extension is optional.
@@ -547,17 +573,75 @@ TTS Tool (tts):
 ## 📦 Domains
 
 ### `ai_config`
-- **Table `ai_config`**: provider (str), endpoint_url (str), model (str), updated_at (str)
-- **Endpoints**: DELETE /api/ai/providers/{provider_id}, GET /api/ai/config, GET /api/ai/ia/enabled, GET /api/ai/providers, POST /api/ai/providers, POST /api/ai/providers/test, POST /api/ai/providers/{provider_id}/activate, POST /api/ai/providers/{provider_id}/test, POST /api/ai/test, PUT /api/ai/config, PUT /api/ai/ia/enabled, PUT /api/ai/providers/{provider_id}
+- **Table `ai_config`** (storage): id (int, PK), updated_at (text, NOT NULL, default datetime('now')), chat_cooldown_s (int, NOT NULL, default 120), chat_system_prompt (text, NOT NULL, default 'You are a helpful Twitch chat assistant. Be concise and reply in under 40 words.'), chat_max_tokens (int, NOT NULL, default 200), chat_temperature (float, NOT NULL, default 0.7), chat_ia_enabled (int, NOT NULL, default 1), active_provider_id (int) — FK active_provider_id → ai_providers.id
+- **Table `ai_providers`** (storage): id (int, PK), name (text, NOT NULL), provider (text, NOT NULL), endpoint_url (text, NOT NULL), api_key (text, NOT NULL, default ''), model (text, NOT NULL), timeout_s (int, NOT NULL, default 120), disable_reasoning (int, NOT NULL, default 0), extra_headers (text, NOT NULL, default '{}'), extra_payload (text, NOT NULL, default '{}'), created_at (text, NOT NULL, default datetime('now')), updated_at (text, NOT NULL, default datetime('now'))
+- **Model `AIConfig`** (domain vocabulary): id: int, provider: str, endpoint_url: str, model: str, updated_at: str
+- **Endpoints**:
+  - `DELETE /api/ai/providers/{provider_id}`
+    - **res**: success: bool, error: Optional[str]
+  - `GET /api/ai/config`
+    - **res**: AIConfigData(provider: str, endpoint_url: str, model: str, has_api_key: bool, timeout_s: int, disable_reasoning: bool, extra_headers: dict, extra_payload: dict, chat_cooldown_s: int, chat_system_prompt: str, chat_max_tokens: int, chat_temperature: float, updated_at: Optional[str])
+  - `GET /api/ai/ia/enabled`
+    - **res**: IAEnabledData(enabled: bool)
+  - `GET /api/ai/providers`
+    - **res**: List[AIProviderEntry(id: int, name: str, provider: str, endpoint_url: str, model: str, has_api_key: bool, timeout_s: int, disable_reasoning: bool, extra_headers: dict, extra_payload: dict, is_active: bool, updated_at: str)]
+  - `POST /api/ai/providers`
+    - **req**: name: str, provider: str, endpoint_url: str, model: str, api_key: str, timeout_s: int, disable_reasoning: bool, extra_headers: dict, extra_payload: dict
+    - **res**: AIProviderData(id: int, name: str, provider: str, endpoint_url: str, model: str, has_api_key: bool, timeout_s: int, disable_reasoning: bool, extra_headers: dict, extra_payload: dict, is_active: bool, updated_at: str)
+  - `POST /api/ai/providers/test`
+    - **req**: provider_id: Optional[int], provider: str, endpoint_url: str, model: str, api_key: str, timeout_s: int, disable_reasoning: bool, extra_headers: dict, extra_payload: dict
+    - **res**: dict
+  - `POST /api/ai/providers/{provider_id}/activate`
+    - **res**: success: bool, error: Optional[str]
+  - `POST /api/ai/providers/{provider_id}/test`
+    - **res**: dict
+  - `POST /api/ai/test`
+    - **res**: dict
+  - `PUT /api/ai/config`
+    - **req**: chat_cooldown_s: int, chat_system_prompt: str, chat_max_tokens: int, chat_temperature: float
+    - **res**: AIConfigData(provider: Optional[str], endpoint_url: Optional[str], model: Optional[str], has_api_key: bool, timeout_s: Optional[int], disable_reasoning: Optional[bool], extra_headers: dict, extra_payload: dict, chat_cooldown_s: int, chat_system_prompt: str, chat_max_tokens: int, chat_temperature: float, updated_at: Optional[str])
+  - `PUT /api/ai/ia/enabled`
+    - **req**: enabled: bool
+    - **res**: IAEnabledData(enabled: bool)
+  - `PUT /api/ai/providers/{provider_id}`
+    - **res**: success: bool, error: Optional[str]
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: ai, db, http, logger, state
 - **Plugins**: ai_config.ActivateAIProviderPlugin, ai_config.CreateAIProviderPlugin, ai_config.DeleteAIProviderPlugin, ai_config.GetAIConfigPlugin, ai_config.ListAIProvidersPlugin, ai_config.RestoreAIConfigPlugin, ai_config.SaveAIConfigPlugin, ai_config.TestAIConfigPlugin, ai_config.TestAIProviderConfigPlugin, ai_config.TestAIProviderPlugin, ai_config.ToggleIAChatPlugin, ai_config.UpdateAIProviderPlugin
 
 ### `chat_bot`
-- **Table `chat_command`**: name (str), response (str), cooldown_s (int), enabled (int), created_at (str), action (Optional[str]), channel (str), user_id (str), display_name (str), message (str), is_command (int), timestamp (str)
-- **Table `chat_var`**: name (str), value (str), enabled (int), created_at (str)
-- **Endpoints**: DELETE /api/chat/commands/{id}, DELETE /api/chat/vars/{id}, GET /api/chat/badges, GET /api/chat/commands, GET /api/chat/reminders, GET /api/chat/vars, POST /api/chat/commands, POST /api/chat/vars, PUT /api/chat/commands/{id}, PUT /api/chat/vars/{id}, SSE /api/chat/stream
+- **Table `chat_commands`** (storage): id (int, PK), name (text, NOT NULL), response (text, NOT NULL), cooldown_s (int, NOT NULL, default 30), enabled (int, NOT NULL, default 1), created_at (text, NOT NULL, default datetime('now')), userlevel (text, NOT NULL, default 'everyone'), use_count (int, NOT NULL, default 0), global_cooldown_s (int, NOT NULL, default 0), action (text) — UNIQUE(name)
+- **Table `chat_log`** (storage): id (int, PK), channel (text, NOT NULL), user_id (text, NOT NULL), display_name (text, NOT NULL), message (text, NOT NULL), is_command (int, NOT NULL, default 0), timestamp (text, NOT NULL), platform (text, NOT NULL, default 'twitch'), source_message_id (text)
+- **Table `chat_vars`** (storage): id (int, PK), name (text, NOT NULL), value (text, NOT NULL, default '0'), enabled (int, NOT NULL, default 1), created_at (text, NOT NULL, default datetime('now')) — UNIQUE(name)
+- **Model `ChatCommandEntity`** (domain vocabulary): id: int, name: str, response: str, cooldown_s: int, enabled: int, created_at: str, action: Optional[str]
+- **Model `ChatLogEntity`** (domain vocabulary): id: int, channel: str, user_id: str, display_name: str, message: str, is_command: int, timestamp: str
+- **Model `ChatVarEntity`** (domain vocabulary): id: int, name: str, value: str, enabled: int, created_at: str
+- **Endpoints**:
+  - `DELETE /api/chat/commands/{id}`
+    - **res**: dict
+  - `DELETE /api/chat/vars/{id}`
+    - **res**: dict
+  - `GET /api/chat/badges`
+  - `GET /api/chat/commands`
+    - **res**: list[CommandData(id: int, name: str, response: str, cooldown_s: int, global_cooldown_s: int, userlevel: str, use_count: int, enabled: bool, action: Optional[str])]
+  - `GET /api/chat/reminders`
+    - **res**: list[ReminderData(job_id: str, message: str, run_at: str, scheduled_by: str, channel: str)]
+  - `GET /api/chat/vars`
+    - **res**: List[VarData(id: int, name: str, value: str, enabled: bool)]
+  - `POST /api/chat/commands`
+    - **req**: name: str, response: str, cooldown_s: int, global_cooldown_s: int, userlevel: str, action: Optional[str]
+    - **res**: CommandData(id: int, name: str, response: str, cooldown_s: int, global_cooldown_s: int, userlevel: str, use_count: int, enabled: bool, action: Optional[str])
+  - `POST /api/chat/vars`
+    - **req**: name: str, value: str
+    - **res**: VarData(id: int, name: str, value: str, enabled: bool)
+  - `PUT /api/chat/commands/{id}`
+    - **req**: response: Optional[str], cooldown_s: Optional[int], global_cooldown_s: Optional[int], userlevel: Optional[str], enabled: Optional[bool]
+    - **res**: CommandData(id: int, name: str, response: str, cooldown_s: int, global_cooldown_s: int, userlevel: str, use_count: int, enabled: bool, action: Optional[str])
+  - `PUT /api/chat/vars/{id}`
+    - **req**: value: Optional[str], enabled: Optional[bool]
+    - **res**: VarData(id: int, name: str, value: str, enabled: bool)
+  - `SSE /api/chat/stream`
 - **Events emitted**: `chat.command.executed` (channel, command, display_name, user_id), `chat.command.received` (args, command), `chat.message.received` (), `chat.message.send` (channel_id, channel_name, message, platform)
 - **Events consumed**: chat.command.received, chat.message.received, message.resend
 - **Dependencies**: ai, db, event_bus, http, logger, scheduler, state, twitch, youtube
@@ -572,24 +656,93 @@ TTS Tool (tts):
 - **Plugins**: chat_platform.TwitchChatSendPlugin, chat_platform.YouTubeChatSendPlugin
 
 ### `dashboard`
-- **Table `channel_stats`**: recorded_at (str), viewer_count (int), follower_count (int)
-- **Endpoints**: GET /api/dashboard/stats, GET /api/dashboard/stats/history, POST /api/dashboard/alerts/test, SSE /api/dashboard/alerts
+- **Table `channel_stats`** (storage): id (int, PK), recorded_at (text, NOT NULL, default datetime('now')), viewer_count (int, NOT NULL, default 0), follower_count (int, NOT NULL, default 0)
+- **Model `ChannelStatsEntity`** (domain vocabulary): id: int, recorded_at: str, viewer_count: int, follower_count: int
+- **Endpoints**:
+  - `GET /api/dashboard/stats`
+    - **res**: DashboardStatsData(stream: StreamInfo(online: bool, started_at: Optional[str], viewer_count: Optional[int], follower_count: Optional[int]), top_viewers: list[TopViewer(global_user_id: str, platform: str, platform_user_id: str, display_name: str, points: int)], recent_mod_actions: list[RecentModAction(display_name: str, action: str, reason: str, created_at: str)], total_viewers: int)
+  - `GET /api/dashboard/stats/history`
+    - **res**: list[StatsSnapshot(id: int, recorded_at: str, viewer_count: int, follower_count: int)]
+  - `POST /api/dashboard/alerts/test`
+    - **req**: event_type: str, data: Optional[dict]
+    - **res**: TestAlertData(event_type: str)
+  - `SSE /api/dashboard/alerts`
 - **Events emitted**: `dashboard.stats.updated` (follower_count, viewer_count)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: dashboard.ChannelStatsCollectorPlugin, dashboard.ChannelStatsHistoryPlugin, dashboard.DashboardAlertsPlugin, dashboard.DashboardStatsPlugin
 
 ### `moderation`
-- **Table `mod_rule`**: type (str), value (Optional[str]), action (str), duration_s (Optional[int]), enabled (int), exempt_roles (str), twitch_id (str), display_name (str), reason (str), rule_id (Optional[int]), created_at (str)
-- **Endpoints**: DELETE /api/moderation/rules/{id}, GET /api/moderation/log, GET /api/moderation/rules, POST /api/moderation/ban, POST /api/moderation/rules, POST /api/moderation/timeout, POST /api/moderation/unban, PUT /api/moderation/rules/{id}
+- **Table `mod_log`** (storage): id (int, PK), twitch_id (text, NOT NULL), display_name (text, NOT NULL), action (text, NOT NULL), reason (text, NOT NULL), rule_id (int), created_at (text, NOT NULL, default datetime('now')), platform (text, NOT NULL, default 'twitch'), channel_id (text), user_id (text, NOT NULL, default '')
+- **Table `mod_rules`** (storage): id (int, PK), type (text, NOT NULL), value (text), action (text, NOT NULL, default 'timeout'), duration_s (int), enabled (int, NOT NULL, default 1), created_at (text, NOT NULL, default datetime('now')), exempt_roles (text, NOT NULL, default '')
+- **Model `ModRuleEntity`** (domain vocabulary): id: int, type: str, value: Optional[str], action: str, duration_s: Optional[int], enabled: int, exempt_roles: str
+- **Model `ModLogEntity`** (domain vocabulary): id: int, twitch_id: str, display_name: str, action: str, reason: str, rule_id: Optional[int], created_at: str
+- **Endpoints**:
+  - `DELETE /api/moderation/rules/{id}`
+    - **res**: dict
+  - `GET /api/moderation/log`
+    - **res**: list[ModLogEntry(id: int, platform: str, channel_id: Optional[str], user_id: str, twitch_id: Optional[str], display_name: str, action: str, reason: str, rule_id: Optional[int], created_at: str)]
+  - `GET /api/moderation/rules`
+    - **res**: list[ModRuleData(id: int, type: str, value: Optional[str], action: str, duration_s: Optional[int], enabled: bool, exempt_roles: list[str])]
+  - `POST /api/moderation/ban`
+    - **req**: platform: str, channel_id: Optional[str], user_id: Optional[str], twitch_id: Optional[str], display_name: Optional[str], reason: Optional[str]
+    - **res**: dict
+  - `POST /api/moderation/rules`
+    - **req**: type: str, value: Optional[str], action: str, duration_s: Optional[int], exempt_roles: list[str]
+    - **res**: ModRuleData(id: int, type: str, value: Optional[str], action: str, duration_s: Optional[int], enabled: bool, exempt_roles: list[str])
+  - `POST /api/moderation/timeout`
+    - **req**: platform: str, channel_id: Optional[str], user_id: Optional[str], twitch_id: Optional[str], display_name: Optional[str], duration_s: int, reason: Optional[str]
+    - **res**: dict
+  - `POST /api/moderation/unban`
+    - **req**: platform: str, channel_id: Optional[str], user_id: Optional[str], twitch_id: Optional[str], display_name: Optional[str]
+    - **res**: dict
+  - `PUT /api/moderation/rules/{id}`
+    - **req**: value: Optional[str], action: Optional[str], duration_s: Optional[int], enabled: Optional[bool], exempt_roles: Optional[list[str]]
+    - **res**: ModRuleData(id: int, type: str, value: Optional[str], action: str, duration_s: Optional[int], enabled: bool, exempt_roles: list[str])
 - **Events emitted**: `moderation.action.requested` (action, channel_id, duration_s, message_id, platform, reason, rule_id, user), `moderation.action.taken` (action, channel_id, duration_s, message_id, platform, reason, rule_id, user), `moderation.rules.updated` (rule_id)
 - **Events consumed**: chat.message.received, moderation.action.requested, moderation.rules.updated, viewer.regular.added, viewer.regular.removed
 - **Dependencies**: ai, db, event_bus, http, logger, state, twitch, youtube
 - **Plugins**: moderation.AiModPlugin, moderation.AutoModPlugin, moderation.CreateModRulePlugin, moderation.DeleteModRulePlugin, moderation.ListModRulesPlugin, moderation.ManualBanPlugin, moderation.ManualTimeoutPlugin, moderation.ManualUnbanPlugin, moderation.ModLogPlugin, moderation.ModerationActionRouterPlugin, moderation.UpdateModRulePlugin
 
 ### `overlays`
-- **Table `overlay`**: name (str), config (str), created_at (any), updated_at (any)
-- **Endpoints**: DELETE /api/overlays/backgrounds/{filename}, DELETE /api/overlays/{id}, GET /api/overlays, GET /api/overlays/backgrounds, GET /api/overlays/data, GET /api/overlays/manifest, GET /api/overlays/token, GET /api/overlays/{id}, GET /api/overlays/{id}/config, POST /api/overlays, POST /api/overlays/test, POST /api/overlays/token, POST /api/overlays/upload-background, PUT /api/overlays/{id}, SSE /api/overlays/feed, SSE /api/overlays/stream/{id}
+- **Table `overlay_feed_token`** (storage): id (int, PK), token (text, NOT NULL), created_at (timestamp, default CURRENT_TIMESTAMP), updated_at (timestamp, default CURRENT_TIMESTAMP)
+- **Table `overlay_vars`** (storage): key (text, PK), value (text, NOT NULL), updated_at (timestamp, default CURRENT_TIMESTAMP)
+- **Table `overlays`** (storage): id (int, PK), name (text, NOT NULL), config (text, NOT NULL, default '{"elements":[]}'), created_at (timestamp, default CURRENT_TIMESTAMP), updated_at (timestamp, default CURRENT_TIMESTAMP)
+- **Model `OverlayEntity`** (domain vocabulary): id: int | None, name: str, config: str, created_at: datetime | None, updated_at: datetime | None
+- **Endpoints**:
+  - `DELETE /api/overlays/backgrounds/{filename}`
+    - **res**: success: bool, error: Optional[str]
+  - `DELETE /api/overlays/{id}`
+    - **res**: success: bool, error: Optional[str]
+  - `GET /api/overlays`
+    - **res**: List[OverlayItem(id: int, name: str, created_at: Optional[str], updated_at: Optional[str])]
+  - `GET /api/overlays/backgrounds`
+    - **res**: list[BackgroundFileInfo(filename: str, url: str, type: str, size: int)]
+  - `GET /api/overlays/data`
+    - **res**: Any
+  - `GET /api/overlays/manifest`
+    - **res**: Any
+  - `GET /api/overlays/token`
+    - **res**: Any
+  - `GET /api/overlays/{id}`
+    - **res**: OverlayData(id: int, name: str, config: Any, created_at: Optional[str], updated_at: Optional[str])
+  - `GET /api/overlays/{id}/config`
+    - **res**: Any
+  - `POST /api/overlays`
+    - **req**: name: str, config: Optional[Any]
+    - **res**: OverlayData(id: int, name: str, config: Any)
+  - `POST /api/overlays/test`
+    - **req**: type: str
+    - **res**: Any
+  - `POST /api/overlays/token`
+    - **res**: Any
+  - `POST /api/overlays/upload-background`
+    - **res**: UploadBackgroundData(url: str, type: str)
+  - `PUT /api/overlays/{id}`
+    - **req**: name: Optional[str], config: Optional[Any]
+    - **res**: OverlayData(id: int, name: str, config: Any, updated_at: Optional[str])
+  - `SSE /api/overlays/feed`
+  - `SSE /api/overlays/stream/{id}`
 - **Events emitted**: `overlay.config.updated` (overlay_id), `overlay.test.event` (data, type)
 - **Events consumed**: chat.message.received, dashboard.stats.updated, overlay.config.updated, overlay.test.event, overlay.vars.set, youtube.superchat.received, youtube.supersticker.received
 - **Dependencies**: db, event_bus, http, logger, state, twitch
@@ -597,95 +750,244 @@ TTS Tool (tts):
 
 ### `ping`
 - **Tables**: none
-- **Endpoints**: GET /api/ping
+- **Endpoints**:
+  - `GET /api/ping`
+    - **res**: PingData(status: str, message: str)
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: http, logger
 - **Plugins**: ping.PingPlugin
 
 ### `platforms`
-- **Table `platform_connection`**: platform (str), channel_id (str), channel_name (str), enabled (bool), chat_read_enabled (bool), chat_write_enabled (bool), moderation_enabled (bool), capabilities (str), created_at (str), updated_at (str)
-- **Endpoints**: GET /api/platforms/connections, PUT /api/platforms/connections/{id}
+- **Table `platform_connections`** (storage): id (int, PK), platform (text, NOT NULL), channel_id (text, NOT NULL), channel_name (text, NOT NULL), enabled (int, NOT NULL, default 1), chat_read_enabled (int, NOT NULL, default 1), chat_write_enabled (int, NOT NULL, default 1), moderation_enabled (int, NOT NULL, default 0), capabilities (text, NOT NULL, default '{}'), created_at (text, default datetime('now')), updated_at (text, default datetime('now')) — UNIQUE(platform, channel_id)
+- **Model `PlatformConnection`** (domain vocabulary): id: int, platform: str, channel_id: str, channel_name: str, enabled: bool, chat_read_enabled: bool, chat_write_enabled: bool, moderation_enabled: bool, capabilities: str, created_at: str, updated_at: str
+- **Endpoints**:
+  - `GET /api/platforms/connections`
+    - **res**: list[PlatformConnectionData(id: int, platform: str, channel_id: str, channel_name: str, enabled: bool, chat_read_enabled: bool, chat_write_enabled: bool, moderation_enabled: bool, capabilities: dict, created_at: str, updated_at: str)]
+  - `PUT /api/platforms/connections/{id}`
+    - **req**: enabled: Optional[bool], chat_read_enabled: Optional[bool], chat_write_enabled: Optional[bool], moderation_enabled: Optional[bool], capabilities: Optional[dict]
+    - **res**: PlatformConnectionData(id: int, platform: str, channel_id: str, channel_name: str, enabled: bool, chat_read_enabled: bool, chat_write_enabled: bool, moderation_enabled: bool, capabilities: dict, created_at: str, updated_at: str)
 - **Events emitted**: `platform.connection.updated` ()
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger
 - **Plugins**: platforms.ListPlatformConnectionsPlugin, platforms.UpdatePlatformConnectionPlugin
 
 ### `stream_outputs`
-- **Table `stream_output`**: name (str), platform (str), channel_id (str), enabled (bool), overlay_id (Optional[int]), rtmp_url (Optional[str]), stream_key_configured (bool), stream_key_preview (Optional[str]), status (str), settings (dict), created_at (str), updated_at (str)
-- **Endpoints**: DELETE /api/stream-outputs/{id}, GET /api/stream-outputs, POST /api/stream-outputs, PUT /api/stream-outputs/{id}
+- **Table `stream_outputs`** (storage): id (int, PK), name (text, NOT NULL), platform (text, NOT NULL), channel_id (text, NOT NULL), enabled (int, NOT NULL, default 1), overlay_id (int), rtmp_url (text), stream_key_secret (text), status (text, NOT NULL, default 'stopped'), settings (text, NOT NULL, default '{}'), created_at (text, default datetime('now')), updated_at (text, default datetime('now'))
+- **Model `StreamOutput`** (domain vocabulary): id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str
+- **Endpoints**:
+  - `DELETE /api/stream-outputs/{id}`
+    - **res**: DeleteStreamOutputData(id: int, deleted: bool)
+  - `GET /api/stream-outputs`
+    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
+  - `GET /api/stream-outputs/runtime/status`
+    - **res**: StreamRuntimeStatusData(input_url: str, obs_url: str, obs_stream_key: str, obs_connected: bool, ffmpeg_available: bool, rtmp_engine_available: bool, relays: dict, relays_count: int, live_outputs_count: int, enabled_outputs_count: Optional[int], is_transmitting: Optional[bool], active_source: str, fallback_running: bool, fallback_mode: str, fallback_video_configured: bool, fallback_video_path: Optional[str], fallback_video_url: Optional[str])
+  - `POST /api/stream-outputs`
+    - **req**: name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_secret: Optional[str], settings: dict
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
+  - `POST /api/stream-outputs/fallback/video`
+    - **res**: UploadFallbackVideoData(mode: str, video_path: str, configured: bool)
+  - `POST /api/stream-outputs/start-active`
+    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
+  - `POST /api/stream-outputs/stop-active`
+    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
+  - `POST /api/stream-outputs/{id}/start`
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
+  - `POST /api/stream-outputs/{id}/stop`
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
+  - `PUT /api/stream-outputs/{id}`
+    - **req**: name: Optional[str], platform: Optional[str], channel_id: Optional[str], enabled: Optional[bool], overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_secret: Optional[str], status: Optional[str], settings: Optional[dict]
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
 - **Events emitted**: none
 - **Events consumed**: none
-- **Dependencies**: db, http, logger
-- **Plugins**: stream_outputs.CreateStreamOutputPlugin, stream_outputs.DeleteStreamOutputPlugin, stream_outputs.ListStreamOutputsPlugin, stream_outputs.UpdateStreamOutputPlugin
+- **Dependencies**: db, http, logger, stream_tool
+- **Plugins**: stream_outputs.CreateStreamOutputPlugin, stream_outputs.DeleteStreamOutputPlugin, stream_outputs.ListStreamOutputsPlugin, stream_outputs.StartActiveStreamOutputsPlugin, stream_outputs.StartStreamOutputPlugin, stream_outputs.StopActiveStreamOutputsPlugin, stream_outputs.StopStreamOutputPlugin, stream_outputs.StreamRuntimeStatusPlugin, stream_outputs.UpdateStreamOutputPlugin, stream_outputs.UploadFallbackVideoPlugin
 
 ### `stream_state`
-- **Table `stream_session`**: twitch_stream_id (Optional[str]), started_at (str), ended_at (Optional[str]), title (Optional[str]), game_name (Optional[str]), peak_viewers (int)
-- **Endpoints**: GET /api/stream/sessions, GET /api/stream/status
+- **Table `stream_sessions`** (storage): id (int, PK), twitch_stream_id (text), started_at (text, NOT NULL, default datetime('now')), ended_at (text), title (text), game_name (text), peak_viewers (int, NOT NULL, default 0)
+- **Model `StreamSessionEntity`** (domain vocabulary): id: int, twitch_stream_id: Optional[str], started_at: str, ended_at: Optional[str], title: Optional[str], game_name: Optional[str], peak_viewers: int
+- **Endpoints**:
+  - `GET /api/stream/sessions`
+    - **res**: list[StreamSessionData(id: int, twitch_stream_id: Optional[str], started_at: str, ended_at: Optional[str], title: Optional[str], game_name: Optional[str], peak_viewers: int)]
+  - `GET /api/stream/status`
+    - **res**: StreamStatusData(online: bool, session_id: Optional[int], started_at: Optional[str], ended_at: Optional[str], broadcaster_login: Optional[str])
 - **Events emitted**: `stream.session.ended` (ended_at, session_id), `stream.session.started` (broadcaster_login, session_id, started_at, twitch_stream_id)
 - **Events consumed**: stream.status.requested
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: stream_state.GetStreamStatusPlugin, stream_state.StreamHistoryPlugin, stream_state.StreamStateRpcPlugin, stream_state.StreamStatusPlugin
 
 ### `subscribers`
-- **Table `subscriber`**: twitch_id (str), login (str), display_name (str), tier (str), is_prime (bool), is_gift (bool), cumulative_months (int), streak_months (Optional[int]), subscribed_at (str), last_sub_at (str), is_active (bool), bits_total (int), last_cheer_at (str)
-- **Endpoints**: GET /api/bits/leaderboard, GET /api/gifters/leaderboard, GET /api/subscribers/leaderboard, POST /api/bits/sync, POST /api/subscribers/sync
+- **Table `gifters`** (storage): twitch_id (text, PK), login (text, NOT NULL), display_name (text, NOT NULL), gifts_total (int, NOT NULL, default 0), last_gift_at (text, NOT NULL, default datetime('now'))
+- **Table `subscribers`** (storage): id (int, PK), twitch_id (text, NOT NULL), login (text, NOT NULL), display_name (text, NOT NULL), tier (text, NOT NULL, default '1000'), is_prime (int, NOT NULL, default 0), is_gift (int, NOT NULL, default 0), cumulative_months (int, NOT NULL, default 1), streak_months (int), subscribed_at (text, NOT NULL, default datetime('now')), last_sub_at (text, NOT NULL, default datetime('now')), is_active (int, NOT NULL, default 1) — UNIQUE(twitch_id)
+- **Table `subscription_events`** (storage): id (int, PK), twitch_id (text, NOT NULL), login (text, NOT NULL), display_name (text, NOT NULL), event_type (text, NOT NULL), tier (text), previous_tier (text), cumulative_months (int), streak_months (int), is_gift (int, NOT NULL, default 0), gifter_id (text), gifter_login (text), gifter_display_name (text), event_at (text, NOT NULL, default datetime('now'))
+- **Table `viewer_bits`** (storage): id (int, PK), twitch_id (text, NOT NULL), login (text, NOT NULL), display_name (text, NOT NULL), bits_total (int, NOT NULL, default 0), last_cheer_at (text, NOT NULL, default datetime('now')) — UNIQUE(twitch_id)
+- **Model `Subscriber`** (domain vocabulary): id: int, twitch_id: str, login: str, display_name: str, tier: str, is_prime: bool, is_gift: bool, cumulative_months: int, streak_months: Optional[int], subscribed_at: str, last_sub_at: str, is_active: bool
+- **Model `ViewerBits`** (domain vocabulary): id: int, twitch_id: str, login: str, display_name: str, bits_total: int, last_cheer_at: str
+- **Endpoints**:
+  - `GET /api/bits/leaderboard`
+    - **res**: list[BitsEntry(rank: int, twitch_id: str, display_name: str, bits_total: int, last_cheer_at: str)]
+  - `GET /api/gifters/leaderboard`
+    - **res**: list[GifterEntry(rank: int, twitch_id: str, display_name: str, gifts_total: int, last_gift_at: str)]
+  - `GET /api/subscribers/leaderboard`
+    - **res**: list[SubscriberEntry(rank: int, twitch_id: str, display_name: str, tier: str, is_prime: bool, is_gift: bool, cumulative_months: int, streak_months: Optional[int], subscribed_at: str, is_active: bool)]], total: Optional[int
+  - `POST /api/bits/sync`
+    - **res**: SyncBitsData(synced: int)
+  - `POST /api/subscribers/sync`
+    - **res**: SyncSubscribersData(synced: int)
 - **Events emitted**: `monetization.event.received` (amount_micros, channel_id, currency, display_amount, message, platform, raw, timestamp, type, user), `subscriber.expired` (twitch_id), `subscriber.gift` (cumulative_total, gifter_id, gifter_name, total), `subscriber.new` (display_name, is_gift, tier, twitch_id), `subscriber.resub` (cumulative_months, display_name, streak_months, tier, twitch_id), `viewer.bits.received` (bits, display_name, twitch_id)
 - **Events consumed**: none
 - **Dependencies**: db, event_bus, http, logger, twitch
 - **Plugins**: subscribers.BitsLeaderboardPlugin, subscribers.BitsTrackerPlugin, subscribers.GiftersLeaderboardPlugin, subscribers.SubscribersLeaderboardPlugin, subscribers.SubscriptionTrackerPlugin, subscribers.SyncBitsPlugin, subscribers.SyncSubscribersPlugin
 
 ### `system`
-- **Table `scheduler_one_shot`**: job_id (str), run_at_epoch (float), event (str), payload (str)
-- **Endpoints**: GET /api/system/events, GET /api/system/lint, GET /api/system/metrics, GET /api/system/status, GET /api/system/traces/flat, GET /api/system/traces/tree, SSE /api/system/events/stream, SSE /api/system/logs/stream, SSE /api/system/metrics/stream, SSE /api/system/traces/stream
+- **Table `scheduler_one_shots`** (storage): job_id (text, PK), run_at_epoch (float, NOT NULL), event (text, NOT NULL), payload (text, NOT NULL)
+- **Model `SchedulerOneShotEntity`** (domain vocabulary): job_id: str, run_at_epoch: float, event: str, payload: str
+- **Endpoints**:
+  - `GET /api/system/events`
+    - **res**: SystemEventsData(events: list[EventEntry(event: str, subscribers: list[str], last_emitters: list[str], times_fired: int)])
+  - `GET /api/system/lint`
+    - **res**: SystemLintData(arch_violations: list[str], drift_warnings: list[str], event_contract_violations: list[LintFinding(code: str, severity: str, event: Optional[str], publisher: Optional[str], consumer: Optional[str], detail: str)])
+  - `GET /api/system/metrics`
+    - **res**: list[MetricRecord(tool: str, method: str, duration_ms: float, success: bool, timestamp: float)]
+  - `GET /api/system/status`
+    - **res**: SystemStatusData(tools: list[ToolStatus(name: str, status: str, message: Optional[str])], plugins: list[PluginStatus(name: str, domain: Optional[str], status: str, error: Optional[str], tools: list[str])])
+  - `GET /api/system/traces/flat`
+    - **res**: list[TraceFlatNode(id: str, parent_id: Optional[str], event: str, emitter: str, subscribers: list[str], payload_keys: list[str], timestamp: float, key: Optional[str], priority: Optional[int], delay: Optional[int])]
+  - `GET /api/system/traces/tree`
+    - **res**: list[TraceNode(id: str, parent_id: Optional[str], event: str, emitter: str, subscribers: list[str], payload_keys: list[str], timestamp: float, key: Optional[str], priority: Optional[int], delay: Optional[int], children: list['TraceNode'])]
+  - `SSE /api/system/events/stream`
+  - `SSE /api/system/logs/stream`
+  - `SSE /api/system/metrics/stream`
+  - `SSE /api/system/traces/stream`
 - **Events emitted**: `event.delivery.failed` ()
 - **Events consumed**: system.one_shot.cancel, system.one_shot.schedule
 - **Dependencies**: config, container, db, event_bus, http, logger, registry, scheduler
 - **Plugins**: system.ArchitectureLinterPlugin, system.DurableOneShotsPlugin, system.EventContractLinterPlugin, system.EventDeliveryMonitorPlugin, system.SystemEventsPlugin, system.SystemEventsStreamPlugin, system.SystemLogsStreamPlugin, system.SystemMetricsPlugin, system.SystemStatusPlugin, system.SystemTracesPlugin, system.SystemTracesStreamPlugin, system.ToolHealthPlugin
 
 ### `timers`
-- **Table `timer`**: name (str), message (str), interval_minutes (int), min_lines (int), enabled (int), last_executed_at (any), created_at (any)
-- **Endpoints**: DELETE /api/timers/{id}, GET /api/timers, POST /api/timers, PUT /api/timers/{id}
+- **Table `timers`** (storage): id (int, PK), name (text, NOT NULL), message (text, NOT NULL), interval_minutes (int, NOT NULL), min_lines (int, NOT NULL, default 0), enabled (int, default 1), last_executed_at (timestamp), created_at (timestamp, default CURRENT_TIMESTAMP)
+- **Model `TimerEntity`** (domain vocabulary): id: int | None, name: str, message: str, interval_minutes: int, min_lines: int, enabled: int, last_executed_at: datetime | None, created_at: datetime | None
+- **Endpoints**:
+  - `DELETE /api/timers/{id}`
+    - **res**: success: bool, error: Optional[str]
+  - `GET /api/timers`
+    - **res**: List[TimerData(id: int, name: str, message: str, interval_minutes: int, min_lines: int, enabled: int, last_executed_at: Optional[str])]
+  - `POST /api/timers`
+    - **req**: name: str, message: str, interval_minutes: int, min_lines: int, enabled: int
+    - **res**: TimerData(id: int, name: str, message: str, interval_minutes: int, min_lines: int, enabled: int)
+  - `PUT /api/timers/{id}`
+    - **req**: name: Optional[str], message: Optional[str], interval_minutes: Optional[int], min_lines: Optional[int], enabled: Optional[int]
+    - **res**: TimerData(id: int, name: str, message: str, interval_minutes: int, min_lines: int, enabled: int)
 - **Events emitted**: `chat.message.send` (channel_id, channel_name, message, platform), `timer.created` (id, name), `timer.deleted` (id), `timer.updated` (id)
 - **Events consumed**: chat.message.received, timer.created, timer.deleted, timer.updated
 - **Dependencies**: db, event_bus, http, logger, scheduler, state, twitch
 - **Plugins**: timers.CreateTimerPlugin, timers.DeleteTimerPlugin, timers.GetTimersPlugin, timers.TimerExecutorPlugin, timers.UpdateTimerPlugin
 
 ### `tts_chat`
-- **Table `tts_voice_config`**: twitch_id (str), twitch_login (str), voice_id (str), voice_name (str), provider (str), created_at (str), updated_at (str), enabled (bool), host (str), port (int), default_voice (str), timeout_s (int), max_message_length (int), skip_commands (bool), skip_links (bool), sub_only (bool), cooldown_seconds (int), blocked_words (str)
-- **Endpoints**: DELETE /api/tts/user-voices/{twitch_login}, GET /api/tts/settings, GET /api/tts/user-voices, GET /api/tts/user-voices/{twitch_login}, GET /api/tts/voices, PUT /api/tts/settings, PUT /api/tts/user-voices, SSE /api/tts/overlay/stream
+- **Table `tts_settings`** (storage): id (int, PK, default 1), enabled (int, NOT NULL, default 1), default_voice (text, NOT NULL, default 'es-ES-AlvaroNeural'), max_message_length (int, NOT NULL, default 200), skip_commands (int, NOT NULL, default 1), skip_links (int, NOT NULL, default 1), sub_only (int, NOT NULL, default 0), cooldown_seconds (int, NOT NULL, default 0), blocked_words (text, NOT NULL, default '[]'), updated_at (text, NOT NULL, default datetime('now')), redemption_title (text, NOT NULL, default ''), mod_bypass (int, NOT NULL, default 1)
+- **Table `tts_user_voice`** (storage): id (int, PK), twitch_id (text, NOT NULL), twitch_login (text, NOT NULL), voice_id (text, NOT NULL), voice_name (text, NOT NULL), created_at (text, NOT NULL, default datetime('now')), updated_at (text, NOT NULL, default datetime('now')) — UNIQUE(twitch_id)
+- **Model `TtsUserVoiceEntity`** (domain vocabulary): id: int, twitch_id: str, twitch_login: str, voice_id: str, voice_name: str, provider: str, created_at: str, updated_at: str
+- **Model `TtsSettingsEntity`** (domain vocabulary): id: int, enabled: bool, provider: str, host: str, port: int, default_voice: str, timeout_s: int, max_message_length: int, skip_commands: bool, skip_links: bool, sub_only: bool, cooldown_seconds: int, blocked_words: str, updated_at: str
+- **Endpoints**:
+  - `DELETE /api/tts/user-voices/{twitch_login}`
+    - **res**: success: bool, error: Optional[str]
+  - `GET /api/tts/settings`
+    - **res**: TtsSettingsData(enabled: bool, default_voice: str, max_message_length: int, skip_commands: bool, skip_links: bool, sub_only: bool, mod_bypass: bool, cooldown_seconds: int, blocked_words: list[str], redemption_title: str, providers: dict[str, bool], updated_at: str)
+  - `GET /api/tts/user-voices`
+    - **res**: list[UserVoiceItem(id: int, twitch_id: str, twitch_login: str, voice_id: str, voice_name: str, updated_at: str)]
+  - `GET /api/tts/user-voices/{twitch_login}`
+    - **res**: UserVoiceItem(id: int, twitch_id: str, twitch_login: str, voice_id: str, voice_name: str, updated_at: str)
+  - `GET /api/tts/voices`
+    - **res**: list[VoiceItem(id: str, name: str, gender: str, locale: str, provider: str)]
+  - `PUT /api/tts/settings`
+    - **req**: enabled: Optional[bool], default_voice: Optional[str], max_message_length: Optional[int], skip_commands: Optional[bool], skip_links: Optional[bool], sub_only: Optional[bool], mod_bypass: Optional[bool], cooldown_seconds: Optional[int], blocked_words: Optional[list[str]], redemption_title: Optional[str]
+    - **res**: TtsSettingsData(enabled: bool, default_voice: str, max_message_length: int, skip_commands: bool, skip_links: bool, sub_only: bool, mod_bypass: bool, cooldown_seconds: int, blocked_words: list[str], redemption_title: str, providers: dict[str, bool], updated_at: str)
+  - `PUT /api/tts/user-voices`
+    - **req**: twitch_id: str, twitch_login: str, voice_id: str, voice_name: str
+    - **res**: UserVoiceItem(id: int, twitch_id: str, twitch_login: str, voice_id: str, voice_name: str, updated_at: str)
+  - `SSE /api/tts/overlay/stream`
 - **Events emitted**: `chat.message.send` (channel_id, channel_name, message, platform), `tts.audio.ready` (audio_b64, text, username, voice_id)
 - **Events consumed**: chat.message.received, tts.audio.ready
 - **Dependencies**: db, event_bus, http, logger, tts, twitch
 - **Plugins**: tts_chat.TtsListenerPlugin, tts_chat.TtsRedemptionPlugin, tts_chat.TtsRestoreConfigPlugin, tts_chat.TtsSettingsPlugin, tts_chat.TtsStreamPlugin, tts_chat.TtsUserVoicesPlugin, tts_chat.TtsVoiceCommandPlugin, tts_chat.TtsVoiceListPlugin
 
 ### `twitch_auth`
-- **Table `twitch_token`**: twitch_id (str), login (str), display_name (str), access_token (str), refresh_token (str), scopes (str), expires_at (str), created_at (str), updated_at (str)
-- **Endpoints**: GET /api/auth/twitch, GET /api/auth/twitch/callback, GET /api/auth/twitch/scopes, GET /api/auth/twitch/status, POST /api/auth/twitch/logout
+- **Table `twitch_tokens`** (storage): id (int, PK), twitch_id (text, NOT NULL), login (text, NOT NULL), display_name (text, NOT NULL), access_token (text, NOT NULL), refresh_token (text, NOT NULL), scopes (text, NOT NULL, default '[]'), expires_at (text, NOT NULL), created_at (text, NOT NULL, default datetime('now')), updated_at (text, NOT NULL, default datetime('now')) — UNIQUE(twitch_id)
+- **Model `TwitchTokenEntity`** (domain vocabulary): id: int, twitch_id: str, login: str, display_name: str, access_token: str, refresh_token: str, scopes: str, expires_at: str, created_at: str, updated_at: str
+- **Endpoints**:
+  - `GET /api/auth/twitch`
+    - **res**: dict
+  - `GET /api/auth/twitch/callback`
+    - **res**: dict
+  - `GET /api/auth/twitch/scopes`
+    - **res**: ScopesData(connected: bool, required: Optional[list[str]], granted: Optional[list[str]], missing: Optional[list[str]])
+  - `GET /api/auth/twitch/status`
+    - **res**: AuthStatusData(authenticated: bool, connected: bool, connecting: bool, login: Optional[str], broadcaster_id: Optional[str])
+  - `POST /api/auth/twitch/logout`
+    - **res**: dict
 - **Events emitted**: `platform.connection.updated` (capabilities, channel_id, channel_name, chat_read_enabled, chat_write_enabled, enabled, id, moderation_enabled, platform)
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, scheduler, twitch
 - **Plugins**: twitch_auth.RestoreSessionPlugin, twitch_auth.TwitchAuthStatusPlugin, twitch_auth.TwitchEventBridgePlugin, twitch_auth.TwitchLogoutPlugin, twitch_auth.TwitchOAuthCallbackPlugin, twitch_auth.TwitchOAuthStartPlugin, twitch_auth.TwitchScopesPlugin, twitch_auth.TwitchTokenRefreshPlugin
 
 ### `viewers`
-- **Table `viewer`**: global_user_id (str), platform (str), platform_user_id (str), login (Optional[str]), display_name (str), avatar_url (Optional[str]), points (int), total_earned (int), is_regular (bool), first_seen (str), last_seen (str)
-- **Endpoints**: DELETE /api/viewers/regulars/{global_user_id}, GET /api/viewers, GET /api/viewers/leaderboard, GET /api/viewers/regulars, GET /api/viewers/{query}, POST /api/viewers/regulars, POST /api/viewers/{global_user_id}/points
+- **Table `viewers`** (storage): id (int, PK), global_user_id (text, NOT NULL), platform (text, NOT NULL), platform_user_id (text, NOT NULL), login (text), display_name (text, NOT NULL), avatar_url (text), points (int, NOT NULL, default 0), total_earned (int, NOT NULL, default 0), is_regular (int, NOT NULL, default 0), first_seen (text, default datetime('now')), last_seen (text, default datetime('now')) — UNIQUE(global_user_id) — UNIQUE(platform, platform_user_id)
+- **Model `Viewer`** (domain vocabulary): id: int, global_user_id: str, platform: str, platform_user_id: str, login: Optional[str], display_name: str, avatar_url: Optional[str], points: int, total_earned: int, is_regular: bool, first_seen: str, last_seen: str
+- **Endpoints**:
+  - `DELETE /api/viewers/regulars/{global_user_id}`
+    - **res**: success: bool, error: Optional[str]
+  - `GET /api/viewers`
+    - **res**: List[ViewerData(id: int, global_user_id: str, platform: str, platform_user_id: str, login: Optional[str], display_name: str, avatar_url: Optional[str], points: int, total_earned: int, is_regular: bool, first_seen: str, last_seen: str)]
+  - `GET /api/viewers/leaderboard`
+    - **res**: list[LeaderboardEntry(rank: int, global_user_id: str, platform: str, platform_user_id: str, display_name: str, points: int, total_earned: int, is_regular: bool)]
+  - `GET /api/viewers/regulars`
+    - **res**: list[RegularEntry(global_user_id: str, platform: str, platform_user_id: str, login: Optional[str], display_name: str, points: int, first_seen: str)]
+  - `GET /api/viewers/{query}`
+    - **res**: ViewerData(id: int, global_user_id: str, platform: str, platform_user_id: str, login: Optional[str], display_name: str, avatar_url: Optional[str], points: int, total_earned: int, is_regular: bool, first_seen: str, last_seen: str)
+  - `POST /api/viewers/regulars`
+    - **req**: login: str, platform: str
+    - **res**: RegularData(global_user_id: str, platform: str, platform_user_id: str, login: Optional[str], display_name: str)
+  - `POST /api/viewers/{global_user_id}/points`
+    - **req**: delta: int
+    - **res**: ViewerData(global_user_id: str, platform: str, platform_user_id: str, display_name: str, points: int, total_earned: int)
 - **Events emitted**: `chat.message.send` (message), `viewer.points.awarded` (delta, display_name, global_user_id, platform, platform_user_id), `viewer.regular.added` (added_by, display_name, global_user_id, platform, platform_user_id), `viewer.regular.removed` ()
 - **Events consumed**: chat.command.received, chat.message.received
 - **Dependencies**: db, event_bus, http, logger, twitch
 - **Plugins**: viewers.AddRegularPlugin, viewers.AdjustPointsPlugin, viewers.GetViewerPlugin, viewers.LeaderboardPlugin, viewers.ListRegularsPlugin, viewers.ListViewersPlugin, viewers.RegularsCommandPlugin, viewers.RemoveRegularPlugin, viewers.ViewerActivityPlugin
 
 ### `webhooks`
-- **Table `webhook`**: name (str), url (str), method (str), headers (Optional[str]), body_template (Optional[str]), trigger_type (str), trigger_value (str), filter_field (Optional[str]), filter_value (Optional[str]), enabled (bool), created_at (Optional[str]), updated_at (Optional[str])
-- **Endpoints**: DELETE /api/webhooks/{webhook_id}, GET /api/webhooks, POST /api/webhooks, POST /api/webhooks/test, PUT /api/webhooks/{webhook_id}
+- **Table `webhooks`** (storage): id (int, PK), name (text, NOT NULL), url (text, NOT NULL), method (text, NOT NULL, default 'POST'), headers (text), body_template (text), trigger_type (text, NOT NULL), trigger_value (text, NOT NULL), enabled (int, NOT NULL, default 1), created_at (text, NOT NULL, default datetime('now')), updated_at (text, NOT NULL, default datetime('now')), filter_field (text), filter_value (text)
+- **Model `WebhookEntity`** (domain vocabulary): id: Optional[int], name: str, url: str, method: str, headers: Optional[str], body_template: Optional[str], trigger_type: str, trigger_value: str, filter_field: Optional[str], filter_value: Optional[str], enabled: bool, created_at: Optional[str], updated_at: Optional[str]
+- **Endpoints**:
+  - `DELETE /api/webhooks/{webhook_id}`
+    - **res**: success: bool, error: Optional[str]
+  - `GET /api/webhooks`
+    - **res**: List[WebhookEntry(id: int, name: str, url: str, method: str, trigger_type: str, trigger_value: str, filter_field: Optional[str], filter_value: Optional[str], body_template: Optional[str], enabled: bool)]
+  - `POST /api/webhooks`
+    - **req**: name: str, url: str, method: str, headers: Optional[str], body_template: Optional[str], trigger_type: str, trigger_value: str, filter_field: Optional[str], filter_value: Optional[str], enabled: bool
+    - **res**: WebhookData(id: int, name: str, url: str, trigger_type: str, trigger_value: str, enabled: bool)
+  - `POST /api/webhooks/test`
+    - **req**: url: str, method: str, headers: Optional[str], body_template: Optional[str]
+    - **res**: success: bool, status: Optional[int], response: Optional[str], error: Optional[str]
+  - `PUT /api/webhooks/{webhook_id}`
+    - **res**: success: bool, error: Optional[str]
 - **Events emitted**: none
 - **Events consumed**: chat.command.executed
 - **Dependencies**: db, event_bus, http, http_client, logger
 - **Plugins**: webhooks.CreateWebhookPlugin, webhooks.DeleteWebhookPlugin, webhooks.ListWebhooksPlugin, webhooks.TestWebhookPlugin, webhooks.UpdateWebhookPlugin, webhooks.WebhookExecutorPlugin
 
 ### `youtube_auth`
-- **Table `youtube_token`**: channel_id (str), channel_title (str), access_token (str), refresh_token (Optional[str]), scopes (str), expires_at (str), created_at (Optional[str]), updated_at (Optional[str])
-- **Endpoints**: GET /api/auth/youtube, GET /api/auth/youtube/callback, GET /api/auth/youtube/status, POST /api/auth/youtube/logout
+- **Table `youtube_tokens`** (storage): id (int, PK), channel_id (text, NOT NULL), channel_title (text, NOT NULL), access_token (text, NOT NULL), refresh_token (text), scopes (text, NOT NULL, default '[]'), expires_at (text, NOT NULL), created_at (text, default datetime('now')), updated_at (text, default datetime('now')) — UNIQUE(channel_id)
+- **Model `YouTubeToken`** (domain vocabulary): id: Optional[int], channel_id: str, channel_title: str, access_token: str, refresh_token: Optional[str], scopes: str, expires_at: str, created_at: Optional[str], updated_at: Optional[str]
+- **Endpoints**:
+  - `GET /api/auth/youtube`
+    - **res**: dict
+  - `GET /api/auth/youtube/callback`
+    - **res**: dict
+  - `GET /api/auth/youtube/status`
+    - **res**: YouTubeAuthStatusData(authenticated: bool, connected: bool, channel_id: Optional[str], channel_title: Optional[str])
+  - `POST /api/auth/youtube/logout`
+    - **res**: dict
 - **Events emitted**: `platform.connection.updated` (capabilities, channel_id, channel_name, chat_read_enabled, chat_write_enabled, enabled, id, moderation_enabled, platform)
 - **Events consumed**: none
 - **Dependencies**: config, db, event_bus, http, logger, youtube

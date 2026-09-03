@@ -1,4 +1,4 @@
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 _MAX_CHAT_LEN = 490  # Twitch limit is 500; leave room for prefix
 

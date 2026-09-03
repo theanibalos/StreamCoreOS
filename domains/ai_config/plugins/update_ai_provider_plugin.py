@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 class UpdateAIProviderRequest(BaseModel):

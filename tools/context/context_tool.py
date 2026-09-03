@@ -1,6 +1,5 @@
-import ast
-import os
-from core.base_tool import BaseTool
+from microcoreos import BaseTool
+from tools.context import renderers, scanners
 
 
 class ContextTool(BaseTool):
@@ -18,43 +17,44 @@ class ContextTool(BaseTool):
         - CAPABILITIES:
             - Reads the system registry.
             - Exports active tools, health status, and domain models to AI_CONTEXT.md.
+            - Embeds the plugin authoring guide (tools/context/authoring_guide.md):
+              executor rules plus one complete template per deliverable type, so the
+              manifest alone is enough to write a plugin or its tests.
             - Regenerates AI_CONTEXT.md on every boot — always up to date with the live system.
         """
 
-    def _scan_domain_models(self, registry):
-        """
-        Scans domains/*/models/*.py and registers them to the registry.
-        Moved here from the Kernel to preserve the blind-kernel principle.
-        """
-        domains_dir = os.path.abspath("domains")
-        if not os.path.exists(domains_dir):
-            return
-        for domain_name in sorted(os.listdir(domains_dir)):
-            models_dir = os.path.join(domains_dir, domain_name, "models")
-            if not os.path.isdir(models_dir):
-                continue
-            for filename in sorted(os.listdir(models_dir)):
-                if not filename.endswith(".py") or filename == "__init__.py":
-                    continue
-                filepath = os.path.join(models_dir, filename)
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        registry.register_domain_metadata(domain_name, f"model_{filename}", f.read())
-                except Exception as e:
-                    print(f"[ContextTool] Error reading model {filepath}: {e}")
-
-    def on_boot_complete(self, container):
+    async def on_boot_complete(self, container):
         registry = container.registry
-        self._scan_domain_models(registry)
-        self._generate_global_manifest(container)
+        scanners._scan_domain_models(registry)
+        self._generate_global_manifest(container, await self._fetch_live_schema(container))
+
+    async def _fetch_live_schema(self, container) -> dict:
+        """
+        The real schema, read from the database itself.
+
+        The manifest describes TABLES from here and never from the entity models:
+        a model is a hand-written mirror and can drift (it did — the manifest used
+        to name the table after the model FILE, so `scheduler_one_shots` was
+        published as `scheduler_one_shot`). Introspection cannot drift: it reports
+        what exists.
+
+        Safe by the time this runs: migrations are applied in the db tool's
+        setup(), and the Kernel awaits every setup() together before any
+        on_boot_complete. A system with no db tool still gets its manifest.
+        """
+        try:
+            return await container.get("db").describe_schema()
+        except Exception as e:
+            print(f"[ContextTool] Live schema unavailable, tables omitted from manifest: {e}")
+            return {}
 
     # ── Global manifest ───────────────────────────────────────────────────────
 
-    def _generate_global_manifest(self, container):
+    def _generate_global_manifest(self, container, schema: dict):
         manifest = "# 📜 SYSTEM MANIFEST\n\n"
         manifest += "> This file is ALL you need to build a plugin. For advanced topics (testing, observability, creating tools), see [INSTRUCTIONS_FOR_AI.md](INSTRUCTIONS_FOR_AI.md).\n\n"
 
-        manifest += self._generate_plugin_quick_start()
+        manifest += renderers._generate_plugin_quick_start()
 
         manifest += "## 🛠️ Quick Architecture Ref\n"
         manifest += "- **Pattern**: `__init__` (DI) -> `on_boot` (Register) -> handler methods (Action).\n"
@@ -81,6 +81,11 @@ class ContextTool(BaseTool):
 
         manifest += "## 📦 Domains\n\n"
 
+        # Two sources, each asked only what it alone can know: the migration path
+        # says WHICH DOMAIN owns a table (the database has no notion of domains),
+        # the live schema says WHAT THE TABLE IS.
+        owned_tables = scanners._scan_migration_tables()
+
         dump = container.registry.get_system_dump()
         plugins_by_domain: dict[str, list[tuple[str, dict]]] = {}
         for plugin_name, info in dump.get("plugins", {}).items():
@@ -88,33 +93,61 @@ class ContextTool(BaseTool):
             if domain:
                 plugins_by_domain.setdefault(domain, []).append((plugin_name, info))
 
-        for domain in sorted(plugins_by_domain.keys()):
-            plugins = plugins_by_domain[domain]
+        # The union, not just the plugin list. A domain that owns a table but
+        # has no plugin yet is exactly what phase 0 produces, and listing only
+        # registered plugins made that domain invisible in the one document
+        # phase 0 is verified against: the migration applied, the manifest
+        # regenerated, and the new table appeared nowhere. The table is the
+        # deliverable — it belongs here the moment it exists.
+        for domain in sorted(set(plugins_by_domain) | set(owned_tables)):
+            plugins = plugins_by_domain.get(domain, [])
             plugin_names = [p[0] for p in plugins]
 
             all_deps: set[str] = set()
             for _, info in plugins:
                 all_deps.update(info.get("dependencies", []))
 
-            endpoints = self._get_domain_endpoints(domain)
-            emitted_map = self._scan_published_events(domain)
-            consumed = self._get_consumed_events(plugin_names, container)
-            tables = self._get_domain_tables(domain)
+            endpoints = scanners._get_domain_endpoints(domain)
+            emitted_map = scanners._scan_published_events(domain)
+            consumed = scanners._get_consumed_events(plugin_names, container)
+            tables = owned_tables.get(domain, [])
 
             manifest += f"### `{domain}`\n"
+            # Two lines, two questions. Table = storage, for writing SQL.
+            # Model = the domain's vocabulary, for naming and shaping what the
+            # API speaks. They differ on purpose (see renderers._describe_models).
             if tables:
                 for table in tables:
-                    fields = self._get_model_fields(domain, table)
-                    fields_str = ", ".join(f"{name} ({type_})" for name, type_ in fields.items())
-                    manifest += f"- **Table `{table}`**: {fields_str}\n"
+                    manifest += f"- **Table `{table}`** (storage): {renderers._describe_table(schema, table)}\n"
             else:
                 manifest += "- **Tables**: none\n"
 
+            for model in renderers._describe_models(domain):
+                manifest += f"- {model}\n"
+
             if endpoints:
-                manifest += f"- **Endpoints**: {', '.join(endpoints)}\n"
+                manifest += "- **Endpoints**:\n"
+                for ep in endpoints:
+                    if " (" in ep:
+                        path_part, schema_part = ep.split(" (", 1)
+                        manifest += f"  - `{path_part}`\n"
+                        schema_part = schema_part.rstrip(")")
+                        if "; res: " in schema_part:
+                            req_info, res_info = schema_part.split("; res: ", 1)
+                            req_info = req_info.replace("req: ", "", 1)
+                            manifest += f"    - **req**: {req_info}\n"
+                            manifest += f"    - **res**: {renderers._clean_res_info(res_info)}\n"
+                        elif schema_part.startswith("req: "):
+                            req_info = schema_part.replace("req: ", "", 1)
+                            manifest += f"    - **req**: {req_info}\n"
+                        elif schema_part.startswith("res: "):
+                            res_info = schema_part.replace("res: ", "", 1)
+                            manifest += f"    - **res**: {renderers._clean_res_info(res_info)}\n"
+                    else:
+                        manifest += f"  - `{ep}`\n"
             else:
                 manifest += "- **Endpoints**: none\n"
-            
+
             if emitted_map:
                 emitted_strs = [f"`{name}` ({', '.join(sorted(keys))})" for name, keys in sorted(emitted_map.items())]
                 manifest += f"- **Events emitted**: {', '.join(emitted_strs)}\n"
@@ -123,254 +156,18 @@ class ContextTool(BaseTool):
 
             manifest += f"- **Events consumed**: {', '.join(sorted(consumed)) if consumed else 'none'}\n"
             manifest += f"- **Dependencies**: {', '.join(sorted(all_deps)) if all_deps else 'none'}\n"
-            manifest += f"- **Plugins**: {', '.join(sorted(plugin_names))}\n\n"
+            if plugin_names:
+                manifest += f"- **Plugins**: {', '.join(sorted(plugin_names))}\n\n"
+            else:
+                # Says which phase the domain is in, not merely that a list is
+                # empty: this is the line a phase 0 author is looking for.
+                manifest += ("- **Plugins**: none — phase 0 only (tables and "
+                             "models exist, no feature implements them yet)\n\n")
+
+        manifest += renderers._load_authoring_guide()
 
         try:
             with open("AI_CONTEXT.md", "w", encoding="utf-8") as f:
                 f.write(manifest)
         except Exception as e:
             print(f"[ContextTool] Error writing AI_CONTEXT.md: {e}")
-
-    def _generate_plugin_quick_start(self) -> str:
-        return """## ⚡ Plugin Quick Start
-
-**Location**: `domains/{domain}/plugins/{feature}_plugin.py` — 1 file = 1 feature.
-
-### Template
-
-```python
-from typing import Optional
-from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
-
-# Request/Response schemas live HERE, not in models/
-class CreateThingRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-
-class ThingData(BaseModel):
-    id: int
-    name: str
-
-class CreateThingResponse(BaseModel):
-    success: bool
-    data: Optional[ThingData] = None
-    error: Optional[str] = None
-
-class CreateThingPlugin(BasePlugin):
-    def __init__(self, http, db, event_bus, logger):
-        self.http = http
-        self.db = db
-        self.bus = event_bus
-        self.logger = logger
-
-    async def on_boot(self):
-        self.http.add_endpoint(
-            "/things", "POST", self.execute,
-            tags=["Things"],
-            request_model=CreateThingRequest,
-            response_model=CreateThingResponse,
-        )
-
-    async def execute(self, data: dict, context=None):
-        try:
-            req = CreateThingRequest(**data)
-            thing_id = await self.db.execute(
-                "INSERT INTO things (name) VALUES ($1) RETURNING id", [req.name]
-            )
-            await self.bus.publish("thing.created", {"id": thing_id})
-            return {"success": True, "data": {"id": thing_id, "name": req.name}}
-        except Exception as e:
-            # Technical error logged server-side, safe message for client
-            self.logger.error(f"Failed to create thing: {e}")
-            return {"success": False, "error": "Database error"}
-```
-
-### New Domain Structure
-
-```
-domains/{name}/
-  __init__.py
-  models/{name}.py        <- Entity: DB mirror only (Pydantic BaseModel)
-  migrations/001_xxx.sql  <- Raw SQL, auto-executed on boot
-  plugins/                <- 1 file = 1 feature
-```
-
-### Critical Rules
-
-1. **Never modify `main.py`** — Kernel auto-discovers everything.
-2. **DI by name** — `__init__` param names must match tool `name` properties.
-3. **Schemas inline** — Request AND response schemas go in the plugin file, not in `models/`.
-4. **No cross-domain imports** — Use `event_bus` for inter-domain communication.
-5. **Return format** — Always `{"success": bool, "data": ..., "error": ...}`.
-6. **Use `Field`** — Never bare `str`/`int` in request schemas. Use `Field(min_length=1)` etc.
-7. **SQL placeholders** — Always `$1, $2, $3...` (never `?`).
-8. **Always pass `response_model=`** to `add_endpoint` — generates OpenAPI docs.
-9. **Never expose sensitive fields** — Define response schema with only safe fields.
-10. **No hardcoded imports** — Never `from tools.x import X`. Use DI.
-
----
-
-"""
-
-    def _get_domain_endpoints(self, domain: str) -> list[str]:
-        """
-        AST analysis of plugin source files to extract endpoints.
-        More robust than regex.
-        """
-        endpoints: set[str] = set()
-        plugins_dir = os.path.join("domains", domain, "plugins")
-        if not os.path.isdir(plugins_dir):
-            return []
-
-        for filename in os.listdir(plugins_dir):
-            if not filename.endswith(".py"):
-                continue
-            filepath = os.path.join(plugins_dir, filename)
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    tree = ast.parse(f.read())
-                
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                        method_name = node.func.attr
-                        
-                        # 1. add_endpoint
-                        if method_name == "add_endpoint":
-                            path, method = None, None
-                            # Positional args
-                            if len(node.args) >= 2:
-                                if isinstance(node.args[0], ast.Constant): path = node.args[0].value
-                                if isinstance(node.args[1], ast.Constant): method = node.args[1].value
-                            # Keyword args
-                            for kw in node.keywords:
-                                if kw.arg == "path" and isinstance(kw.value, ast.Constant): path = kw.value.value
-                                if kw.arg == "method" and isinstance(kw.value, ast.Constant): method = kw.value.value
-                            
-                            if path and method:
-                                endpoints.add(f"{method.upper()} {path}")
-
-                        # 2. SSE
-                        elif method_name == "add_sse_endpoint":
-                            path = None
-                            if node.args and isinstance(node.args[0], ast.Constant): path = node.args[0].value
-                            for kw in node.keywords:
-                                if kw.arg == "path" and isinstance(kw.value, ast.Constant): path = kw.value.value
-                            if path: endpoints.add(f"SSE {path}")
-
-                        # 3. WS
-                        elif method_name == "add_ws_endpoint":
-                            path = None
-                            if node.args and isinstance(node.args[0], ast.Constant): path = node.args[0].value
-                            for kw in node.keywords:
-                                if kw.arg == "path" and isinstance(kw.value, ast.Constant): path = kw.value.value
-                            if path: endpoints.add(f"WS {path}")
-
-            except Exception as e:
-                print(f"[ContextTool] Error parsing AST for {filepath}: {e}")
-        
-        return sorted(endpoints)
-
-    def _get_consumed_events(self, plugin_names: list[str], container) -> set[str]:
-        try:
-            event_bus = container.get("event_bus")
-            consumed = set()
-            for event, subs in event_bus.get_subscribers().items():
-                if event.startswith("_reply."):
-                    continue
-                for sub in subs:
-                    # sub is "module.ClassName.method_name" (module-qualified
-                    # so derived consumer groups never collide across domains)
-                    parts = sub.split(".")
-                    if len(parts) < 3:
-                        continue  # plain-function subscriber, not a plugin method
-                    sub_class = parts[-2]
-                    # plugin_names contains "domain.ClassName"
-                    if any(p.endswith(f".{sub_class}") or p == sub_class for p in plugin_names):
-                        consumed.add(event)
-                        break
-            return consumed
-        except Exception:
-            return set()
-
-    def _scan_published_events(self, domain: str) -> dict[str, set[str]]:
-        """
-        AST analysis to find .publish() calls.
-        Returns a dict: { "event.name": {"key1", "key2", ...} }
-        """
-        event_map: dict[str, set[str]] = {}
-        plugins_dir = os.path.join("domains", domain, "plugins")
-        if not os.path.isdir(plugins_dir):
-            return event_map
-
-        for filename in os.listdir(plugins_dir):
-            if not filename.endswith(".py"):
-                continue
-            filepath = os.path.join(plugins_dir, filename)
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    tree = ast.parse(f.read())
-                
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                        if node.func.attr == "publish":
-                            event_name, keys = None, set()
-                            
-                            # First arg is event name
-                            if node.args and isinstance(node.args[0], ast.Constant):
-                                event_name = node.args[0].value
-                            
-                            # Second arg is payload (dict)
-                            if len(node.args) >= 2 and isinstance(node.args[1], ast.Dict):
-                                for k in node.args[1].keys:
-                                    if isinstance(k, ast.Constant):
-                                        keys.add(str(k.value))
-                            
-                            if event_name:
-                                if event_name not in event_map:
-                                    event_map[event_name] = keys
-                                else:
-                                    event_map[event_name].update(keys)
-            except Exception:
-                pass
-        return event_map
-
-    def _get_domain_tables(self, domain: str) -> list[str]:
-        models_dir = os.path.join("domains", domain, "models")
-        if not os.path.isdir(models_dir):
-            return []
-        return sorted([
-            f.replace(".py", "")
-            for f in os.listdir(models_dir)
-            if f.endswith(".py") and f != "__init__.py"
-        ])
-
-    def _get_model_fields(self, domain: str, table: str) -> dict[str, str]:
-        """
-        AST parsing for models to extract Pydantic fields accurately.
-        """
-        model_path = os.path.join("domains", domain, "models", f"{table}.py")
-        if not os.path.exists(model_path):
-            return {}
-        
-        fields = {}
-        try:
-            with open(model_path, "r", encoding="utf-8") as f:
-                tree = ast.parse(f.read())
-            
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    for item in node.body:
-                        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-                            name = item.target.id
-                            if name == "id": continue
-                            # Simplified type extraction
-                            type_str = "any"
-                            if isinstance(item.annotation, ast.Name):
-                                type_str = item.annotation.id
-                            elif isinstance(item.annotation, ast.Subscript):
-                                # Handle Optional[str], etc.
-                                type_str = ast.unparse(item.annotation)
-                            fields[name] = type_str
-        except Exception:
-            pass
-        return fields

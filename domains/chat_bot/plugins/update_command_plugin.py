@@ -1,6 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel, Field
-from core.base_plugin import BasePlugin
+from microcoreos.base_plugin import BasePlugin
 
 
 _USERLEVELS = r"^(everyone|subscriber|vip|regular|moderator|broadcaster)$"
@@ -11,7 +11,7 @@ class UpdateCommandRequest(BaseModel):
     cooldown_s: Optional[int] = Field(default=None, ge=0, le=3600)
     global_cooldown_s: Optional[int] = Field(default=None, ge=0, le=3600)
     userlevel: Optional[str] = Field(default=None, pattern=_USERLEVELS)
-    enabled: Optional[bool] = None
+    enabled: Optional[bool] = Field(default=None)
 
 
 class CommandData(BaseModel):
