@@ -348,11 +348,40 @@ class YouTubeTool(BaseTool):
 
     def get_interface_description(self) -> str:
         return """
-        YouTube Tool (youtube): OAuth + YouTube Live Chat via YouTube Data API.
-        Env: YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI.
-        Methods: get_auth_url, consume_state, exchange_code, refresh_user_token,
-        require_scopes, get_required_scopes, connect, disconnect, get_session,
-        is_connected, get, post, delete, get_user_info, get_active_broadcast,
-        get_live_chat_id, list_chat_messages, stream_chat_messages, send_message,
-        delete_message, ban_user.
+        YouTube Tool (youtube):
+        - PURPOSE: Integration with YouTube Data API v3, Google OAuth 2.0, and high-performance Live Chat via gRPC streamList.
+        - ENVIRONMENT:
+            - YOUTUBE_CLIENT_ID: Google Cloud OAuth 2.0 Client ID.
+            - YOUTUBE_CLIENT_SECRET: Google Cloud OAuth 2.0 Client Secret.
+            - YOUTUBE_REDIRECT_URI: OAuth redirect callback URL (default: http://localhost/api/auth/youtube/callback).
+        - OAUTH & SESSION LIFECYCLE:
+            - require_scopes(scopes: list[str]) -> None: Declare needed OAuth scopes in on_boot().
+            - get_required_scopes() -> list[str]: Returns list of accumulated required scopes.
+            - get_auth_url() -> tuple[str, str]: Returns (authorization_url, csrf_state_token).
+            - consume_state(state: str) -> bool: Validates and consumes CSRF state from callback.
+            - await exchange_code(code: str) -> dict: Exchanges authorization code for tokens dictionary.
+            - await refresh_user_token(refresh_token: str) -> dict: Refreshes access token with Google OAuth.
+            - await connect(access_token, refresh_token, channel_id, channel_title, expires_in=3600) -> None:
+                Establishes the active authenticated session.
+            - await disconnect() -> None: Clears active session.
+            - get_session() -> dict | None: Returns active session metadata (tokens, channel_id, channel_title).
+            - is_connected() -> bool: Returns True if active session is connected and authenticated.
+        - BROADCAST & CHAT DISCOVERY:
+            - await get_user_info() -> dict: Returns channel details: {"id": channel_id, "title": channel_title}.
+            - await get_active_broadcast() -> dict | None: Fetches currently active or testing live broadcast.
+            - await get_live_chat_id() -> str | None: Extracts active liveChatId for the current live stream.
+        - LIVE CHAT & MODERATION:
+            - await stream_chat_messages(live_chat_id: str, page_token: str | None = None, max_results: int = 500):
+                Async generator yielding real-time chat messages via gRPC streamList (recommended).
+            - await list_chat_messages(live_chat_id: str, page_token: str | None = None, max_results: int = 500) -> dict:
+                REST polling fallback for live chat messages.
+            - await send_message(live_chat_id: str, text: str) -> dict:
+                Sends a chat message to YouTube Live Chat (requires 'https://www.googleapis.com/auth/youtube.force-ssl').
+            - await delete_message(message_id: str) -> dict: Deletes a chat message by message_id.
+            - await ban_user(live_chat_id: str, channel_id: str, duration_s: int | None = None) -> dict:
+                Bans (permanent) or timeouts (temporary, duration_s) a channel in live chat.
+        - RAW HTTP GATEWAY (with auto-refreshing Bearer token):
+            - await get(endpoint: str, params: dict | None = None) -> dict
+            - await post(endpoint: str, body: dict | None = None, params: dict | None = None) -> dict
+            - await delete(endpoint: str, params: dict | None = None) -> dict
         """
