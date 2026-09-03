@@ -180,9 +180,10 @@ outside Docker. API docs at `http://localhost:8000/docs`.
 
 ```
 StreamCoreOS/
-├── core/                        # Kernel: IoC container, DI, auto-discovery (~340 lines)
-├── tools/
+├── tools/                       # System & streaming tools (MicroCoreOS + custom)
 │   ├── twitch/                  # Twitch platform wrapper (OAuth + EventSub + IRC)
+│   ├── youtube/                 # YouTube Live wrapper (OAuth + Data API + gRPC)
+│   ├── rtmp_engine/             # Ingest RTMP server & relay engine
 │   ├── sqlite/                  # Default DB — swap to PostgreSQL with zero plugin changes
 │   ├── tts/                     # TTS router (edge_tts + Voicebox providers)
 │   ├── ai/                      # AI completions (OpenAI-compatible, local or cloud)
@@ -193,7 +194,9 @@ StreamCoreOS/
 │   └── logger/                  # Structured logging with sinks
 └── domains/
     ├── twitch_auth/             # OAuth flow + token storage + session restore
+    ├── youtube_auth/            # YouTube OAuth flow + token storage
     ├── stream_state/            # Online/offline tracking + history
+    ├── stream_outputs/          # RTMP multi-destination output management
     ├── chat_bot/                # Chat dispatch + commands + variables + TTS + SSE
     ├── viewers/                 # Viewer profiles + points + regulars
     ├── moderation/              # AI mod + word/link/caps/spam filters + manual controls
@@ -204,7 +207,6 @@ StreamCoreOS/
     ├── tts_chat/                # TTS listener + per-user voice assignment
     ├── ai_config/               # AI provider configuration
     ├── system/                  # Observability — traces, events, health, SSE logs
-    ├── twitch_redemptions/      # Channel point redemption handlers
     └── ping/                    # Health check
 ```
 

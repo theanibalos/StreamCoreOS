@@ -3,11 +3,14 @@ name: Publish Docker Image
 on:
   push:
     branches: [main]
-    paths:
-      - '**.py'
-      - 'Dockerfile'
-      - 'pyproject.toml'
-      - 'uv.lock'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.agent/**'
+      - '.claude/**'
+      - '.github/workflows/ci.yml'
+      - 'LICENSE'
+      - '.gitignore'
 
 jobs:
   publish:

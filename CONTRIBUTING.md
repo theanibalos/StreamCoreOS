@@ -103,7 +103,7 @@ i18n file systems belong to the frontend, not the core.
 - Follows the plugin pattern — the reviewer should be able to drop the file into `plugins/` and see it work.
 - Includes tests if the logic is non-trivial. See `tests/` for existing examples.
 - Does not add dependencies without prior discussion in the issue.
-- Does not touch `core/` unless the issue explicitly calls for a core change.
+- Does not touch framework internals unless the issue explicitly calls for it.
 
 ---
 
@@ -111,7 +111,7 @@ i18n file systems belong to the frontend, not the core.
 
 - Plugins that import from another domain directly.
 - New tools added to `tools/` without a prior architectural discussion.
-- Changes to `main.py` or `core/kernel.py`.
+- Changes to `main.py` without prior discussion.
 - Hardcoded strings in chat messages or bot responses.
 
 ---

@@ -88,17 +88,15 @@ uv run main.py
 ## Estructura del Proyecto
 
 ```
-MicroCoreOS/
-├── core/                    # El micro-kernel (~240 líneas total)
-│   ├── kernel.py           # Orquestador con autodescubrimiento
-│   ├── container.py        # Contenedor DI seguro para hilos
-│   ├── base_plugin.py      # Contrato de Plugin (13 líneas)
-│   └── base_tool.py        # Contrato de Tool (23 líneas)
-├── tools/                   # Infraestructura (sin estado)
-│   ├── http_server/        # Wrapper para FastAPI
+StreamCoreOS/
+├── tools/                   # Infraestructura y conectores de streaming
+│   ├── http_server/        # Wrapper para FastAPI (REST + SSE + WebSocket)
 │   ├── sqlite/             # Abstracción de Base de Datos
-│   └── event_bus/          # Comunicación desacoplada
-├── domains/                 # Lógica de negocio
+│   ├── event_bus/          # Comunicación desacoplada (Pub/Sub)
+│   ├── twitch/             # Plataforma Twitch (OAuth + EventSub + IRC)
+│   ├── youtube/            # Plataforma YouTube (OAuth + Data API + gRPC)
+│   └── ...
+├── domains/                 # Lógica de negocio (19 dominios de streaming)
 │   └── {domain}/
 │       ├── plugins/        # Casos de uso (1 archivo = 1 funcionalidad)
 │       └── models/         # Modelos de dominio
@@ -218,8 +216,8 @@ MicroCoreOS avanza hacia un ecosistema descentralizado inspirado en "marketplace
 ## ¿Por qué no usar algo ya existente?
 
 MicroCoreOS implementa su propio Inyector (DI) intencionalmente:
-* **¿Por qué no usar FastAPI desde la raíz?**: Reducimos el nivel cognitivo de los Agentes y Asistentes. Tu código visible para la IA y tú es puramente atómico. El "Framework" es `/core`.
-* **¿Por qué no inyectores de terceros?**: La simplicidad. En menos de un minuto puedes leer y entender el `core/kernel.py` y ver exactamente la magia.
+* **¿Por qué no usar FastAPI desde la raíz?**: Reducimos el nivel cognitivo de los Agentes y Asistentes. Tu código visible para la IA y tú es puramente atómico. El framework `microcoreos` orquesta todo tras bambalinas.
+* **¿Por qué no inyectores de terceros?**: La simplicidad. En menos de un minuto puedes entender cómo funciona la inyección por firmas y ver exactamente la magia.
 
 ---
 
