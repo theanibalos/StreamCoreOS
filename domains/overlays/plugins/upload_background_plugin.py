@@ -53,11 +53,39 @@ class UploadBackgroundPlugin(BasePlugin):
                 context.set_status(400)
                 return {"success": False, "error": "No file provided"}
 
-            content_type = file.content_type or ""
+            raw_content_type = file.content_type or ""
+            content_type = raw_content_type.split(";")[0].strip().lower()
+
+            # Handle common webm/video mime variations
+            if content_type == "video/x-webm":
+                content_type = "video/webm"
+
             ext = ALLOWED_TYPES.get(content_type)
+            # Fallback to filename extension if MIME type is missing or generic (e.g. application/octet-stream)
+            if not ext and file.filename:
+                file_ext = os.path.splitext(file.filename)[1].lower()
+                if file_ext == ".webm":
+                    ext = ".webm"
+                    content_type = "video/webm"
+                elif file_ext == ".mp4":
+                    ext = ".mp4"
+                    content_type = "video/mp4"
+                elif file_ext in (".jpg", ".jpeg"):
+                    ext = ".jpg"
+                    content_type = "image/jpeg"
+                elif file_ext == ".png":
+                    ext = ".png"
+                    content_type = "image/png"
+                elif file_ext == ".gif":
+                    ext = ".gif"
+                    content_type = "image/gif"
+                elif file_ext == ".webp":
+                    ext = ".webp"
+                    content_type = "image/webp"
+
             if not ext:
                 context.set_status(415)
-                return {"success": False, "error": f"Tipo no permitido: {content_type}"}
+                return {"success": False, "error": f"Tipo no permitido: {raw_content_type or 'desconocido'}"}
 
             filename = f"{uuid.uuid4().hex}{ext}"
             dest = os.path.join(UPLOADS_DIR, filename)
@@ -66,7 +94,7 @@ class UploadBackgroundPlugin(BasePlugin):
             with open(dest, "wb") as f:
                 f.write(contents)
 
-            media_kind = "video" if content_type.startswith("video/") else "image"
+            media_kind = "video" if (content_type.startswith("video/") or ext in (".webm", ".mp4")) else "image"
             url = f"/api/uploads/backgrounds/{filename}"
             return {"success": True, "data": {"url": url, "type": media_kind}}
 
