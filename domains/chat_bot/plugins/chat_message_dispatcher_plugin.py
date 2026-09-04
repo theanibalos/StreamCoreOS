@@ -23,6 +23,7 @@ class ChatMessageDispatcherPlugin(BasePlugin):
         self.bus = event_bus
         self.db = db
         self.logger = logger
+        self._avatar_cache: dict[str, str] = {}
 
     async def on_boot(self):
         self.twitch.require_scopes(["user:write:chat"])
@@ -35,6 +36,24 @@ class ChatMessageDispatcherPlugin(BasePlugin):
             },
         )
         self.twitch.on_event("channel.chat.message", self._on_message)
+
+    async def _get_avatar(self, user_id: str) -> str | None:
+        if not user_id:
+            return None
+        if user_id in self._avatar_cache:
+            return self._avatar_cache[user_id]
+        try:
+            resp = await self.twitch.get("/users", params={"id": user_id})
+            data = resp.get("data", [])
+            if data and data[0].get("profile_image_url"):
+                url = data[0]["profile_image_url"]
+                self._avatar_cache[user_id] = url
+                if len(self._avatar_cache) > 2000:
+                    self._avatar_cache.pop(next(iter(self._avatar_cache)))
+                return url
+        except Exception as e:
+            self.logger.warning(f"[ChatDispatcher] Failed to fetch avatar for user {user_id}: {e}")
+        return None
 
     async def _on_message(self, event: dict):
         badges_list = event.get("badges", [])
@@ -55,11 +74,14 @@ class ChatMessageDispatcherPlugin(BasePlugin):
         channel_id = event.get("broadcaster_user_id", "")
         login = event.get("chatter_user_login", "")
         display_name = event.get("chatter_user_name", login)
+        avatar_url = await self._get_avatar(platform_user_id)
+
         msg = {
             "platform": "twitch",
             "channel_id": channel_id,
             "channel_name": event.get("broadcaster_user_login", ""),
             "message_id": event.get("message_id", ""),
+            "display_name": display_name,
             "message": raw_message.get("text", ""),
             "color": event.get("color", ""),
             "badges": [
@@ -72,7 +94,7 @@ class ChatMessageDispatcherPlugin(BasePlugin):
                 "platform_id": platform_user_id,
                 "login": login,
                 "display_name": display_name,
-                "avatar_url": None,
+                "avatar_url": avatar_url,
             },
             "roles": {
                 "broadcaster": "broadcaster" in badge_ids,

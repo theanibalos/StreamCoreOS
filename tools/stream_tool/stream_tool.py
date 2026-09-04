@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import shutil
@@ -21,7 +22,7 @@ class StreamTool(BaseTool):
         self.logger = None
         self.rtmp_engine = None
         self._ffmpeg_path: Optional[str] = None
-        self._processes: dict[int, subprocess.Popen] = {}
+        self._processes: dict[int, asyncio.subprocess.Process] = {}
 
     @property
     def name(self) -> str:
@@ -49,8 +50,14 @@ class StreamTool(BaseTool):
         if not self.db:
             raise RuntimeError("StreamTool necesita la herramienta db")
 
+    def get_encoders(self) -> dict:
+        """Returns detected hardware encoders and recommended default."""
+        available, recommended = EncoderDetector.detect()
+        return {"available": available, "recommended": recommended}
+
     def _serialize(self, row: dict) -> dict:
         secret = row.get("stream_key_secret") or ""
+        settings = json.loads(row.get("settings") or "{}")
         return {
             "id": row["id"],
             "name": row["name"],
@@ -62,7 +69,9 @@ class StreamTool(BaseTool):
             "stream_key_configured": bool(secret),
             "stream_key_preview": secret[-4:] if secret else None,
             "status": row["status"],
-            "settings": json.loads(row.get("settings") or "{}"),
+            "settings": settings,
+            "encoder": settings.get("encoder", "auto"),
+            "bitrate_kbps": settings.get("bitrate_kbps", 6000),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -100,7 +109,7 @@ class StreamTool(BaseTool):
 
         # Si ya hay proceso vivo, solo devuelve estado actual.
         proc = self._processes.get(output_id)
-        if proc and proc.poll() is None:
+        if proc and proc.returncode is None:
             await self.db.execute(
                 "UPDATE stream_outputs SET status='live', enabled=1, updated_at=datetime('now') WHERE id=$1",
                 [output_id],
@@ -109,6 +118,8 @@ class StreamTool(BaseTool):
             return self._serialize(updated)
 
         input_url = await self._get_obs_input_url()
+
+        # ── DIRECT HIGH-PERFORMANCE RELAY (0% CPU/GPU, ZERO LAG) ───────────
         if self.rtmp_engine:
             result = self.rtmp_engine.start_relay(
                 str(output_id),
@@ -133,7 +144,11 @@ class StreamTool(BaseTool):
                 "-f", "flv",
                 target_url,
             ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
             self._processes[output_id] = proc
 
         await self.db.execute(
@@ -156,13 +171,19 @@ class StreamTool(BaseTool):
             self.rtmp_engine.stop_relay(str(output_id))
 
         proc = self._processes.pop(output_id, None)
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2)
+        if proc:
+            if proc.stdin:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
 
         await self.db.execute(
             "UPDATE stream_outputs SET status='stopped', updated_at=datetime('now') WHERE id=$1",

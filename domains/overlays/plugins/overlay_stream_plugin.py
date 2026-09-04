@@ -87,8 +87,15 @@ class OverlayStreamPlugin(BasePlugin):
         # on every chat message, would spam an alert widget).
         for bus_event in ("stream.session.started", "stream.session.ended",
                           "viewer.regular.added", "viewer.regular.removed",
-                          "moderation.action.taken"):
+                          "moderation.action.taken", "chat.message.deleted",
+                          "chat.command.received"):
             await self.bus.subscribe(bus_event, self._make_system_forwarder(bus_event))
+
+        # Monetization & YouTube events forwarded as alerts
+        await self.bus.subscribe("monetization.event.received",     self._on_monetization_event)
+        await self.bus.subscribe("youtube.superchat.received",       self._on_youtube_superchat)
+        await self.bus.subscribe("youtube.supersticker.received",    self._on_youtube_supersticker)
+        await self.bus.subscribe("overlay.alert.trigger",            self._on_custom_alert_trigger)
 
         # All Twitch events — alerts go straight to the overlay unprocessed.
         # Stats-relevant events (follows, subs, etc.) are handled via the
@@ -183,6 +190,99 @@ class OverlayStreamPlugin(BasePlugin):
 
     async def _on_chat(self, event):
         self._broadcast_by_need("needs_chat", {"type": "chat", "data": event.payload})
+
+    async def _on_monetization_event(self, event):
+        payload = event.payload or {}
+        platform = payload.get("platform", "youtube")
+        mtype = payload.get("type", "monetization")
+        event_type = f"{platform}.{mtype}" if platform else mtype
+        user_data = payload.get("user") or {}
+        user_name = user_data.get("display_name") if isinstance(user_data, dict) else str(user_data or "")
+
+        vars_payload = {
+            "user_name": user_name,
+            "display_name": user_name,
+            "platform": platform,
+            "type": mtype,
+            "amount": str(payload.get("display_amount") or payload.get("amount_micros", "")),
+            "display_amount": str(payload.get("display_amount", "")),
+            "currency": str(payload.get("currency", "")),
+            "message": str(payload.get("message", "")),
+        }
+        self._broadcast_by_need("needs_alerts", {
+            "type": "alert",
+            "data": {
+                "type": event_type,
+                "data": vars_payload,
+                "raw": payload,
+            }
+        })
+        if mtype in ("superchat", "bits", "cheer", "supersticker"):
+            await self._set_vars({
+                "donations.latest_name": user_name,
+                "donations.latest_amount": str(payload.get("display_amount") or payload.get("amount_micros", "")),
+                "donations.latest_platform": platform,
+            })
+
+    async def _on_youtube_superchat(self, event):
+        payload = event.payload or {}
+        user = payload.get("user", "")
+        amount = payload.get("display_amount", "")
+        msg = payload.get("message", "")
+        vars_payload = {
+            "user_name": user,
+            "display_name": user,
+            "platform": "youtube",
+            "type": "superchat",
+            "amount": str(amount),
+            "display_amount": str(amount),
+            "currency": str(payload.get("currency", "")),
+            "message": str(msg),
+        }
+        self._broadcast_by_need("needs_alerts", {
+            "type": "alert",
+            "data": {
+                "type": "youtube.superchat",
+                "data": vars_payload,
+                "raw": payload,
+            }
+        })
+        await self._set_vars({
+            "donations.latest_name": user,
+            "donations.latest_amount": str(amount),
+            "donations.latest_platform": "youtube",
+        })
+
+    async def _on_youtube_supersticker(self, event):
+        payload = event.payload or {}
+        user = payload.get("user", "")
+        amount = payload.get("display_amount", "")
+        vars_payload = {
+            "user_name": user,
+            "display_name": user,
+            "platform": "youtube",
+            "type": "supersticker",
+            "amount": str(amount),
+            "display_amount": str(amount),
+            "message": str(payload.get("message", "")),
+        }
+        self._broadcast_by_need("needs_alerts", {
+            "type": "alert",
+            "data": {
+                "type": "youtube.supersticker",
+                "data": vars_payload,
+                "raw": payload,
+            }
+        })
+
+    async def _on_custom_alert_trigger(self, event):
+        payload = event.payload or {}
+        event_type = payload.get("type", "custom.event")
+        data = payload.get("data") or payload.get("vars") or {}
+        self._broadcast_by_need("needs_alerts", {
+            "type": "alert",
+            "data": {"type": event_type, "data": data}
+        })
 
     async def _on_twitch_event(self, event_data: dict):
         event_type = event_data.get("_event_type", "twitch.event")

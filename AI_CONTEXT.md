@@ -773,7 +773,7 @@ TTS Tool (tts):
   - `SSE /api/overlays/feed`
   - `SSE /api/overlays/stream/{id}`
 - **Events emitted**: `overlay.config.updated` (overlay_id), `overlay.test.event` (data, type)
-- **Events consumed**: chat.message.received, dashboard.stats.updated, overlay.config.updated, overlay.test.event, overlay.vars.set, youtube.superchat.received, youtube.supersticker.received
+- **Events consumed**: chat.message.received, dashboard.stats.updated, monetization.event.received, overlay.alert.trigger, overlay.config.updated, overlay.test.event, overlay.vars.set, youtube.superchat.received, youtube.supersticker.received
 - **Dependencies**: db, event_bus, http, logger, state, twitch
 - **Plugins**: overlays.CreateOverlayPlugin, overlays.DeleteBackgroundPlugin, overlays.DeleteOverlayPlugin, overlays.GetOverlayPlugin, overlays.ListBackgroundsPlugin, overlays.ListOverlaysPlugin, overlays.OverlayConfigPlugin, overlays.OverlayDataPlugin, overlays.OverlayFeedPlugin, overlays.OverlayManifestPlugin, overlays.OverlayStreamPlugin, overlays.OverlayTestPlugin, overlays.OverlayTokenPlugin, overlays.UpdateOverlayPlugin, overlays.UploadBackgroundPlugin
 

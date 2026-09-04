@@ -173,8 +173,9 @@ class YouTubeChatPollerPlugin(BasePlugin):
             "channel_id": live_chat_id,
             "channel_name": session.get("channel_title") or "youtube",
             "message_id": message_id,
+            "display_name": display_name,
             "message": text,
-            "color": "",
+            "color": "#ff4e45",
             "badges": self._badges(author),
             "fragments": [{"type": "text", "text": text}],
             "user": {
