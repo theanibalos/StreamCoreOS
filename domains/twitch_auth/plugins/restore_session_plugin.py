@@ -1,3 +1,4 @@
+import json
 from microcoreos.base_plugin import BasePlugin
 
 
@@ -8,11 +9,6 @@ class RestoreSessionPlugin(BasePlugin):
     This handles the case where the server restarts after the streamer has
     already authenticated. Without this plugin, the tool would start
     disconnected and require a manual re-authentication on every restart.
-
-    If the stored access token is expired, TwitchTokenRefreshPlugin handles
-    it automatically: the first 401 triggers a reactive refresh. If the
-    refresh token is also expired, that plugin disconnects and clears the
-    session so the frontend shows the login screen.
     """
 
     def __init__(self, twitch, db, logger):
@@ -33,6 +29,36 @@ class RestoreSessionPlugin(BasePlugin):
             await self.twitch.connect(
                 token["access_token"], token["refresh_token"], token["twitch_id"], token["login"]
             )
-            self.logger.info(f"[RestoreSession] Session restored for {token['login']}")
+
+            # Ensure platform_connections has the Twitch channel record
+            capabilities = {
+                "chat.read": True,
+                "chat.write": True,
+                "moderation.delete": True,
+                "moderation.timeout": True,
+                "moderation.ban": True,
+                "events.subscription": True,
+                "events.cheer": True,
+                "events.superchat": False,
+                "stream.status": True,
+            }
+            await self.db.execute(
+                """INSERT INTO platform_connections (
+                       platform, channel_id, channel_name, enabled,
+                       chat_read_enabled, chat_write_enabled, moderation_enabled, capabilities
+                   )
+                   VALUES ('twitch', $1, $2, 1, 1, 1, 1, $3)
+                   ON CONFLICT(platform, channel_id) DO UPDATE SET
+                       channel_name = excluded.channel_name,
+                       enabled = 1,
+                       chat_read_enabled = 1,
+                       chat_write_enabled = 1,
+                       moderation_enabled = 1,
+                       capabilities = excluded.capabilities,
+                       updated_at = datetime('now')""",
+                [token["twitch_id"], token["login"], json.dumps(capabilities)],
+            )
+
+            self.logger.info(f"[RestoreSession] Session and platform connection restored for {token['login']}")
         except Exception as e:
             self.logger.error(f"[RestoreSession] Failed to restore session: {e}")

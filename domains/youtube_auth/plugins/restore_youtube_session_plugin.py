@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from microcoreos.base_plugin import BasePlugin
 
@@ -25,6 +26,35 @@ class RestoreYouTubeSessionPlugin(BasePlugin):
             await self.youtube.connect(
                 token["access_token"], token["refresh_token"], token["channel_id"], token["channel_title"], expires_in
             )
-            self.logger.info(f"[RestoreYouTubeSession] Session restored for {token['channel_title']}")
+
+            capabilities = {
+                "chat.read": True,
+                "chat.write": True,
+                "moderation.delete": True,
+                "moderation.timeout": False,
+                "moderation.ban": False,
+                "events.subscription": False,
+                "events.cheer": False,
+                "events.superchat": True,
+                "stream.status": True,
+            }
+            await self.db.execute(
+                """INSERT INTO platform_connections (
+                       platform, channel_id, channel_name, enabled,
+                       chat_read_enabled, chat_write_enabled, moderation_enabled, capabilities
+                   )
+                   VALUES ('youtube', $1, $2, 1, 1, 1, 1, $3)
+                   ON CONFLICT(platform, channel_id) DO UPDATE SET
+                       channel_name = excluded.channel_name,
+                       enabled = 1,
+                       chat_read_enabled = 1,
+                       chat_write_enabled = 1,
+                       moderation_enabled = 1,
+                       capabilities = excluded.capabilities,
+                       updated_at = datetime('now')""",
+                [token["channel_id"], token["channel_title"], json.dumps(capabilities)],
+            )
+
+            self.logger.info(f"[RestoreYouTubeSession] Session and platform connection restored for {token['channel_title']}")
         except Exception as e:
             self.logger.error(f"[RestoreYouTubeSession] Failed to restore session: {e}")
