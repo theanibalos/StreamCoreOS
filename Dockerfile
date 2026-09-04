@@ -12,6 +12,11 @@
 
 FROM python:3.12-slim
 
+# ── System dependencies (FFmpeg for RTMP relays and video fallback) ──
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── uv (fast Python package manager) ──────────────────────────────
 RUN pip install uv --quiet
 
@@ -30,6 +35,6 @@ COPY . .
 ENV HTTP_HOST=0.0.0.0
 ENV HTTP_PORT=8000
 
-EXPOSE 8000
+EXPOSE 8000 1935
 
 CMD ["uv", "run", "main.py"]
