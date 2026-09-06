@@ -437,11 +437,22 @@ async def stop_output(output_id: int) -> dict
 ```
 
 ```text
-Stream Tool (stream_tool): emisión/restream centralizada.
-        Si existe rtmp_engine, usa RTMP ingest local + relays FFmpeg por pipe.
-        Si no existe, usa FFmpeg leyendo STREAM_INPUT_URL.
-        Entrada OBS: rtmp://localhost:1935/live/{obs_stream_key}.
-        Métodos: start_output(id), stop_output(id), start_active_outputs(), stop_active_outputs(), set_fallback_video(path), get_runtime_status().
+Stream Tool (stream_tool):
+        - PURPOSE: Emisión y restreaming centralizado multi-destino.
+        - CAPABILITIES:
+            - RTMP ingest local (rtmp_engine) + relays FFmpeg de cero latencia.
+            - Fallback a FFmpeg leyendo STREAM_INPUT_URL si rtmp_engine no está activo.
+            - Entrada OBS: rtmp://localhost:1935/live/{obs_stream_key}.
+            - Vídeo de fallback en bucle si la fuente se desconecta.
+            - Detección automática de aceleración hardware (NVENC, VAAPI, QSV, AMF, libx264).
+        - PUBLIC METHODS:
+            - start_output(output_id): Inicia una salida RTMP por ID.
+            - stop_output(output_id): Detiene una salida RTMP por ID.
+            - start_active_outputs(): Inicia todas las salidas habilitadas.
+            - stop_active_outputs(): Detiene todas las salidas activas.
+            - get_runtime_status(): Estado en tiempo real de ingest, conexiones y relays.
+            - get_encoders(): Encoders de hardware/software detectados y recomendación.
+            - set_fallback_video(video_path): Configura el vídeo de fallback.
 ```
 
 ### 🔧 Tool: `context_manager` (Status: ✅)

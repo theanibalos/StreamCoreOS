@@ -15,6 +15,8 @@ class StreamTool(BaseTool):
     herramienta para iniciar/detener salidas.
     """
 
+    # ── Identidad y Ciclo de Vida ──────────────────────────────────────────────
+
     def __init__(self):
         self.db = None
         self.bus = None
@@ -27,6 +29,26 @@ class StreamTool(BaseTool):
     @property
     def name(self) -> str:
         return "stream_tool"
+
+    def get_interface_description(self) -> str:
+        return """
+        Stream Tool (stream_tool):
+        - PURPOSE: Emisión y restreaming centralizado multi-destino.
+        - CAPABILITIES:
+            - RTMP ingest local (rtmp_engine) + relays FFmpeg de cero latencia.
+            - Fallback a FFmpeg leyendo STREAM_INPUT_URL si rtmp_engine no está activo.
+            - Entrada OBS: rtmp://localhost:1935/live/{obs_stream_key}.
+            - Vídeo de fallback en bucle si la fuente se desconecta.
+            - Detección automática de aceleración hardware (NVENC, VAAPI, QSV, AMF, libx264).
+        - PUBLIC METHODS:
+            - start_output(output_id): Inicia una salida RTMP por ID.
+            - stop_output(output_id): Detiene una salida RTMP por ID.
+            - start_active_outputs(): Inicia todas las salidas habilitadas.
+            - stop_active_outputs(): Detiene todas las salidas activas.
+            - get_runtime_status(): Estado en tiempo real de ingest, conexiones y relays.
+            - get_encoders(): Encoders de hardware/software detectados y recomendación.
+            - set_fallback_video(video_path): Configura el vídeo de fallback.
+        """
 
     async def setup(self):
         self._ffmpeg_path = shutil.which("ffmpeg")
@@ -46,53 +68,14 @@ class StreamTool(BaseTool):
                 "UPDATE stream_outputs SET status='stopped', updated_at=datetime('now') WHERE status != 'stopped'"
             )
 
-    def _check_ready(self):
-        if not self.db:
-            raise RuntimeError("StreamTool necesita la herramienta db")
+    async def shutdown(self):
+        for output_id in list(self._processes.keys()):
+            try:
+                await self.stop_output(output_id)
+            except Exception:
+                pass
 
-    def get_encoders(self) -> dict:
-        """Returns detected hardware encoders and recommended default."""
-        available, recommended = EncoderDetector.detect()
-        return {"available": available, "recommended": recommended}
-
-    def _serialize(self, row: dict) -> dict:
-        secret = row.get("stream_key_secret") or ""
-        settings = json.loads(row.get("settings") or "{}")
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "platform": row["platform"],
-            "channel_id": row["channel_id"],
-            "enabled": bool(row["enabled"]),
-            "overlay_id": row.get("overlay_id"),
-            "rtmp_url": row.get("rtmp_url"),
-            "stream_key_configured": bool(secret),
-            "stream_key_preview": secret[-4:] if secret else None,
-            "status": row["status"],
-            "settings": settings,
-            "encoder": settings.get("encoder", "auto"),
-            "bitrate_kbps": settings.get("bitrate_kbps", 6000),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
-
-    async def _get_obs_input_url(self) -> str:
-        configured = os.getenv("STREAM_INPUT_URL")
-        if configured:
-            return configured
-        key = "streamcore"
-        if self.state:
-            key = await self.state.get("obs_stream_key", default="streamcore", namespace="config")
-        return f"rtmp://127.0.0.1:1935/live/{key}"
-
-    def _target_url(self, row: dict) -> str:
-        rtmp_url = (row.get("rtmp_url") or "").strip()
-        stream_key = (row.get("stream_key_secret") or "").strip()
-        if not rtmp_url:
-            raise ValueError("Este destino no tiene RTMP URL configurada")
-        if not stream_key:
-            raise ValueError("Este destino no tiene stream key configurada")
-        return f"{rtmp_url.rstrip('/')}/{stream_key}"
+    # ── API Pública: Gestión de Salidas (Restream) ─────────────────────────────
 
     async def start_output(self, output_id: int) -> dict:
         self._check_ready()
@@ -244,6 +227,13 @@ class StreamTool(BaseTool):
                     results.append(self._serialize(updated))
         return results
 
+    # ── API Pública: Estado, Encoders y Fallback ───────────────────────────────
+
+    def get_encoders(self) -> dict:
+        """Returns detected hardware encoders and recommended default."""
+        available, recommended = EncoderDetector.detect()
+        return {"available": available, "recommended": recommended}
+
     async def set_fallback_video(self, video_path: str) -> dict:
         config = {"mode": "video", "video_path": video_path}
         if self.rtmp_engine:
@@ -300,18 +290,47 @@ class StreamTool(BaseTool):
             "fallback_video_url": "/api/stream-media/fallback.mp4" if os.path.exists("media/fallback.mp4") else None,
         }
 
-    async def shutdown(self):
-        for output_id in list(self._processes.keys()):
-            try:
-                await self.stop_output(output_id)
-            except Exception:
-                pass
+    # ── Métodos Auxiliares Internos ───────────────────────────────────────────
 
-    def get_interface_description(self) -> str:
-        return """
-        Stream Tool (stream_tool): emisión/restream centralizada.
-        Si existe rtmp_engine, usa RTMP ingest local + relays FFmpeg por pipe.
-        Si no existe, usa FFmpeg leyendo STREAM_INPUT_URL.
-        Entrada OBS: rtmp://localhost:1935/live/{obs_stream_key}.
-        Métodos: start_output(id), stop_output(id), start_active_outputs(), stop_active_outputs(), set_fallback_video(path), get_runtime_status().
-        """
+    def _check_ready(self):
+        if not self.db:
+            raise RuntimeError("StreamTool necesita la herramienta db")
+
+    def _serialize(self, row: dict) -> dict:
+        secret = row.get("stream_key_secret") or ""
+        settings = json.loads(row.get("settings") or "{}")
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "platform": row["platform"],
+            "channel_id": row["channel_id"],
+            "enabled": bool(row["enabled"]),
+            "overlay_id": row.get("overlay_id"),
+            "rtmp_url": row.get("rtmp_url"),
+            "stream_key_configured": bool(secret),
+            "stream_key_preview": secret[-4:] if secret else None,
+            "status": row["status"],
+            "settings": settings,
+            "encoder": settings.get("encoder", "auto"),
+            "bitrate_kbps": settings.get("bitrate_kbps", 6000),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    async def _get_obs_input_url(self) -> str:
+        configured = os.getenv("STREAM_INPUT_URL")
+        if configured:
+            return configured
+        key = "streamcore"
+        if self.state:
+            key = await self.state.get("obs_stream_key", default="streamcore", namespace="config")
+        return f"rtmp://127.0.0.1:1935/live/{key}"
+
+    def _target_url(self, row: dict) -> str:
+        rtmp_url = (row.get("rtmp_url") or "").strip()
+        stream_key = (row.get("stream_key_secret") or "").strip()
+        if not rtmp_url:
+            raise ValueError("Este destino no tiene RTMP URL configurada")
+        if not stream_key:
+            raise ValueError("Este destino no tiene stream key configurada")
+        return f"{rtmp_url.rstrip('/')}/{stream_key}"
