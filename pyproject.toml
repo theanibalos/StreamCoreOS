@@ -40,7 +40,4 @@ exclude = [
 ignore = ["E701"]
 select = ["E4", "E7", "E9", "F"]
 
-[tool.uv.sources]
-microcoreos = { path = "/home/anibalos/Documents/Original/MicroCoreOS", editable = true }
-
 
