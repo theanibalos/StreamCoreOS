@@ -16,6 +16,20 @@ For plugin development guides, critical rules, and syntax examples, see [AGENTS.
 Check method signatures before implementation.
 
 ### 🔧 Tool: `ai` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def complete(messages: list[dict], system: str | None = None, max_tokens: int = 300, temperature: float = 0.0) -> str
+async def complete_json(messages: list[dict], system: str | None = None, max_tokens: int = 300, temperature: float = 0.0) -> dict
+def get_chat_cooldown() -> int
+def get_chat_personality() -> dict
+def get_config() -> dict | None
+def is_configured() -> bool
+def load_config(config: dict) -> None
+def patch_config(fields: dict) -> None
+async def test_config(config: dict, max_tokens: int = 64) -> str
+```
+
 ```text
 AI Tool (ai):
     - PURPOSE: Robust AI completions for local (Ollama, LM Studio, llama.cpp) and cloud
@@ -78,6 +92,13 @@ AI Tool (ai):
 ```
 
 ### 🔧 Tool: `config` (Status: ✅)
+
+**Public Signatures:**
+```python
+def get(key: str, default: Optional[str] = None, required: bool = False) -> Optional[str]
+def require(*keys: str) -> None
+```
+
 ```text
 Configuration Tool (config):
         - PURPOSE: Validated access to environment variables for plugins.
@@ -93,6 +114,15 @@ Configuration Tool (config):
 ```
 
 ### 🔧 Tool: `http_client` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def delete(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, timeout: float = 10.0) -> dict
+async def get(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, timeout: float = 10.0) -> dict
+async def post(url: str, json: Optional[Any] = None, data: Optional[dict] = None, headers: Optional[dict] = None, timeout: float = 10.0) -> dict
+async def put(url: str, json: Optional[Any] = None, data: Optional[dict] = None, headers: Optional[dict] = None, timeout: float = 10.0) -> dict
+```
+
 ```text
 HTTP Client Tool (http_client):
         - PURPOSE: Make outgoing HTTP requests from plugins. Async, backed by httpx.
@@ -116,6 +146,16 @@ HTTP Client Tool (http_client):
 ```
 
 ### 🔧 Tool: `http` (Status: ✅)
+
+**Public Signatures:**
+```python
+def add_endpoint(path: str, method: str, handler: Callable, tags: Optional[list] = None, request_model=None, response_model=None, auth_validator: Optional[Callable] = None, has_files: bool = False) -> None
+def add_sse_endpoint(path: str, generator: Callable, tags: Optional[list] = None, auth_validator: Optional[Callable] = None) -> None
+def add_ws_endpoint(path: str, on_connect: Callable, on_disconnect: Optional[Callable] = None, auth_validator: Optional[Callable] = None) -> None
+def mount_static(path: str, directory_path: str, html: bool = False, allow_extensions: Optional[set] = None, optional: bool = False) -> None
+def register_pre_mount_hook(hook: Callable[[list[dict]], NoneType]) -> None
+```
+
 ```text
 HTTP Server Tool (http):
         - PURPOSE: FastAPI-powered HTTP gateway. Supports REST, static files, WebSockets and SSE.
@@ -128,6 +168,11 @@ HTTP Server Tool (http):
         - SECURITY DEFAULTS:
             - Cookies set via context.set_cookie are 'Secure=True', 'HttpOnly=True', 'SameSite=Lax'.
             - CSRF Guard: Mutations (POST/PUT/DELETE) using cookie auth REQUIRE 'X-Requested-With' header.
+            - WebSocket Origin Policy: Configurable via HTTP_WS_ORIGIN_POLICY=off|allowlist.
+              In allowlist mode, connections from unlisted origins are closed with 1008 before handshake.
+            - Trusted Proxies: Forwarding headers (X-Forwarded-For or custom edge header)
+              are only evaluated if the direct peer is in HTTP_TRUSTED_PROXIES. Otherwise direct peer IP
+              is used. An optional custom edge header is configurable via HTTP_CUSTOM_CLIENT_IP_HEADER.
             - Swagger UI (/docs): endpoints with auth_validator show a lock icon and accept
               tokens via the "Authorize" button (documentation-only; real check unaffected).
         - CAPABILITIES:
@@ -146,6 +191,7 @@ HTTP Server Tool (http):
             - add_ws_endpoint(path, on_connect, on_disconnect=None, auth_validator=None):
                 WebSocket support. on_connect receives a WebSocketConnection: send_text,
                 send_json, receive_text, receive_json, close, query_params, path_params.
+                WebSocket Origin policy (HTTP_WS_ORIGIN_POLICY) is enforced first.
                 With auth_validator the token is read from the Authorization header, the
                 `token` query param, then the access_token cookie; an invalid one is
                 closed with 1008 BEFORE the handshake and on_connect takes (conn, payload).
@@ -167,10 +213,11 @@ HTTP Server Tool (http):
               signature verification; providers sign bytes, not a re-serialized dict.
             - context.get_header(key, default=None): Read inbound request headers
               case-insensitively (e.g. X-Signature for signed webhooks).
-            - context.client_ip: Best-effort caller IP (property). Raw signal only — the
-              plugin decides what to do with it (e.g. state.increment() keyed by IP for
-              an identity-aware business rule). Never security-authoritative on its own;
-              see context.py's client_ip docstring for the trust order and its limits.
+            - context.client_ip: Best-effort caller IP (property). Resolved against
+              HTTP_TRUSTED_PROXIES (no trust by default). Direct callers cannot spoof
+              forwarding headers. When proxied, right-to-left X-Forwarded-For evaluation
+              determines the first untrusted caller. Custom edge header configurable via
+              HTTP_CUSTOM_CLIENT_IP_HEADER. Never security-authoritative on its own.
         - RESPONSE CONTRACT:
             - Standard: return {"success": bool, "data": ..., "error": ...}
             - WARNING: All values in 'data' must be JSON-serializable. Pydantic model 
@@ -178,6 +225,13 @@ HTTP Server Tool (http):
 ```
 
 ### 🔧 Tool: `telemetry` (Status: ✅)
+
+**Public Signatures:**
+```python
+def get_meter(scope: str)
+def get_tracer(scope: str)
+```
+
 ```text
 Telemetry Tool (telemetry):
         - PURPOSE: OpenTelemetry distributed tracing AND metrics. Auto-instruments all tool
@@ -213,6 +267,31 @@ Telemetry Tool (telemetry):
 ```
 
 ### 🔧 Tool: `twitch` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def connect(access_token: str, refresh_token: str, broadcaster_id: str, twitch_login: str) -> None
+def consume_state(state: str) -> bool
+async def delete(endpoint: str, params: dict | None = None, user_token: str | None = None) -> dict
+async def disconnect() -> None
+async def exchange_code(code: str) -> dict
+async def get(endpoint: str, params: dict | None = None, user_token: str | None = None) -> dict
+def get_auth_url() -> tuple[str, str]
+def get_session() -> dict | None
+async def get_user_info(access_token: str) -> dict
+def is_connecting() -> bool
+def is_eventsub_connected() -> bool
+async def on_auth_failed()
+def on_event(event_type: str, callback) -> None
+async def on_token_refreshed(access_token: str, refresh_token: str, expires_in: int)
+async def post(endpoint: str, body: dict | None = None, user_token: str | None = None) -> dict
+async def refresh_user_token(refresh_token: str) -> dict
+def register(event_type: str, version: str, scopes: list[str], condition: dict | None = None) -> None
+def require_scopes(scopes: list[str]) -> None
+async def send_message(channel: str, message: str) -> None
+async def update_access_token(new_token: str, new_refresh: str | None = None) -> None
+```
+
 ```text
 Twitch Tool (twitch):
         - PURPOSE: Complete Twitch platform wrapper — OAuth, Helix API, EventSub WebSocket, IRC Chat.
@@ -278,6 +357,33 @@ Twitch Tool (twitch):
 ```
 
 ### 🔧 Tool: `youtube` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def ban_user(live_chat_id: str, channel_id: str, duration_s: int | None = None) -> dict
+async def connect(access_token: str, refresh_token: str | None, channel_id: str, channel_title: str, expires_in: int = 3600) -> None
+def consume_state(state: str) -> bool
+async def delete(endpoint: str, params: dict | None = None) -> dict
+async def delete_message(message_id: str) -> dict
+async def disconnect() -> None
+async def exchange_code(code: str) -> dict
+async def get(endpoint: str, params: dict | None = None) -> dict
+async def get_active_broadcast() -> dict | None
+def get_auth_url() -> tuple[str, str]
+async def get_live_chat_id() -> str | None
+def get_required_scopes() -> list[str]
+def get_session() -> dict | None
+async def get_user_info() -> dict
+def is_connected() -> bool
+async def list_chat_messages(live_chat_id: str, page_token: str | None = None, max_results: int = 500) -> dict
+async def on_token_refreshed(tokens: dict)
+async def post(endpoint: str, body: dict | None = None, params: dict | None = None) -> dict
+async def refresh_user_token(refresh_token: str) -> dict
+def require_scopes(scopes: list[str]) -> None
+async def send_message(live_chat_id: str, text: str) -> dict
+def stream_chat_messages(live_chat_id: str, page_token: str | None = None, max_results: int = 500)
+```
+
 ```text
 YouTube Tool (youtube):
         - PURPOSE: Integration with YouTube Data API v3, Google OAuth 2.0, and high-performance Live Chat via gRPC streamList.
@@ -318,6 +424,18 @@ YouTube Tool (youtube):
 ```
 
 ### 🔧 Tool: `stream_tool` (Status: ✅)
+
+**Public Signatures:**
+```python
+def get_encoders() -> dict
+async def get_runtime_status() -> dict
+async def set_fallback_video(video_path: str) -> dict
+async def start_active_outputs() -> list[dict]
+async def start_output(output_id: int) -> dict
+async def stop_active_outputs() -> list[dict]
+async def stop_output(output_id: int) -> dict
+```
+
 ```text
 Stream Tool (stream_tool): emisión/restream centralizada.
         Si existe rtmp_engine, usa RTMP ingest local + relays FFmpeg por pipe.
@@ -340,6 +458,15 @@ Context Manager Tool (context_manager):
 ```
 
 ### 🔧 Tool: `logger` (Status: ✅)
+
+**Public Signatures:**
+```python
+def add_sink(callback: Callable[[str, str, str], NoneType])
+def error(message: str)
+def info(message: str)
+def warning(message: str)
+```
+
 ```text
 Logging Tool (logger):
         - PURPOSE: Record system events and business activity for audit and debugging.
@@ -354,6 +481,19 @@ Logging Tool (logger):
 ```
 
 ### 🔧 Tool: `state` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def clear(namespace: str = 'default') -> None
+async def delete(key: str, namespace: str = 'default') -> None
+async def get(key: str, default=None, namespace: str = 'default')
+async def get_all(namespace: str = 'default') -> dict
+async def has(key: str, namespace: str = 'default') -> bool
+async def increment(key: str, amount: int | float = 1, namespace: str = 'default', ttl: float | None = None) -> int | float
+async def keys(namespace: str = 'default') -> list
+async def set(key: str, value, namespace: str = 'default', ttl: float | None = None) -> None
+```
+
 ```text
 Key-Value State Tool (state):
         - PURPOSE: Share volatile global data between plugins safely.
@@ -375,6 +515,16 @@ Key-Value State Tool (state):
 ```
 
 ### 🔧 Tool: `registry` (Status: ✅)
+
+**Public Signatures:**
+```python
+def add_metrics_sink(callback)
+def get_domain_metadata() -> dict
+def get_metrics() -> list
+def get_system_dump() -> dict
+def update_tool_status(name: str, status: str, message: str = None)
+```
+
 ```text
 Systems Registry Tool (registry):
         - PURPOSE: Introspection and discovery of the system's architecture at runtime.
@@ -413,6 +563,16 @@ Systems Registry Tool (registry):
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
+
+**Public Signatures:**
+```python
+def add_interval_job(seconds: float, callback: Callable, job_id: Optional[str] = None, *, minutes: float = 0, hours: float = 0, max_instances: int = 1, coalesce: bool = True, misfire_grace_time: Optional[int] = 1) -> str
+def add_job(cron_expr: str, callback: Callable, job_id: Optional[str] = None) -> str
+def add_one_shot(run_at: datetime.datetime, callback: Callable, job_id: Optional[str] = None) -> str
+def list_jobs() -> list
+def remove_job(job_id: str) -> bool
+```
+
 ```text
 Scheduler Tool (scheduler):
         - PURPOSE: Background job scheduling — cron-style recurring jobs and one-shot timed jobs.
@@ -454,6 +614,26 @@ Scheduler Tool (scheduler):
 ```
 
 ### 🔧 Tool: `rtmp_engine` (Status: ✅)
+
+**Public Signatures:**
+```python
+def broadcast_flv_bytes(chunk: bytes, from_obs: bool = False)
+def cache_aac_config(chunk: bytes)
+def cache_avc_config(chunk: bytes)
+def cache_metadata(chunk: bytes)
+async def close() -> None
+def get_all_relays() -> Dict[str, Dict[str, Any]]
+def get_relay_status(dest_id: str) -> Dict[str, Any]
+def get_source_status() -> Dict[str, Any]
+def is_ffmpeg_available() -> bool
+def is_obs_connected() -> bool
+def set_fallback_config(config: dict)
+def set_obs_connected(connected: bool, stream_key: str = '', flv_header: Optional[bytes] = None)
+def start_relay(dest_id: str, rtmp_url: str, stream_key: str, ingress_url: str = '', platform: str = 'custom') -> Dict[str, Any]
+def stop_all_relays() -> int
+def stop_relay(dest_id: str) -> bool
+```
+
 ```text
 RTMP Engine Tool (rtmp_engine):
         - PURPOSE: Standalone RTMP Ingress Server (Port 1935) + FFmpeg Passthrough Relays.
@@ -476,6 +656,19 @@ RTMP Engine Tool (rtmp_engine):
 ```
 
 ### 🔧 Tool: `event_bus` (Status: ✅)
+
+**Public Signatures:**
+```python
+def add_failure_listener(cb)
+def add_listener(cb)
+def get_subscribers() -> dict
+def get_trace_history() -> List[tools.event_bus.envelope.TraceNode]
+async def publish(event_name: str, data: dict, **kwargs)
+async def request(event_name: str, data: dict, timeout: float = 5)
+async def subscribe(event_name: str, callback: Callable, group: Optional[str] = None, retries: int = 0, backoff: float = 0.5, broadcast: bool = False)
+async def unsubscribe(event_name: str, callback: Callable)
+```
+
 ```text
 Universal Event Bus (event_bus):
         - publish(event_name, data, **kwargs): Broadcast an event.
@@ -530,6 +723,18 @@ Universal Event Bus (event_bus):
 ```
 
 ### 🔧 Tool: `db` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def describe_schema() -> dict
+async def execute(sql: str, params: list | None = None) -> int | None
+async def execute_many(sql: str, params_list: list[list]) -> None
+async def health_check() -> bool
+async def query(sql: str, params: list | None = None) -> list[dict]
+async def query_one(sql: str, params: list | None = None) -> dict | None
+def transaction() -> tools.sqlite.transaction.Transaction
+```
+
 ```text
 Async SQLite Persistence Tool (sqlite):
         - PURPOSE: PostgreSQL-compatible relational storage (drop-in swap at the
@@ -576,6 +781,19 @@ Async SQLite Persistence Tool (sqlite):
 ```
 
 ### 🔧 Tool: `tts` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def generate(text: str, voice_id: str | None = None) -> bytes
+def get_config() -> dict
+def get_default_voice() -> str
+def get_provider() -> str
+def get_providers() -> dict[str, bool]
+def is_available() -> bool
+async def list_voices() -> list[dict]
+def load_config(config: dict) -> None
+```
+
 ```text
 TTS Tool (tts):
     - PURPOSE: Universal TTS router with swappable providers. Plugins never
@@ -874,6 +1092,8 @@ TTS Tool (tts):
 - **Endpoints**:
   - `GET /api/system/events`
     - **res**: SystemEventsData(events: list[EventEntry(event: str, subscribers: list[str], last_emitters: list[str], times_fired: int)])
+  - `GET /api/system/events/schemas`
+    - **res**: EventSchemasData(schemas: dict)
   - `GET /api/system/lint`
     - **res**: SystemLintData(arch_violations: list[str], drift_warnings: list[str], event_contract_violations: list[LintFinding(code: str, severity: str, event: Optional[str], publisher: Optional[str], consumer: Optional[str], detail: str)])
   - `GET /api/system/metrics`
@@ -884,14 +1104,30 @@ TTS Tool (tts):
     - **res**: list[TraceFlatNode(id: str, parent_id: Optional[str], event: str, emitter: str, subscribers: list[str], payload_keys: list[str], timestamp: float, key: Optional[str], priority: Optional[int], delay: Optional[int])]
   - `GET /api/system/traces/tree`
     - **res**: list[TraceNode(id: str, parent_id: Optional[str], event: str, emitter: str, subscribers: list[str], payload_keys: list[str], timestamp: float, key: Optional[str], priority: Optional[int], delay: Optional[int], children: list['TraceNode'])]
+  - `GET /system/events`
+    - **res**: SystemEventsData(events: list[EventEntry(event: str, subscribers: list[str], last_emitters: list[str], times_fired: int)])
+  - `GET /system/events/schemas`
+    - **res**: EventSchemasData(schemas: dict)
+  - `GET /system/metrics`
+    - **res**: list[MetricRecord(tool: str, method: str, duration_ms: float, success: bool, timestamp: float)]
+  - `GET /system/status`
+    - **res**: SystemStatusData(tools: list[ToolStatus(name: str, status: str, message: Optional[str])], plugins: list[PluginStatus(name: str, domain: Optional[str], status: str, error: Optional[str], tools: list[str])])
+  - `GET /system/traces/flat`
+    - **res**: list[TraceFlatNode(id: str, parent_id: Optional[str], event: str, emitter: str, subscribers: list[str], payload_keys: list[str], timestamp: float, key: Optional[str], priority: Optional[int], delay: Optional[int])]
+  - `GET /system/traces/tree`
+    - **res**: list[TraceNode(id: str, parent_id: Optional[str], event: str, emitter: str, subscribers: list[str], payload_keys: list[str], timestamp: float, key: Optional[str], priority: Optional[int], delay: Optional[int], children: list['TraceNode'])]
   - `SSE /api/system/events/stream`
   - `SSE /api/system/logs/stream`
   - `SSE /api/system/metrics/stream`
   - `SSE /api/system/traces/stream`
+  - `SSE /system/events/stream`
+  - `SSE /system/logs/stream`
+  - `SSE /system/metrics/stream`
+  - `SSE /system/traces/stream`
 - **Events emitted**: `event.delivery.failed` ()
 - **Events consumed**: system.one_shot.cancel, system.one_shot.schedule
 - **Dependencies**: config, container, db, event_bus, http, logger, registry, scheduler
-- **Plugins**: system.ArchitectureLinterPlugin, system.DurableOneShotsPlugin, system.EventContractLinterPlugin, system.EventDeliveryMonitorPlugin, system.SystemEventsPlugin, system.SystemEventsStreamPlugin, system.SystemLogsStreamPlugin, system.SystemMetricsPlugin, system.SystemStatusPlugin, system.SystemTracesPlugin, system.SystemTracesStreamPlugin, system.ToolHealthPlugin
+- **Plugins**: system.ArchitectureLinterPlugin, system.DurableOneShotsPlugin, system.EventContractLinterPlugin, system.EventDeliveryMonitorPlugin, system.EventSchemasPlugin, system.SystemEventsPlugin, system.SystemEventsStreamPlugin, system.SystemLogsStreamPlugin, system.SystemMetricsPlugin, system.SystemStatusPlugin, system.SystemTracesPlugin, system.SystemTracesStreamPlugin, system.ToolHealthPlugin
 
 ### `timers`
 - **Table `timers`** (storage): id (int, PK), name (text, NOT NULL), message (text, NOT NULL), interval_minutes (int, NOT NULL), min_lines (int, NOT NULL, default 0), enabled (int, default 1), last_executed_at (timestamp), created_at (timestamp, default CURRENT_TIMESTAMP)

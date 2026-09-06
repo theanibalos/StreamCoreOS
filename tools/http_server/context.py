@@ -68,11 +68,14 @@ class HttpContext:
         plugin, with the `state` tool primitive. This property is what makes
         that possible; it does not pick a policy itself.
 
-        Trust order (see pipeline.py's _extract_client_ip): Cf-Connecting-Ip,
-        then X-Forwarded-For's first hop, then the direct TCP peer. The first
-        two are only as trustworthy as whatever reverse proxy sets them —
-        this tool cannot verify one is actually in front of it. None if no
-        signal was available at all (e.g. request.client itself is None).
+        Resolution security model:
+        Direct socket peer is evaluated against HTTP_TRUSTED_PROXIES. Without
+        trusted proxies (default), direct peer IP is returned and inbound
+        forwarding headers are ignored to prevent spoofing. When behind a
+        trusted reverse proxy, X-Forwarded-For is walked right-to-left across
+        trusted proxies to find the first untrusted caller IP. A custom edge
+        header (e.g. X-Real-IP, True-Client-IP) can be specified via
+        HTTP_CUSTOM_CLIENT_IP_HEADER. None if no client information is available.
         """
         return self._client_ip
 

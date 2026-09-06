@@ -65,13 +65,25 @@ class ContextTool(BaseTool):
 
         for name in container.list_tools():
             try:
-                tool = container.get(name)
-                description = str(tool.get_interface_description()).strip()
+                tool_proxy = container.get(name)
+                raw_tool = (
+                    tool_proxy._tool
+                    if isinstance(getattr(tool_proxy, "_tool", None), BaseTool)
+                    else tool_proxy
+                )
+                description = str(raw_tool.get_interface_description()).strip()
                 if not description:
                     print(f"[ContextTool] WARNING: Tool '{name}' has no interface description. "
                           f"Update get_interface_description() in its class.")
-                status_emoji = "✅" if tool else "❌"
+                status_emoji = "✅" if tool_proxy else "❌"
                 manifest += f"### 🔧 Tool: `{name}` (Status: {status_emoji})\n"
+
+                signatures = renderers._generate_tool_signatures(raw_tool)
+                if signatures:
+                    manifest += "\n**Public Signatures:**\n```python\n"
+                    manifest += signatures + "\n"
+                    manifest += "```\n\n"
+
                 manifest += "```text\n"
                 manifest += description
                 manifest += "\n```\n\n"

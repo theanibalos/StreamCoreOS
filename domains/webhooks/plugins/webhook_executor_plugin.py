@@ -76,7 +76,7 @@ class WebhookExecutorPlugin(BasePlugin):
             
             try:
                 body = json.loads(body)
-            except:
+            except Exception:
                 pass
 
         try:

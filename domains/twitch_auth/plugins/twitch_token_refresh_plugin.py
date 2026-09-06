@@ -39,12 +39,6 @@ class TwitchTokenRefreshPlugin(BasePlugin):
 
         self.logger.info(f"[TwitchTokenRefresh] Storing updated tokens for {session['login']}")
         try:
-            token_data = await self.db.query_one(
-                "SELECT scopes FROM twitch_tokens WHERE twitch_id = $1",
-                [session["broadcaster_id"]]
-            )
-            scopes = json.loads(token_data["scopes"]) if token_data else []
-
             now = datetime.now(timezone.utc)
             new_expires_at = (now + timedelta(seconds=expires_in)).isoformat()
 

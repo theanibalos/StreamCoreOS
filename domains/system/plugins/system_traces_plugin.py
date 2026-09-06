@@ -52,9 +52,19 @@ class SystemTracesPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
+            "/system/traces/tree", "GET", self.get_tree,
+            tags=["System"],
+            response_model=SystemTracesTreeResponse
+        )
+        self.http.add_endpoint(
             "/api/system/traces/tree", "GET", self.get_tree,
             tags=["System"],
             response_model=SystemTracesTreeResponse
+        )
+        self.http.add_endpoint(
+            "/system/traces/flat", "GET", self.get_flat,
+            tags=["System"],
+            response_model=SystemTracesFlatResponse
         )
         self.http.add_endpoint(
             "/api/system/traces/flat", "GET", self.get_flat,

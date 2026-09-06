@@ -151,7 +151,14 @@ class EventBusTool(BaseTool):
     def name(self) -> str: return "event_bus"
 
     async def setup(self) -> None:
-        await self._driver.setup()
+        try:
+            await self._driver.setup()
+        except BaseException as setup_err:
+            try:
+                await self.shutdown()
+            except Exception as cleanup_err:
+                print(f"[EventBusTool] ⚠️  Cleanup error during failed setup teardown: {cleanup_err}")
+            raise setup_err
         print(f"[System] EventBusTool: Online (Universal Driver: {self._driver.__class__.__name__}).")
 
     def get_interface_description(self) -> str:
@@ -499,8 +506,11 @@ class EventBusTool(BaseTool):
 
     async def shutdown(self):
         if self._pending_tasks:
-            print(f"[EventBus] Cleaning up {len(self._pending_tasks)} pending tasks...")
-            for task in self._pending_tasks:
+            tasks = list(self._pending_tasks)
+            self._pending_tasks.clear()
+            print(f"[EventBus] Cleaning up {len(tasks)} pending tasks...")
+            for task in tasks:
                 task.cancel()
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-        await self._driver.shutdown()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if hasattr(self, "_driver") and self._driver is not None:
+            await self._driver.shutdown()

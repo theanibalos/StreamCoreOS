@@ -49,7 +49,7 @@ class TestWebhookPlugin(BasePlugin):
                     body = body.replace("{" + key + "}", str(value))
                 try:
                     body = json.loads(body)
-                except:
+                except Exception:
                     pass
 
             self.logger.info(f"[WebhookTest] Testing {method} -> {url}")

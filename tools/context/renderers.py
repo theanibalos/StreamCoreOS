@@ -1,4 +1,5 @@
 import ast
+import inspect
 import os
 
 # ── Renderers: produce text ─────────────────────────────────────────────────
@@ -116,3 +117,43 @@ def _describe_table(schema: dict, table: str) -> str:
         line += (f" — FK {fk['column']} → "
                  f"{fk['references_table']}.{fk['references_column']}")
     return line
+
+
+IGNORED_TOOL_METHODS = {
+    "setup",
+    "name",
+    "get_interface_description",
+    "on_boot_complete",
+    "on_instrument",
+    "shutdown",
+    "on_boot",
+}
+
+
+def _generate_tool_signatures(raw_tool) -> str:
+    """Derives a canonical public signature block from the real tool instance.
+
+    Excludes private methods ('_*') and lifecycle plumbing (setup, shutdown, etc.).
+    Preserves parameter names, defaults, keyword-only markers, and return annotations.
+    Handles opaque callables by reporting '<signature unavailable>'.
+    """
+    lines = []
+    # Inspect routine members sorted by name for deterministic order
+    for name, func in sorted(inspect.getmembers(raw_tool, predicate=inspect.isroutine), key=lambda x: x[0]):
+        if name.startswith("_") or name in IGNORED_TOOL_METHODS:
+            continue
+        try:
+            sig = inspect.signature(func, follow_wrapped=True)
+            params = [p for p_name, p in sig.parameters.items() if p_name not in ("self", "cls")]
+            clean_sig = sig.replace(parameters=params)
+            is_async = (
+                inspect.iscoroutinefunction(func)
+                or inspect.iscoroutinefunction(getattr(func, "__func__", None))
+            )
+            prefix = "async def " if is_async else "def "
+            lines.append(f"{prefix}{name}{clean_sig}")
+        except (ValueError, TypeError):
+            lines.append(f"def {name}(...) -> <signature unavailable>")
+
+    return "\n".join(lines)
+

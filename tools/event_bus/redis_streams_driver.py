@@ -132,30 +132,43 @@ class RedisStreamsDriver(EventBusDriver):
             decode_responses=True,
         )
         try:
-            await self._redis.ping()
-        except (redis_exceptions.RedisError, OSError) as e:
-            raise EventBusConnectionError(
-                f"Cannot connect to Redis broker at {self._host}:{self._port}/{self._db}: {e}"
-            ) from e
-        # Every replica promotes: delayed envelopes left by a dead publisher
-        # still fire as long as ANY replica is alive (the native-delay claim).
-        self._promoter_task = asyncio.create_task(self._promote_delayed())
+            try:
+                await self._redis.ping()
+            except (redis_exceptions.RedisError, OSError) as e:
+                raise EventBusConnectionError(
+                    f"Cannot connect to Redis broker at {self._host}:{self._port}/{self._db}: {e}"
+                ) from e
+            # Every replica promotes: delayed envelopes left by a dead publisher
+            # still fire as long as ANY replica is alive (the native-delay claim).
+            self._promoter_task = asyncio.create_task(self._promote_delayed())
+        except BaseException as setup_err:
+            try:
+                await self.shutdown()
+            except Exception as cleanup_err:
+                print(f"[RedisStreamsDriver] ⚠️  Cleanup error during failed setup teardown: {cleanup_err}")
+            raise setup_err
         print("[System] RedisStreamsDriver: Distributed transport ready.")
 
     async def shutdown(self) -> None:
         if self._promoter_task is not None:
-            self._promoter_task.cancel()
+            promoter = self._promoter_task
+            self._promoter_task = None
+            promoter.cancel()
             try:
-                await self._promoter_task
+                await promoter
             except (asyncio.CancelledError, Exception):
                 pass
-            self._promoter_task = None
-        for sub in self._subs:
-            await self._stop_subscription(sub)
+        subs = list(self._subs)
         self._subs.clear()
+        for sub in subs:
+            await self._stop_subscription(sub)
         if self._redis is not None:
-            await self._redis.aclose()
+            redis_client = self._redis
             self._redis = None
+            try:
+                await redis_client.aclose()
+            except Exception as e:
+                print(f"[RedisStreamsDriver] Error closing Redis client: {e}")
 
     # ─── TRANSPORT: publish ───────────────────────────────
 

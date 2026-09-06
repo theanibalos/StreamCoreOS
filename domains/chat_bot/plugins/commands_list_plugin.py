@@ -27,8 +27,6 @@ class CommandsListPlugin(BasePlugin):
         if data.get("command", "").lower() != "!commands":
             return
 
-        channel = data.get("channel_name") or data.get("channel_id", "")
-
         try:
             rows = await self.db.query(
                 "SELECT name FROM chat_commands WHERE enabled=1 ORDER BY name"

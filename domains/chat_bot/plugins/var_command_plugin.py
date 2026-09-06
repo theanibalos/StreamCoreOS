@@ -49,7 +49,7 @@ class VarCommandPlugin(BasePlugin):
     async def _handle_setvar(self, data: dict, display_name: str, args: str):
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            await self._send(data, f"Uso: !setvar <nombre> <valor>")
+            await self._send(data, "Uso: !setvar <nombre> <valor>")
             return
 
         name, raw_value = parts[0].lower(), parts[1].strip()

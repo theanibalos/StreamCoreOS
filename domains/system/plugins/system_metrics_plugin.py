@@ -41,9 +41,19 @@ class SystemMetricsPlugin(BasePlugin):
         self.registry.add_metrics_sink(self._on_metric)
 
         self.http.add_endpoint(
+            "/system/metrics", "GET", self.get_metrics,
+            tags=["System"],
+            response_model=SystemMetricsResponse,
+        )
+        self.http.add_endpoint(
             "/api/system/metrics", "GET", self.get_metrics,
             tags=["System"],
             response_model=SystemMetricsResponse,
+        )
+        self.http.add_sse_endpoint(
+            "/system/metrics/stream",
+            generator=self._stream,
+            tags=["System"],
         )
         self.http.add_sse_endpoint(
             "/api/system/metrics/stream",

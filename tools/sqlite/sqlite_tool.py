@@ -176,31 +176,38 @@ class SqliteTool(BaseTool):
         print(f"[System] SqliteTool: Opening {self._db_path}...")
 
         try:
-            self._db = await aiosqlite.connect(self._db_path)
-            # Enable Write-Ahead Logging for better concurrency
-            await self._db.execute("PRAGMA journal_mode=WAL")
-            # Enable Foreign Keys (disabled by default in SQLite)
-            await self._db.execute("PRAGMA foreign_keys=ON")
-            await self._db.commit()
-        except Exception as e:
-            raise DatabaseConnectionError(
-                f"Cannot open SQLite database at {self._db_path}: {e}"
-            ) from e
+            try:
+                self._db = await aiosqlite.connect(self._db_path)
+                # Enable Write-Ahead Logging for better concurrency
+                await self._db.execute("PRAGMA journal_mode=WAL")
+                # Enable Foreign Keys (disabled by default in SQLite)
+                await self._db.execute("PRAGMA foreign_keys=ON")
+                await self._db.commit()
+            except Exception as e:
+                raise DatabaseConnectionError(
+                    f"Cannot open SQLite database at {self._db_path}: {e}"
+                ) from e
 
-        # Create internal migration history table
-        await self.execute("""
-            CREATE TABLE IF NOT EXISTS _migrations_history (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain      TEXT NOT NULL,
-                filename    TEXT NOT NULL,
-                applied_at  TEXT DEFAULT (datetime('now')),
-                UNIQUE(domain, filename)
-            )
-        """)
+            # Create internal migration history table
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS _migrations_history (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain      TEXT NOT NULL,
+                    filename    TEXT NOT NULL,
+                    applied_at  TEXT DEFAULT (datetime('now')),
+                    UNIQUE(domain, filename)
+                )
+            """)
 
-        print("[System] SqliteTool: Ready (WAL mode, FK enabled).")
+            print("[System] SqliteTool: Ready (WAL mode, FK enabled).")
 
-        await self._run_migrations()
+            await self._run_migrations()
+        except BaseException as setup_err:
+            try:
+                await self.shutdown()
+            except Exception as cleanup_err:
+                print(f"[SqliteTool] ⚠️  Cleanup error during failed setup teardown: {cleanup_err}")
+            raise setup_err
 
     # ─── MIGRATIONS: run from setup(), NOT from on_boot_complete() ──
     #
@@ -214,14 +221,18 @@ class SqliteTool(BaseTool):
 
     # ─── LIFECYCLE: shutdown() ────────────────────────────
     #
-    # Closes the connection gracefully.
+    # Closes the connection gracefully. Safe to call repeatedly or on partially
+    # initialized instances.
     #
 
     async def shutdown(self) -> None:
         if self._db is not None:
-            await self._db.close()
+            db_conn = self._db
             self._db = None
-            print("[SqliteTool] Connection closed.")
+            try:
+                await db_conn.close()
+            finally:
+                print("[SqliteTool] Connection closed.")
 
     # ─── PUBLIC API: query() ──────────────────────────────
     #

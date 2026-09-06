@@ -11,7 +11,9 @@ being left behind as artificially-parameterized methods.
 
 import uuid
 import inspect
-from typing import Optional, Any, Callable
+import ipaddress
+import urllib.parse
+from typing import Optional, Any, Callable, Sequence
 from pydantic import BaseModel
 from microcoreos import current_identity_var, current_event_id_var
 from fastapi import Request
@@ -22,42 +24,193 @@ from tools.http_server.context import HttpContext
 from tools.http_server.types import UploadedFile
 
 
-def _extract_client_ip(request: Request) -> str | None:
-    """
-    Best-effort real caller IP, exposed to plugins as context.client_ip (see
-    context.py) — a raw signal, not a policy. Behind ANY reverse proxy or
-    CDN, the direct TCP peer is the proxy's own address, not the visitor's;
-    without header-based extraction every caller looks identical, which
-    would make any plugin-level policy keyed on IP (see
-    INSTRUCTIONS_FOR_AI.md's Rate Limiting Pattern) meaningless — everyone
-    sharing one bucket instead of one each.
+def _parse_trusted_proxies(raw: str | None) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse comma-separated IPs or CIDR networks into ip_network objects."""
+    if not raw:
+        return []
+    networks = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item == "*":
+            networks.extend([
+                ipaddress.ip_network("0.0.0.0/0"),
+                ipaddress.ip_network("::/0"),
+            ])
+            continue
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError as e:
+            raise ValueError(f"Invalid IP or CIDR in HTTP_TRUSTED_PROXIES: {item!r}") from e
+    return networks
 
-    Trust order:
-    1. Cf-Connecting-Ip: set by Cloudflare's edge, before any tunnel/proxy
-       hop — trustworthy specifically when Cloudflare is the ONLY path
-       traffic can take to reach this app (true for a Cloudflare Tunnel
-       deployment, since the origin has no other inbound route). Deployments
-       fronted by a different CDN should adjust this trust order to match.
-    2. X-Forwarded-For: set by a generic reverse proxy (Traefik, nginx,
-       an ALB...) as it forwards — first hop of the (possibly multi-value)
-       list. Fallback for setups without Cloudflare specifically in front.
-    3. request.client.host: the direct TCP peer — only correct with NO
-       proxy in front at all (bare local dev). Behind any proxy this is the
-       proxy's own address, not the caller's.
 
-    Note this is inherently spoofable by the caller UNLESS a proxy is
-    actually in front overwriting these headers — this tool has no way to
-    verify one is. Fine for rate-limiting/audit-logging use cases; do not
-    use this value for anything security-authoritative (e.g. an allowlist
-    gate) without also verifying the deployment topology guarantees it.
+def _is_ip_in_networks(
+    ip_str: str, networks: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network]
+) -> bool:
+    if not ip_str or not networks:
+        return False
+    try:
+        ip = ipaddress.ip_address(ip_str.strip())
+    except ValueError:
+        return False
+    return any(ip in net for net in networks)
+
+
+def _is_valid_ip(ip_str: str) -> bool:
+    try:
+        ipaddress.ip_address(ip_str.strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_origin(origin: str) -> str:
+    """Normalize origin string to lowercase {scheme}://{host[:port]} without trailing slash."""
+    trimmed = origin.strip()
+    parsed = urllib.parse.urlsplit(trimmed)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Malformed origin: {origin!r}")
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https", "ws", "wss"):
+        raise ValueError(f"Unsupported origin scheme: {parsed.scheme!r}")
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    port = parsed.port
+    if (scheme in ("http", "ws") and port == 80) or (scheme in ("https", "wss") and port == 443):
+        netloc = host
+    elif port is not None:
+        netloc = f"{host}:{port}"
+    else:
+        netloc = host or parsed.netloc.lower()
+    return f"{scheme}://{netloc}"
+
+
+def _parse_ws_origins(raw: str | None) -> set[str]:
+    """Parse comma-separated allowed WebSocket origins."""
+    if not raw:
+        return set()
+    origins = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item == "*":
+            raise ValueError("Wildcard '*' is not permitted in HTTP_WS_ORIGINS")
+        origins.add(_normalize_origin(item))
+    return origins
+
+
+def _validate_ws_origin(
+    websocket: Any,
+    policy: str = "off",
+    allowed_origins: set[str] | None = None,
+    allow_missing: bool = False,
+) -> tuple[bool, str | None]:
     """
-    cf_ip = request.headers.get("Cf-Connecting-Ip")
-    if cf_ip:
-        return cf_ip.strip()
+    Validate WebSocket Origin header against policy.
+    Returns (True, None) if allowed, or (False, reason) if rejected.
+    """
+    if policy == "off":
+        return True, None
+    if policy != "allowlist":
+        return False, f"Unknown WebSocket origin policy: {policy!r}"
+
+    # In allowlist mode:
+    origin_headers = []
+    if hasattr(websocket.headers, "get_list"):
+        origin_headers = websocket.headers.get_list("origin")
+    elif hasattr(websocket.headers, "getlist"):
+        origin_headers = websocket.headers.getlist("origin")
+    elif "origin" in websocket.headers:
+        val = websocket.headers.get("origin")
+        if val is not None:
+            origin_headers = [val]
+
+    # Multiple Origin headers: reject
+    if len(origin_headers) > 1:
+        return False, "Multiple Origin headers rejected"
+
+    if not origin_headers:
+        if allow_missing:
+            return True, None
+        return False, "Missing Origin header in allowlist mode"
+
+    origin_val = origin_headers[0].strip()
+    if not origin_val:
+        if allow_missing:
+            return True, None
+        return False, "Missing Origin header in allowlist mode"
+
+    # Multiple origins in single comma-separated header: reject
+    if "," in origin_val:
+        return False, "Multiple origins in Origin header rejected"
+
+    # Reject opaque null origin (e.g. sandboxed iframe or file://)
+    if origin_val.lower() == "null":
+        return False, "Opaque 'null' origin is rejected"
+
+    try:
+        normalized = _normalize_origin(origin_val)
+    except ValueError as e:
+        return False, f"Malformed Origin header: {e}"
+
+    if allowed_origins and normalized in allowed_origins:
+        return True, None
+
+    return False, f"Origin {origin_val!r} not in WebSocket allowlist"
+
+
+def _extract_client_ip(
+    request: Request,
+    trusted_proxies: Optional[Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network]] = None,
+    custom_ip_header: Optional[str] = None,
+    trust_cloudflare: bool = False,
+) -> str | None:
+    """
+    Extract caller IP for context.client_ip based on configured trusted proxies.
+
+    Security model:
+    - If trusted_proxies is unset/empty or the direct socket peer is not in
+      trusted_proxies, the direct peer address is returned. Forwarding headers
+      from untrusted peers are ignored to prevent spoofing.
+    - If the direct peer is in trusted_proxies:
+      - If custom_ip_header (e.g. X-Real-IP, True-Client-IP, CF-Connecting-IP)
+        is configured and present with a valid IP, it is returned.
+      - Standard X-Forwarded-For is evaluated from right to left across trusted
+        proxies to locate the first untrusted caller IP.
+    """
+    peer = request.client.host if request.client else None
+    if not peer:
+        return None
+
+    if not trusted_proxies:
+        return peer
+
+    if not _is_ip_in_networks(peer, trusted_proxies):
+        return peer
+
+    # Immediate peer is trusted proxy
+    header_name = custom_ip_header or ("Cf-Connecting-Ip" if trust_cloudflare else None)
+    if header_name:
+        edge_ip = request.headers.get(header_name)
+        if edge_ip and _is_valid_ip(edge_ip):
+            return edge_ip.strip()
+
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.client.host if request.client else None
+        hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
+        for i in range(len(hops) - 1, -1, -1):
+            hop = hops[i]
+            if not _is_valid_ip(hop):
+                break
+            if not _is_ip_in_networks(hop, trusted_proxies):
+                return hop
+        else:
+            if hops and _is_valid_ip(hops[0]):
+                return hops[0]
+
+    return peer
 
 
 def _serialize(obj):
@@ -125,6 +278,9 @@ async def _process_request(
     auth_validator: Optional[Callable],
     paused_owners: set,
     files: Optional[list] = None,
+    trusted_proxies: Optional[Sequence[Any]] = None,
+    custom_ip_header: Optional[str] = None,
+    trust_cloudflare: bool = False,
 ) -> Any:
     """
     Core request processing pipeline. Executed for every incoming HTTP request.
@@ -214,7 +370,12 @@ async def _process_request(
             )
 
         context = HttpContext(
-            client_ip=_extract_client_ip(request),
+            client_ip=_extract_client_ip(
+                request,
+                trusted_proxies=trusted_proxies,
+                custom_ip_header=custom_ip_header,
+                trust_cloudflare=trust_cloudflare,
+            ),
             request_headers=request.headers,
             raw_body=raw_body,
         )

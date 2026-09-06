@@ -171,7 +171,14 @@ from starlette.concurrency import run_in_threadpool
 # own modules (mechanical move, no behavior change). Re-exported here since
 # external code imports HttpContext from this module.
 from tools.http_server.context import HttpContext  # noqa: F401 — re-export
-from tools.http_server.pipeline import _process_request, _sse_response, _extract_ws_token
+from tools.http_server.pipeline import (
+    _process_request,
+    _sse_response,
+    _extract_ws_token,
+    _parse_trusted_proxies,
+    _parse_ws_origins,
+    _validate_ws_origin,
+)
 from tools.http_server.types import UploadedFile, WebSocketConnection  # noqa: F401 — re-export
 
 # Extensions mount_static() serves when the caller declares none.
@@ -211,6 +218,43 @@ class HttpServerTool(BaseTool):
         # Mirror of the event bus's set; mutated only by the chaos extras
         # plugin via its sanctioned raw-tool introspection.
         self._paused_owners: set[str] = set()
+
+        # Trusted reverse proxy and client IP resolution
+        self._trusted_proxies: list = []
+        self._custom_ip_header: Optional[str] = None
+        self._trust_cloudflare: bool = False
+
+        # WebSocket origin policy
+        self._ws_origin_policy: str = "off"
+        self._ws_allowed_origins: set[str] = set()
+        self._ws_allow_missing_origin: bool = False
+
+        self._load_config_from_env()
+
+    def _load_config_from_env(self) -> None:
+        """Load and normalize proxy and WebSocket configuration from environment variables."""
+        trusted_proxies_raw = os.getenv("HTTP_TRUSTED_PROXIES", "").strip()
+        try:
+            self._trusted_proxies = _parse_trusted_proxies(trusted_proxies_raw)
+        except ValueError:
+            self._trusted_proxies = []
+
+        custom_header = os.getenv("HTTP_CUSTOM_CLIENT_IP_HEADER", "").strip()
+        cf_raw = os.getenv("HTTP_TRUST_CLOUDFLARE", "false").strip().lower()
+        self._custom_ip_header = custom_header or None
+        self._trust_cloudflare = cf_raw in ("true", "1")
+
+        policy_raw = os.getenv("HTTP_WS_ORIGIN_POLICY", "off").strip().lower()
+        self._ws_origin_policy = policy_raw
+
+        origins_raw = os.getenv("HTTP_WS_ORIGINS", "").strip()
+        try:
+            self._ws_allowed_origins = _parse_ws_origins(origins_raw) if origins_raw else set()
+        except ValueError:
+            self._ws_allowed_origins = set()
+
+        missing_raw = os.getenv("HTTP_WS_ALLOW_MISSING_ORIGIN", "false").strip().lower()
+        self._ws_allow_missing_origin = missing_raw in ("true", "1")
 
     @property
     def name(self) -> str:
@@ -268,6 +312,52 @@ class HttpServerTool(BaseTool):
                 "With '*' every origin would be allowed to send the session cookie."
             )
 
+        # Validate trusted reverse proxies configuration
+        trusted_raw = os.getenv("HTTP_TRUSTED_PROXIES", "").strip()
+        self._trusted_proxies = _parse_trusted_proxies(trusted_raw) if trusted_raw else []
+
+        if host == "0.0.0.0" and trusted_raw == "*":
+            print("[HttpServer] ⚠️  SECURITY WARNING: Server is exposed to 0.0.0.0 with HTTP_TRUSTED_PROXIES '*'. "
+                  "Set explicit proxy IPs/CIDRs for production.")
+
+        custom_header = os.getenv("HTTP_CUSTOM_CLIENT_IP_HEADER", "").strip()
+        self._custom_ip_header = custom_header or None
+
+        cf_raw = os.getenv("HTTP_TRUST_CLOUDFLARE", "false").strip().lower()
+        if cf_raw not in ("true", "false", "1", "0", ""):
+            raise ValueError(f"Invalid HTTP_TRUST_CLOUDFLARE: {cf_raw!r}. Must be 'true' or 'false'.")
+        self._trust_cloudflare = cf_raw in ("true", "1")
+
+        # Validate WebSocket Origin policy configuration
+        ws_policy = os.getenv("HTTP_WS_ORIGIN_POLICY", "off").strip().lower()
+        if ws_policy not in ("off", "allowlist"):
+            raise ValueError(
+                f"Invalid HTTP_WS_ORIGIN_POLICY: {ws_policy!r}. Must be 'off' or 'allowlist'."
+            )
+        self._ws_origin_policy = ws_policy
+
+        if self._ws_origin_policy == "allowlist":
+            ws_origins_raw = os.getenv("HTTP_WS_ORIGINS", "").strip()
+            if not ws_origins_raw:
+                raise ValueError(
+                    "HTTP_WS_ORIGINS must not be empty when HTTP_WS_ORIGIN_POLICY='allowlist'"
+                )
+            self._ws_allowed_origins = _parse_ws_origins(ws_origins_raw)
+            if not self._ws_allowed_origins:
+                raise ValueError(
+                    "HTTP_WS_ORIGINS must contain at least one valid origin when HTTP_WS_ORIGIN_POLICY='allowlist'"
+                )
+        else:
+            ws_origins_raw = os.getenv("HTTP_WS_ORIGINS", "").strip()
+            self._ws_allowed_origins = _parse_ws_origins(ws_origins_raw) if ws_origins_raw else set()
+
+        ws_missing_raw = os.getenv("HTTP_WS_ALLOW_MISSING_ORIGIN", "false").strip().lower()
+        if ws_missing_raw not in ("true", "false", "1", "0", ""):
+            raise ValueError(
+                f"Invalid HTTP_WS_ALLOW_MISSING_ORIGIN: {ws_missing_raw!r}. Must be 'true' or 'false'."
+            )
+        self._ws_allow_missing_origin = ws_missing_raw in ("true", "1")
+
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
@@ -288,7 +378,13 @@ class HttpServerTool(BaseTool):
         self._register_all_static_mounts()
         host = os.getenv("HTTP_HOST", "127.0.0.1")
         log_level = os.getenv("HTTP_LOG_LEVEL", "warning")
-        config = uvicorn.Config(self.app, host=host, port=self._port, log_level=log_level)
+        config = uvicorn.Config(
+            self.app,
+            host=host,
+            port=self._port,
+            log_level=log_level,
+            proxy_headers=False,
+        )
         self._server = uvicorn.Server(config)
         self._server_task = asyncio.create_task(self._server.serve())
         print(f"[HttpServer] Server active → http://localhost:{self._port}/docs")
@@ -328,6 +424,11 @@ class HttpServerTool(BaseTool):
         - SECURITY DEFAULTS:
             - Cookies set via context.set_cookie are 'Secure=True', 'HttpOnly=True', 'SameSite=Lax'.
             - CSRF Guard: Mutations (POST/PUT/DELETE) using cookie auth REQUIRE 'X-Requested-With' header.
+            - WebSocket Origin Policy: Configurable via HTTP_WS_ORIGIN_POLICY=off|allowlist.
+              In allowlist mode, connections from unlisted origins are closed with 1008 before handshake.
+            - Trusted Proxies: Forwarding headers (X-Forwarded-For or custom edge header)
+              are only evaluated if the direct peer is in HTTP_TRUSTED_PROXIES. Otherwise direct peer IP
+              is used. An optional custom edge header is configurable via HTTP_CUSTOM_CLIENT_IP_HEADER.
             - Swagger UI (/docs): endpoints with auth_validator show a lock icon and accept
               tokens via the "Authorize" button (documentation-only; real check unaffected).
         - CAPABILITIES:
@@ -346,6 +447,7 @@ class HttpServerTool(BaseTool):
             - add_ws_endpoint(path, on_connect, on_disconnect=None, auth_validator=None):
                 WebSocket support. on_connect receives a WebSocketConnection: send_text,
                 send_json, receive_text, receive_json, close, query_params, path_params.
+                WebSocket Origin policy (HTTP_WS_ORIGIN_POLICY) is enforced first.
                 With auth_validator the token is read from the Authorization header, the
                 `token` query param, then the access_token cookie; an invalid one is
                 closed with 1008 BEFORE the handshake and on_connect takes (conn, payload).
@@ -367,10 +469,11 @@ class HttpServerTool(BaseTool):
               signature verification; providers sign bytes, not a re-serialized dict.
             - context.get_header(key, default=None): Read inbound request headers
               case-insensitively (e.g. X-Signature for signed webhooks).
-            - context.client_ip: Best-effort caller IP (property). Raw signal only — the
-              plugin decides what to do with it (e.g. state.increment() keyed by IP for
-              an identity-aware business rule). Never security-authoritative on its own;
-              see context.py's client_ip docstring for the trust order and its limits.
+            - context.client_ip: Best-effort caller IP (property). Resolved against
+              HTTP_TRUSTED_PROXIES (no trust by default). Direct callers cannot spoof
+              forwarding headers. When proxied, right-to-left X-Forwarded-For evaluation
+              determines the first untrusted caller. Custom edge header configurable via
+              HTTP_CUSTOM_CLIENT_IP_HEADER. Never security-authoritative on its own.
         - RESPONSE CONTRACT:
             - Standard: return {"success": bool, "data": ..., "error": ...}
             - WARNING: All values in 'data' must be JSON-serializable. Pydantic model 
@@ -575,6 +678,18 @@ class HttpServerTool(BaseTool):
         """
         @self.app.websocket(path)
         async def ws_handler(websocket: WebSocket):
+            # 1. WebSocket Origin Policy check (runs before auth and accept)
+            is_allowed, reason = _validate_ws_origin(
+                websocket,
+                policy=self._ws_origin_policy,
+                allowed_origins=self._ws_allowed_origins,
+                allow_missing=self._ws_allow_missing_origin,
+            )
+            if not is_allowed:
+                print(f"[HttpServer] 🛡️ WebSocket rejected on {path}: {reason}")
+                await websocket.close(code=1008)
+                return
+
             auth_payload = None
             if auth_validator:
                 token = _extract_ws_token(websocket)
@@ -702,18 +817,55 @@ class HttpServerTool(BaseTool):
         # __signature__ is overridden below to control what Swagger shows.
         if request_model and method == "GET":
             async def fastapi_wrapper(request: Request, params: request_model = Depends(), **kwargs):
-                return await _process_request(request, params, handler, auth_validator, self._paused_owners)
+                return await _process_request(
+                    request,
+                    params,
+                    handler,
+                    auth_validator,
+                    self._paused_owners,
+                    trusted_proxies=self._trusted_proxies,
+                    custom_ip_header=self._custom_ip_header,
+                    trust_cloudflare=self._trust_cloudflare,
+                )
         elif has_files:
             # If we have files and a request model, we want the model fields to show up as Form fields.
             # We pass kwargs to _process_request which will contain both path params and Form params.
             async def fastapi_wrapper(request: Request, files: Optional[list[UploadFile]] = File(None), **kwargs):
-                return await _process_request(request, kwargs, handler, auth_validator, self._paused_owners, files=files)
+                return await _process_request(
+                    request,
+                    kwargs,
+                    handler,
+                    auth_validator,
+                    self._paused_owners,
+                    files=files,
+                    trusted_proxies=self._trusted_proxies,
+                    custom_ip_header=self._custom_ip_header,
+                    trust_cloudflare=self._trust_cloudflare,
+                )
         elif request_model:
             async def fastapi_wrapper(request: Request, body: request_model = None, **kwargs):
-                return await _process_request(request, body, handler, auth_validator, self._paused_owners)
+                return await _process_request(
+                    request,
+                    body,
+                    handler,
+                    auth_validator,
+                    self._paused_owners,
+                    trusted_proxies=self._trusted_proxies,
+                    custom_ip_header=self._custom_ip_header,
+                    trust_cloudflare=self._trust_cloudflare,
+                )
         else:
             async def fastapi_wrapper(request: Request, **kwargs):
-                return await _process_request(request, None, handler, auth_validator, self._paused_owners)
+                return await _process_request(
+                    request,
+                    None,
+                    handler,
+                    auth_validator,
+                    self._paused_owners,
+                    trusted_proxies=self._trusted_proxies,
+                    custom_ip_header=self._custom_ip_header,
+                    trust_cloudflare=self._trust_cloudflare,
+                )
 
         # Override __signature__ to control OpenAPI documentation.
         # Always remove **kwargs; add explicit path params and Form params if present.

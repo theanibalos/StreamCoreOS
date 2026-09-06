@@ -11,7 +11,6 @@ import shutil
 import time
 import subprocess
 import threading
-import asyncio
 import logging
 from typing import Dict, Any, Optional
 from microcoreos.base_tool import BaseTool

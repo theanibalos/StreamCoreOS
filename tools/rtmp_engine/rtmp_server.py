@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 import socket
 from typing import Optional
 
@@ -11,7 +10,7 @@ _root_logger = logging.getLogger()
 _prev_root_level = _root_logger.level
 _prev_handlers = list(_root_logger.handlers)
 
-from pyrtmp.rtmp import (
+from pyrtmp.rtmp import (  # noqa: E402
     SimpleRTMPController,
     RTMPProtocol,
     SessionManager,
@@ -28,7 +27,7 @@ from pyrtmp.rtmp import (
     StreamClosedException,
     MessageFactory
 )
-from pyrtmp.flv import FLVWriter, FLVMediaType
+from pyrtmp.flv import FLVWriter, FLVMediaType  # noqa: E402
 
 _root_logger.setLevel(_prev_root_level)
 if not _prev_handlers:

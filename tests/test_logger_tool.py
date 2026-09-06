@@ -52,7 +52,10 @@ def test_sink_exception_is_contained(tool):
 
 def test_duplicate_sink_called_once(tool):
     calls = []
-    cb = lambda level, msg, ts, identity: calls.append(1)
+
+    def cb(level, msg, ts, identity):
+        calls.append(1)
+
     tool.add_sink(cb)
     tool.add_sink(cb)
     tool.info("msg")
@@ -61,8 +64,8 @@ def test_duplicate_sink_called_once(tool):
 
 def test_multiple_sinks_all_called(tool):
     a, b = [], []
-    tool.add_sink(lambda l, m, t, i: a.append(1))
-    tool.add_sink(lambda l, m, t, i: b.append(1))
+    tool.add_sink(lambda lvl, m, t, i: a.append(1))
+    tool.add_sink(lambda lvl, m, t, i: b.append(1))
     tool.info("broadcast")
     assert len(a) == 1
     assert len(b) == 1

@@ -35,6 +35,11 @@ class SystemStatusPlugin(BasePlugin):
 
     async def on_boot(self):
         self.http.add_endpoint(
+            "/system/status", "GET", self.execute,
+            tags=["System"],
+            response_model=SystemStatusResponse
+        )
+        self.http.add_endpoint(
             "/api/system/status", "GET", self.execute,
             tags=["System"],
             response_model=SystemStatusResponse

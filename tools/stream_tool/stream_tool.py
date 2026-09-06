@@ -2,10 +2,10 @@ import asyncio
 import json
 import os
 import shutil
-import subprocess
 from typing import Optional
 
 from microcoreos.base_tool import BaseTool
+from tools.stream_tool._encoder_detector import EncoderDetector
 
 
 class StreamTool(BaseTool):
