@@ -17,6 +17,7 @@ import json
 from collections import defaultdict, OrderedDict
 
 import websockets
+from microcoreos import current_identity_var
 
 EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws"
 
@@ -75,6 +76,7 @@ class TwitchEventSubClient:
     # ── Internal WebSocket loop ───────────────────────────────────────
 
     async def _run(self, initial_url: str) -> None:
+        current_identity_var.set("tools.twitch")
         url = initial_url
         is_reconnect = False
         retry_delay = 1
@@ -158,6 +160,14 @@ class TwitchEventSubClient:
             except Exception as e:
                 print(f"[TwitchEventSub] Failed to subscribe to {sub['type']}: {e}")
 
+    def _cb_identity(self, callback) -> str:
+        self_obj = getattr(callback, "__self__", None)
+        if self_obj and hasattr(self_obj, "_identity"):
+            return f"{self_obj._identity}.{callback.__name__}"
+        if hasattr(callback, "__qualname__"):
+            return callback.__qualname__
+        return getattr(callback, "__name__", "callback")
+
     async def _dispatch(self, payload: dict, message_id: str | None = None) -> None:
         if message_id:
             if message_id in self._seen_message_ids:
@@ -172,6 +182,7 @@ class TwitchEventSubClient:
 
         # Specific callbacks receive just the event payload
         for callback in self._callbacks.get(sub_type, []):
+            token = current_identity_var.set(self._cb_identity(callback))
             try:
                 if asyncio.iscoroutinefunction(callback):
                     await callback(event_data)
@@ -179,11 +190,14 @@ class TwitchEventSubClient:
                     callback(event_data)
             except Exception as e:
                 print(f"[TwitchEventSub] Error in callback for {sub_type}: {e}")
+            finally:
+                current_identity_var.reset(token)
 
         # Wildcard callbacks receive event_data enriched with _event_type
         if self._callbacks.get("*"):
             enriched = {"_event_type": sub_type, **event_data}
             for callback in self._callbacks["*"]:
+                token = current_identity_var.set(self._cb_identity(callback))
                 try:
                     if asyncio.iscoroutinefunction(callback):
                         await callback(enriched)
@@ -191,3 +205,5 @@ class TwitchEventSubClient:
                         callback(enriched)
                 except Exception as e:
                     print(f"[TwitchEventSub] Error in wildcard callback for {sub_type}: {e}")
+                finally:
+                    current_identity_var.reset(token)

@@ -491,40 +491,6 @@ Logging Tool (logger):
                 Use it to attribute errors to specific plugins for health tracking.
 ```
 
-### 🔧 Tool: `state` (Status: ✅)
-
-**Public Signatures:**
-```python
-async def clear(namespace: str = 'default') -> None
-async def delete(key: str, namespace: str = 'default') -> None
-async def get(key: str, default=None, namespace: str = 'default')
-async def get_all(namespace: str = 'default') -> dict
-async def has(key: str, namespace: str = 'default') -> bool
-async def increment(key: str, amount: int | float = 1, namespace: str = 'default', ttl: float | None = None) -> int | float
-async def keys(namespace: str = 'default') -> list
-async def set(key: str, value, namespace: str = 'default', ttl: float | None = None) -> None
-```
-
-```text
-Key-Value State Tool (state):
-        - PURPOSE: Share volatile global data between plugins safely.
-        - IDEAL FOR: Counters, temporary caches, rate-limit windows, business semaphores.
-        - CONTRACT: All methods are async. Values must be JSON-serializable so the
-          tool can be swapped for a distributed store (Redis) without touching plugins.
-        - TTL: optional expiry in seconds. Expired keys behave like missing keys.
-          On increment(), the TTL only applies when the key is created (fixed window).
-        - CAPABILITIES:
-            - await set(key, value, namespace='default', ttl=None): Store a value.
-            - await get(key, default=None, namespace='default'): Retrieve a value (None if missing).
-            - await has(key, namespace='default'): Returns True if key exists.
-            - await keys(namespace='default'): Returns list of all live keys in the namespace.
-            - await get_all(namespace='default'): Returns a deep copy of all live key-value pairs.
-            - await increment(key, amount=1, namespace='default', ttl=None): Atomic increment.
-              Starts at 0. Returns the new value.
-            - await delete(key, namespace='default'): Delete a key (no-op if missing).
-            - await clear(namespace='default'): Remove all keys in the namespace.
-```
-
 ### 🔧 Tool: `registry` (Status: ✅)
 
 **Public Signatures:**
@@ -571,6 +537,40 @@ Systems Registry Tool (registry):
             - update_tool_status(name, status, message=None): Manually override a tool's health status.
                 status: "OK" | "FAIL" | "DEAD".
                 Intended for health-check plugins that verify tools proactively.
+```
+
+### 🔧 Tool: `state` (Status: ✅)
+
+**Public Signatures:**
+```python
+async def clear(namespace: str = 'default') -> None
+async def delete(key: str, namespace: str = 'default') -> None
+async def get(key: str, default=None, namespace: str = 'default')
+async def get_all(namespace: str = 'default') -> dict
+async def has(key: str, namespace: str = 'default') -> bool
+async def increment(key: str, amount: int | float = 1, namespace: str = 'default', ttl: float | None = None) -> int | float
+async def keys(namespace: str = 'default') -> list
+async def set(key: str, value, namespace: str = 'default', ttl: float | None = None) -> None
+```
+
+```text
+Key-Value State Tool (state):
+        - PURPOSE: Share volatile global data between plugins safely.
+        - IDEAL FOR: Counters, temporary caches, rate-limit windows, business semaphores.
+        - CONTRACT: All methods are async. Values must be JSON-serializable so the
+          tool can be swapped for a distributed store (Redis) without touching plugins.
+        - TTL: optional expiry in seconds. Expired keys behave like missing keys.
+          On increment(), the TTL only applies when the key is created (fixed window).
+        - CAPABILITIES:
+            - await set(key, value, namespace='default', ttl=None): Store a value.
+            - await get(key, default=None, namespace='default'): Retrieve a value (None if missing).
+            - await has(key, namespace='default'): Returns True if key exists.
+            - await keys(namespace='default'): Returns list of all live keys in the namespace.
+            - await get_all(namespace='default'): Returns a deep copy of all live key-value pairs.
+            - await increment(key, amount=1, namespace='default', ttl=None): Atomic increment.
+              Starts at 0. Returns the new value.
+            - await delete(key, namespace='default'): Delete a key (no-op if missing).
+            - await clear(namespace='default'): Remove all keys in the namespace.
 ```
 
 ### 🔧 Tool: `scheduler` (Status: ✅)
