@@ -90,9 +90,19 @@ class DashboardAlertsPlugin(BasePlugin):
             "channel.subscription.gift": {"user_name": "GiftKing", "total": "5", "tier": "1000"},
             "channel.cheer":             {"user_name": "BitsMaster", "bits": "1000"},
             "channel.raid":              {"from_broadcaster_user_name": "FriendStream", "viewers": "247"},
+            "channel.channel_points_custom_reward_redemption.add": {
+                "user_name": "TestRedeemer",
+                "display_name": "TestRedeemer",
+                "reward": {"title": "Hidratación", "cost": 250},
+                "reward_name": "Hidratación",
+                "reward_title": "Hidratación",
+                "cost": "250",
+                "user_input": "¡Bebe un buen sorbo de agua!",
+            },
         }.get(event_type, {"user_name": "TestUser"})
 
         await self._push(event_type, payload)
+        await self.bus.publish("overlay.alert.trigger", {"type": event_type, "data": payload})
         return {"success": True, "data": {"event_type": event_type}}
 
     def _make_bus_handler(self, event_name: str):

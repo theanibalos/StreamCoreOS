@@ -12,6 +12,14 @@ _SAMPLES = {
     "event.subscription": {"user": "TestSub", "user_id": "0", "tier": "1000", "months": 3, "message": "¡Sub de prueba!"},
     "event.raid":         {"user": "TestRaider", "user_id": "0", "viewers": 42},
     "event.cheer":        {"user": "TestCheerer", "user_id": "0", "bits": 500, "message": "¡Bits de prueba!"},
+    "channel.channel_points_custom_reward_redemption.add": {
+        "user": "TestRedeemer", "user_name": "TestRedeemer", "user_id": "0",
+        "reward_name": "Hidratación", "cost": "250", "user_input": "¡Bebe agua!"
+    },
+    "event.redemption":   {
+        "user": "TestRedeemer", "user_name": "TestRedeemer", "user_id": "0",
+        "reward_name": "Hidratación", "cost": "250", "user_input": "¡Bebe agua!"
+    },
     "chat.message":       {
         "user": "TestChatter", "user_id": "0", "color": "#a970ff", "badges": [],
         "text": "Mensaje de prueba 👋",

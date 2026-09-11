@@ -50,8 +50,14 @@ class FakeBus:
 
 
 class FakeTwitch:
+    def __init__(self):
+        self.registered = []
+
     def on_event(self, event, cb):
         pass
+
+    def register(self, event_type, version, scopes, condition=None):
+        self.registered.append((event_type, version, scopes))
 
 
 class FakeHttp:
@@ -115,6 +121,41 @@ async def test_follow_event_sets_latest_follower_var():
     })
 
     assert plugin._vars["followers.latest_name"] == "StreamFan123"
+
+
+@pytest.mark.anyio
+async def test_redemption_event_sets_latest_vars_and_broadcasts_alert():
+    plugin = make_plugin()
+    await plugin.on_boot()
+
+    alert_queue = asyncio.Queue(maxsize=10)
+    plugin._registry["1"] = {
+        "needs_stats": True, "needs_chat": False, "needs_alerts": True,
+        "queues": [alert_queue],
+    }
+
+    await plugin._on_twitch_event({
+        "_event_type": "channel.channel_points_custom_reward_redemption.add",
+        "user_name": "ViewerPuntos",
+        "user_input": "¡Un saludo!",
+        "reward": {"title": "Saludar", "cost": 500},
+    })
+
+    assert plugin._vars["redemptions.latest_name"] == "ViewerPuntos"
+    assert plugin._vars["redemptions.latest_reward"] == "Saludar"
+    assert plugin._vars["redemptions.latest_cost"] == "500"
+    assert plugin._vars["redemptions.latest_user_input"] == "¡Un saludo!"
+
+    msg_stats = json.loads(alert_queue.get_nowait())
+    assert msg_stats["type"] == "stats"
+    assert msg_stats["data"]["redemptions.latest_name"] == "ViewerPuntos"
+
+    msg_alert = json.loads(alert_queue.get_nowait())
+    assert msg_alert["type"] == "alert"
+    assert msg_alert["data"]["type"] == "channel.channel_points_custom_reward_redemption.add"
+    assert msg_alert["data"]["data"]["reward_name"] == "Saludar"
+    assert msg_alert["data"]["data"]["cost"] == "500"
+    assert msg_alert["data"]["data"]["user_name"] == "ViewerPuntos"
 
 
 def test_resolve_needs_reads_explicit_config():

@@ -102,6 +102,14 @@ class OverlayStreamPlugin(BasePlugin):
         # dashboard.stats.updated bus event published by the stats collector.
         self.twitch.on_event("*", self._on_twitch_event)
 
+        # Ensure channel points redemption events are registered with Twitch EventSub
+        if hasattr(self.twitch, "register"):
+            self.twitch.register(
+                "channel.channel_points_custom_reward_redemption.add",
+                "1",
+                ["channel:read:redemptions"],
+            )
+
         self.http.add_sse_endpoint(
             "/api/overlays/stream/{id}",
             self._stream,
@@ -288,6 +296,18 @@ class OverlayStreamPlugin(BasePlugin):
         event_type = event_data.get("_event_type", "twitch.event")
         payload = {k: v for k, v in event_data.items() if k != "_event_type"}
 
+        # Normalize channel points redemption event payload if needed
+        if event_type == "channel.channel_points_custom_reward_redemption.add":
+            reward = payload.get("reward") or {}
+            reward_title = reward.get("title", "") if isinstance(reward, dict) else str(reward)
+            cost_val = str(reward.get("cost", "")) if isinstance(reward, dict) and "cost" in reward else ""
+            payload.setdefault("reward_name", reward_title)
+            payload.setdefault("reward_title", reward_title)
+            if cost_val:
+                payload.setdefault("cost", cost_val)
+            if "user_name" in payload:
+                payload.setdefault("display_name", payload["user_name"])
+
         # Stats-relevant events: push a fresh snapshot to stat overlays
         if event_type in ("channel.follow", "channel.subscribe",
                           "channel.subscription.gift", "channel.cheer",
@@ -346,6 +366,16 @@ class OverlayStreamPlugin(BasePlugin):
             if raider:
                 return {"raids.latest_name": raider,
                         "raids.latest_viewers": payload.get("viewers", "")}
+        if event_type == "channel.channel_points_custom_reward_redemption.add":
+            reward = payload.get("reward") or {}
+            reward_name = payload.get("reward_name") or (reward.get("title", "") if isinstance(reward, dict) else "") or ""
+            cost = payload.get("cost") or (str(reward.get("cost", "")) if isinstance(reward, dict) and "cost" in reward else "") or ""
+            return {
+                "redemptions.latest_name": name,
+                "redemptions.latest_reward": reward_name,
+                "redemptions.latest_cost": str(cost),
+                "redemptions.latest_user_input": payload.get("user_input", "")
+            }
         return {}
 
     # ── SSE stream ────────────────────────────────────────────────────
