@@ -965,46 +965,21 @@ TTS Tool (tts):
 ### `overlays`
 - **Table `overlay_feed_token`** (storage): id (int, PK), token (text, NOT NULL), created_at (timestamp, default CURRENT_TIMESTAMP), updated_at (timestamp, default CURRENT_TIMESTAMP)
 - **Table `overlay_vars`** (storage): key (text, PK), value (text, NOT NULL), updated_at (timestamp, default CURRENT_TIMESTAMP)
-- **Table `overlays`** (storage): id (int, PK), name (text, NOT NULL), config (text, NOT NULL, default '{"elements":[]}'), created_at (timestamp, default CURRENT_TIMESTAMP), updated_at (timestamp, default CURRENT_TIMESTAMP)
-- **Model `OverlayEntity`** (domain vocabulary): id: int | None, name: str, config: str, created_at: datetime | None, updated_at: datetime | None
 - **Endpoints**:
-  - `DELETE /api/overlays/backgrounds/{filename}`
-    - **res**: success: bool, error: Optional[str]
-  - `DELETE /api/overlays/{id}`
-    - **res**: success: bool, error: Optional[str]
-  - `GET /api/overlays`
-    - **res**: List[OverlayItem(id: int, name: str, created_at: Optional[str], updated_at: Optional[str])]
-  - `GET /api/overlays/backgrounds`
-    - **res**: list[BackgroundFileInfo(filename: str, url: str, type: str, size: int)]
-  - `GET /api/overlays/data`
-    - **res**: Any
   - `GET /api/overlays/manifest`
     - **res**: Any
   - `GET /api/overlays/token`
     - **res**: Any
-  - `GET /api/overlays/{id}`
-    - **res**: OverlayData(id: int, name: str, config: Any, created_at: Optional[str], updated_at: Optional[str])
-  - `GET /api/overlays/{id}/config`
-    - **res**: Any
-  - `POST /api/overlays`
-    - **req**: name: str, config: Optional[Any]
-    - **res**: OverlayData(id: int, name: str, config: Any)
   - `POST /api/overlays/test`
-    - **req**: type: str
+    - **req**: type: str, reward_name: Optional[str]
     - **res**: Any
   - `POST /api/overlays/token`
     - **res**: Any
-  - `POST /api/overlays/upload-background`
-    - **res**: UploadBackgroundData(url: str, type: str)
-  - `PUT /api/overlays/{id}`
-    - **req**: name: Optional[str], config: Optional[Any]
-    - **res**: OverlayData(id: int, name: str, config: Any, updated_at: Optional[str])
   - `SSE /api/overlays/feed`
-  - `SSE /api/overlays/stream/{id}`
-- **Events emitted**: `overlay.config.updated` (overlay_id), `overlay.test.event` (data, type)
-- **Events consumed**: chat.message.received, dashboard.stats.updated, monetization.event.received, overlay.alert.trigger, overlay.config.updated, overlay.test.event, overlay.vars.set, youtube.superchat.received, youtube.supersticker.received
-- **Dependencies**: db, event_bus, http, logger, state, twitch
-- **Plugins**: overlays.CreateOverlayPlugin, overlays.DeleteBackgroundPlugin, overlays.DeleteOverlayPlugin, overlays.GetOverlayPlugin, overlays.ListBackgroundsPlugin, overlays.ListOverlaysPlugin, overlays.OverlayConfigPlugin, overlays.OverlayDataPlugin, overlays.OverlayFeedPlugin, overlays.OverlayManifestPlugin, overlays.OverlayStreamPlugin, overlays.OverlayTestPlugin, overlays.OverlayTokenPlugin, overlays.UpdateOverlayPlugin, overlays.UploadBackgroundPlugin
+- **Events emitted**: `overlay.test.event` (data, type)
+- **Events consumed**: chat.message.deleted, chat.message.received, dashboard.stats.updated, monetization.event.received, overlay.alert.trigger, overlay.test.event, overlay.vars.set, youtube.superchat.received, youtube.supersticker.received
+- **Dependencies**: db, event_bus, http, logger, twitch
+- **Plugins**: overlays.OverlayFeedPlugin, overlays.OverlayManifestPlugin, overlays.OverlayTestPlugin, overlays.OverlayTokenPlugin
 
 ### `ping`
 - **Tables**: none
@@ -1031,31 +1006,31 @@ TTS Tool (tts):
 - **Plugins**: platforms.ListPlatformConnectionsPlugin, platforms.UpdatePlatformConnectionPlugin
 
 ### `stream_outputs`
-- **Table `stream_outputs`** (storage): id (int, PK), name (text, NOT NULL), platform (text, NOT NULL), channel_id (text, NOT NULL), enabled (int, NOT NULL, default 1), overlay_id (int), rtmp_url (text), stream_key_secret (text), status (text, NOT NULL, default 'stopped'), settings (text, NOT NULL, default '{}'), created_at (text, default datetime('now')), updated_at (text, default datetime('now'))
-- **Model `StreamOutput`** (domain vocabulary): id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str
+- **Table `stream_outputs`** (storage): id (int, PK), name (text, NOT NULL), platform (text, NOT NULL), channel_id (text, NOT NULL), enabled (int, NOT NULL, default 1), rtmp_url (text), stream_key_secret (text), status (text, NOT NULL, default 'stopped'), settings (text, NOT NULL, default '{}'), created_at (text, default datetime('now')), updated_at (text, default datetime('now'))
+- **Model `StreamOutput`** (domain vocabulary): id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str
 - **Endpoints**:
   - `DELETE /api/stream-outputs/{id}`
     - **res**: DeleteStreamOutputData(id: int, deleted: bool)
   - `GET /api/stream-outputs`
-    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
+    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
   - `GET /api/stream-outputs/runtime/status`
     - **res**: StreamRuntimeStatusData(input_url: str, obs_url: str, obs_stream_key: str, obs_connected: bool, ffmpeg_available: bool, rtmp_engine_available: bool, relays: dict, relays_count: int, live_outputs_count: int, enabled_outputs_count: Optional[int], is_transmitting: Optional[bool], active_source: str, fallback_running: bool, fallback_mode: str, fallback_video_configured: bool, fallback_video_path: Optional[str], fallback_video_url: Optional[str])
   - `POST /api/stream-outputs`
-    - **req**: name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_secret: Optional[str], settings: dict
-    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
+    - **req**: name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_secret: Optional[str], settings: dict
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
   - `POST /api/stream-outputs/fallback/video`
     - **res**: UploadFallbackVideoData(mode: str, video_path: str, configured: bool)
   - `POST /api/stream-outputs/start-active`
-    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
+    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
   - `POST /api/stream-outputs/stop-active`
-    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
+    - **res**: list[StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)]
   - `POST /api/stream-outputs/{id}/start`
-    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
   - `POST /api/stream-outputs/{id}/stop`
-    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
   - `PUT /api/stream-outputs/{id}`
-    - **req**: name: Optional[str], platform: Optional[str], channel_id: Optional[str], enabled: Optional[bool], overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_secret: Optional[str], status: Optional[str], settings: Optional[dict]
-    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, overlay_id: Optional[int], rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
+    - **req**: name: Optional[str], platform: Optional[str], channel_id: Optional[str], enabled: Optional[bool], rtmp_url: Optional[str], stream_key_secret: Optional[str], status: Optional[str], settings: Optional[dict]
+    - **res**: StreamOutputData(id: int, name: str, platform: str, channel_id: str, enabled: bool, rtmp_url: Optional[str], stream_key_configured: bool, stream_key_preview: Optional[str], status: str, settings: dict, created_at: str, updated_at: str)
 - **Events emitted**: none
 - **Events consumed**: none
 - **Dependencies**: db, http, logger, stream_tool

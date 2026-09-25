@@ -20,6 +20,7 @@ _EVENT_MAP = {
     "channel.subscription.gift":      "event.subscription.gift",
     "channel.raid":                   "event.raid",
     "channel.cheer":                  "event.cheer",
+    "channel.channel_points_custom_reward_redemption.add": "event.redemption",
 }
 
 
@@ -28,12 +29,10 @@ class OverlayFeedPlugin(BasePlugin):
     GET /api/overlays/feed?token=<channel_overlay_token>   (SSE — public)
 
     The single, channel-wide "overlay feed": one clean, token-authed SSE stream
-    that carries everything an overlay could need. Overlays are built ANYWHERE —
-    hand-coded, AI-generated, or in a future in-app builder — and just consume
-    this feed as tolerant readers. Contract: OVERLAY_FEED_CONTRACT.md.
+    that carries streaming data to local HTML pages. Those pages consume this
+    feed as tolerant readers. Contract: OVERLAY_FEED_CONTRACT.md.
 
-    This is a NEW, parallel endpoint. The per-overlay builder stream
-    (/api/overlays/stream/{id}) is untouched.
+    This endpoint is independent of any overlay editor or stored layout.
 
     Every message shares the envelope:
         {"type": "<namespace>", "v": 1, "ts": <epoch_ms>, "data": {...}}
@@ -63,14 +62,26 @@ class OverlayFeedPlugin(BasePlugin):
         self._last_stats: dict = {}
         self._badge_cache: dict = {}
         self._badge_cache_at: float = 0.0
+        self._channel_badge_cache: dict[str, dict] = {}
+        self._channel_badge_cache_at: dict[str, float] = {}
 
     async def on_boot(self):
         await self.bus.subscribe("chat.message.received", self._on_chat)
         await self.bus.subscribe("dashboard.stats.updated", self._on_stats)
         await self.bus.subscribe("overlay.test.event", self._on_test)
+        await self.bus.subscribe("monetization.event.received", self._on_monetization)
+        await self.bus.subscribe("overlay.vars.set", self._on_vars_set)
+        await self.bus.subscribe("chat.message.deleted", self._on_chat_deleted)
+        await self.bus.subscribe("overlay.alert.trigger", self._on_custom_alert)
+        for name in ("stream.session.started", "stream.session.ended",
+                     "viewer.regular.added", "viewer.regular.removed",
+                     "moderation.action.taken", "chat.command.received"):
+            await self.bus.subscribe(name, self._system_handler(name))
         await self.bus.subscribe("youtube.superchat.received", self._on_youtube_superchat)
         await self.bus.subscribe("youtube.supersticker.received", self._on_youtube_supersticker)
         self.twitch.on_event("*", self._on_twitch_event)
+        if hasattr(self.twitch, "register"):
+            self.twitch.register("channel.channel_points_custom_reward_redemption.add", "1", ["channel:read:redemptions"])
 
         self.http.add_sse_endpoint(
             "/api/overlays/feed",
@@ -112,28 +123,46 @@ class OverlayFeedPlugin(BasePlugin):
     def _emote_url(self, emote_id: str, animated: bool) -> str:
         return _EMOTE_CDN.format(id=emote_id, fmt="animated" if animated else "static")
 
-    async def _badge_map(self) -> dict:
-        """Global Twitch badges as {set_id: {version: url}}, cached 1h."""
+    async def _badge_map(self, channel_id: str = "") -> dict:
+        """Global and channel Twitch badges as {set_id: {version: url}}."""
         now = time.time()
-        if self._badge_cache and now - self._badge_cache_at < 3600:
-            return self._badge_cache
         session = self.twitch.get_session()
         if not session:
             return self._badge_cache
-        try:
-            resp = await self.twitch.get(
-                "/chat/badges/global", user_token=session["access_token"]
-            )
-            result: dict = {}
-            for badge_set in resp.get("data", []):
-                versions = {v["id"]: v.get("image_url_1x", "")
-                            for v in badge_set.get("versions", [])}
-                result[badge_set.get("set_id", "")] = versions
-            self._badge_cache = result
-            self._badge_cache_at = now
-        except Exception as e:
-            self.logger.error(f"[OverlayFeed] badge fetch: {e}")
-        return self._badge_cache
+        if now - self._badge_cache_at >= 3600:
+            try:
+                resp = await self.twitch.get(
+                    "/chat/badges/global", user_token=session["access_token"]
+                )
+                self._badge_cache = self._parse_badges(resp)
+                self._badge_cache_at = now
+            except Exception as e:
+                self.logger.error(f"[OverlayFeed] global badge fetch: {e}")
+        if not channel_id:
+            return self._badge_cache
+        if channel_id not in self._channel_badge_cache or now - self._channel_badge_cache_at.get(channel_id, 0) >= 3600:
+            try:
+                resp = await self.twitch.get(
+                    "/chat/badges", params={"broadcaster_id": channel_id},
+                    user_token=session["access_token"],
+                )
+                self._channel_badge_cache[channel_id] = self._parse_badges(resp)
+                self._channel_badge_cache_at[channel_id] = now
+            except Exception as e:
+                self.logger.error(f"[OverlayFeed] channel badge fetch: {e}")
+        merged = {set_id: versions.copy() for set_id, versions in self._badge_cache.items()}
+        for set_id, versions in self._channel_badge_cache.get(channel_id, {}).items():
+            merged.setdefault(set_id, {}).update(versions)
+        return merged
+
+    def _parse_badges(self, response: dict) -> dict:
+        return {
+            badge_set.get("set_id", ""): {
+                str(version.get("id", "")): version.get("image_url_2x") or version.get("image_url_1x", "")
+                for version in badge_set.get("versions", [])
+            }
+            for badge_set in response.get("data", [])
+        }
 
     def _resolve_fragments(self, raw_fragments: list) -> list:
         out = []
@@ -150,8 +179,8 @@ class OverlayFeedPlugin(BasePlugin):
                 out.append({"type": "text", "text": f.get("text", "")})
         return out
 
-    async def _resolve_badges(self, raw_badges) -> list:
-        bmap = await self._badge_map()
+    async def _resolve_badges(self, raw_badges, platform: str = "twitch", channel_id: str = "") -> list:
+        bmap = await self._badge_map(channel_id) if platform == "twitch" and raw_badges else {}
         out = []
         if isinstance(raw_badges, dict):
             raw_badges = [{"set": k, "version": v} for k, v in raw_badges.items()]
@@ -175,7 +204,9 @@ class OverlayFeedPlugin(BasePlugin):
             "user": user.get("display_name", ""),
             "user_id": user.get("id", ""),
             "color": p.get("color", ""),
-            "badges": await self._resolve_badges(p.get("badges", [])),
+            "badges": await self._resolve_badges(
+                p.get("badges", []), p.get("platform", "twitch"), p.get("channel_id", "")
+            ),
             "text": p.get("message", ""),
             "fragments": self._resolve_fragments(p.get("fragments", [])),
         }
@@ -197,9 +228,75 @@ class OverlayFeedPlugin(BasePlugin):
         raw_type = event_data.get("_event_type", "")
         contract_type = _EVENT_MAP.get(raw_type)
         if not contract_type:
-            return
+            if raw_type in ("stream.online", "stream.offline"):
+                return
+            contract_type = "event.twitch"
         p = {k: v for k, v in event_data.items() if k != "_event_type"}
-        self._broadcast(contract_type, self._event_data(raw_type, p))
+        shaped = self._event_data(raw_type, p)
+        if contract_type == "event.twitch":
+            shaped["event_type"] = raw_type
+            shaped["details"] = p
+        self._broadcast(contract_type, shaped)
+
+    async def _on_monetization(self, event):
+        p = event.payload or {}
+        # Twitch subs/bits already arrive through EventSub; avoid duplicate alerts.
+        if p.get("platform") != "youtube":
+            return
+        user = p.get("user") or {}
+        kind = p.get("type", "")
+        if kind not in ("superchat", "supersticker", "member"):
+            return
+        self._broadcast(f"event.{kind}", {
+            "id": p.get("message_id", ""), "platform": "youtube",
+            "user": user.get("display_name", ""), "user_id": user.get("id", ""),
+            "amount_micros": p.get("amount_micros"), "currency": p.get("currency"),
+            "display_amount": p.get("display_amount"), "message": p.get("message", ""),
+        })
+
+    async def _on_vars_set(self, event):
+        for key, value in (event.payload or {}).items():
+            await self.db.execute(
+                "INSERT INTO overlay_vars (key, value) VALUES ($1, $2) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [key, json.dumps(value)],
+            )
+            previous = self._last_stats.get(key)
+            self._last_stats[key] = value
+            self._broadcast("stat.update", {"key": key, "value": value,
+                                            "previous": previous, "display": self._display(value)})
+
+    async def _on_chat_deleted(self, event):
+        p = event.payload or {}
+        self._broadcast("chat.delete", {"id": p.get("message_id", ""),
+                                        "platform": p.get("platform", ""),
+                                        "channel_id": p.get("channel_id", "")})
+
+    async def _on_custom_alert(self, event):
+        p = event.payload or {}
+        raw_type = p.get("type", "")
+        contract_type = _EVENT_MAP.get(raw_type)
+        if contract_type:
+            self._broadcast(contract_type, self._event_data(raw_type, p.get("data") or {}))
+
+    def _system_handler(self, name):
+        async def handler(event):
+            p = event.payload or {}
+            if name.startswith("stream.session."):
+                fields = ("session_id", "twitch_stream_id", "started_at", "ended_at", "broadcaster_login")
+            elif name.startswith("viewer.regular."):
+                fields = ("global_user_id", "platform", "platform_user_id", "display_name", "added_by")
+            elif name == "moderation.action.taken":
+                fields = ("platform", "channel_id", "message_id", "action", "duration_s", "reason", "rule_id")
+            else:
+                fields = ("platform", "channel_id", "command", "args", "message_id")
+            data = {key: p[key] for key in fields if key in p}
+            user = p.get("user") or {}
+            if isinstance(user, dict):
+                data["user"] = user.get("display_name", "")
+                data["user_id"] = user.get("id", "")
+            self._broadcast(name, data)
+        return handler
 
     async def _on_youtube_superchat(self, event):
         p = event.payload or {}
@@ -221,6 +318,8 @@ class OverlayFeedPlugin(BasePlugin):
             "platform": "youtube",
             "user": p.get("user", ""),
             "user_id": p.get("user_id", ""),
+            "amount_micros": p.get("amount_micros"),
+            "currency": p.get("currency", ""),
             "display_amount": p.get("display_amount", ""),
             "message": p.get("message", ""),
         })
@@ -246,6 +345,8 @@ class OverlayFeedPlugin(BasePlugin):
         if raw_type in ("channel.subscribe", "channel.subscription.message", "channel.subscription.gift"):
             data["tier"] = p.get("tier", "")
             data["months"] = p.get("cumulative_months") or p.get("duration_months") or 0
+            if raw_type == "channel.subscription.gift":
+                data["total"] = p.get("total", 0)
             msg = p.get("message")
             data["message"] = msg.get("text", "") if isinstance(msg, dict) else (msg or "")
         elif raw_type == "channel.raid":
@@ -253,6 +354,11 @@ class OverlayFeedPlugin(BasePlugin):
         elif raw_type == "channel.cheer":
             data["bits"] = p.get("bits", 0)
             data["message"] = p.get("message", "")
+        elif raw_type == "channel.channel_points_custom_reward_redemption.add":
+            reward = p.get("reward") or {}
+            data["reward_name"] = reward.get("title", "")
+            data["cost"] = reward.get("cost", 0)
+            data["user_input"] = p.get("user_input", "")
         return data
 
     def _display(self, value) -> str:
@@ -285,6 +391,15 @@ class OverlayFeedPlugin(BasePlugin):
             stats["bits"] = int(row["n"]) if row else 0
         except Exception:
             pass
+        try:
+            rows = await self.db.query("SELECT key, value FROM overlay_vars", [])
+            for row in rows:
+                try:
+                    stats[row["key"]] = json.loads(row["value"])
+                except (ValueError, TypeError):
+                    stats[row["key"]] = row["value"]
+        except Exception:
+            pass
         return stats
 
     # ── SSE stream ────────────────────────────────────────────────────
@@ -311,8 +426,14 @@ class OverlayFeedPlugin(BasePlugin):
             while True:
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    if not secrets.compare_digest(provided, await self._channel_token() or ""):
+                        yield f"data: {self._envelope('feed.error', {'error': 'invalid token'})}\n\n"
+                        return
                     yield f"data: {msg}\n\n"
                 except asyncio.TimeoutError:
+                    if not secrets.compare_digest(provided, await self._channel_token() or ""):
+                        yield f"data: {self._envelope('feed.error', {'error': 'invalid token'})}\n\n"
+                        return
                     yield ":ping\n\n"
         finally:
             self._queues.remove(queue)

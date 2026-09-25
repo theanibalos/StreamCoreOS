@@ -305,7 +305,6 @@ class StreamTool(BaseTool):
             "platform": row["platform"],
             "channel_id": row["channel_id"],
             "enabled": bool(row["enabled"]),
-            "overlay_id": row.get("overlay_id"),
             "rtmp_url": row.get("rtmp_url"),
             "stream_key_configured": bool(secret),
             "stream_key_preview": secret[-4:] if secret else None,

@@ -12,24 +12,30 @@ _SAMPLES = {
     "event.subscription": {"user": "TestSub", "user_id": "0", "tier": "1000", "months": 3, "message": "¡Sub de prueba!"},
     "event.raid":         {"user": "TestRaider", "user_id": "0", "viewers": 42},
     "event.cheer":        {"user": "TestCheerer", "user_id": "0", "bits": 500, "message": "¡Bits de prueba!"},
-    "channel.channel_points_custom_reward_redemption.add": {
-        "user": "TestRedeemer", "user_name": "TestRedeemer", "user_id": "0",
-        "reward_name": "Hidratación", "cost": "250", "user_input": "¡Bebe agua!"
-    },
     "event.redemption":   {
-        "user": "TestRedeemer", "user_name": "TestRedeemer", "user_id": "0",
+        "user": "TestRedeemer", "user_id": "0",
         "reward_name": "Hidratación", "cost": "250", "user_input": "¡Bebe agua!"
     },
+    "event.superchat": {"platform": "youtube", "user": "TestSupporter", "user_id": "0", "amount_micros": 5000000, "currency": "USD", "display_amount": "$5.00", "message": "Hola"},
+    "event.supersticker": {"platform": "youtube", "user": "TestSupporter", "user_id": "0", "amount_micros": 2000000, "currency": "USD", "display_amount": "$2.00", "message": ""},
+    "event.member": {"platform": "youtube", "user": "TestMember", "user_id": "0", "message": "Nuevo miembro"},
     "chat.message":       {
-        "user": "TestChatter", "user_id": "0", "color": "#a970ff", "badges": [],
-        "text": "Mensaje de prueba 👋",
-        "fragments": [{"type": "text", "text": "Mensaje de prueba 👋"}],
+        "user": "TestChatter", "user_id": "0", "color": "#a970ff",
+        "badges": [{"set": "moderator", "version": "1", "url": ""}],
+        "text": "Mensaje de prueba Kappa 👋",
+        "fragments": [
+            {"type": "text", "text": "Mensaje de prueba "},
+            {"type": "emote", "name": "Kappa", "emote_id": "25", "emote_animated": False,
+             "url": "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/2.0"},
+            {"type": "text", "text": " 👋"},
+        ],
     },
 }
 
 
 class TestEventRequest(BaseModel):
     type: str = Field(min_length=1)
+    reward_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
 
 
 class TestResponse(BaseModel):
@@ -74,5 +80,7 @@ class OverlayTestPlugin(BasePlugin):
             return {"success": False, "error": f"Unknown test type: {req.type}"}
 
         payload = {"id": f"test-{secrets.token_hex(4)}", **sample}
+        if req.type == "event.redemption" and req.reward_name:
+            payload["reward_name"] = req.reward_name
         await self.bus.publish("overlay.test.event", {"type": req.type, "data": payload})
         return {"success": True, "data": {"type": req.type}}

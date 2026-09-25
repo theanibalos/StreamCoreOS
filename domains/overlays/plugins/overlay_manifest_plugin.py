@@ -16,8 +16,7 @@ class OverlayManifestPlugin(BasePlugin):
     The machine- and AI-legible description of the overlay feed contract: every
     message `type`, its fields, and the known `stat.update` keys. This is the
     "manual" — paste it into an AI and ask it to build an overlay that consumes
-    /api/overlays/feed. Because it is served from the code it can never drift
-    from what the feed actually emits. Contract: OVERLAY_FEED_CONTRACT.md.
+    /api/overlays/feed. Contract: OVERLAY_FEED_CONTRACT.md.
     """
 
     def __init__(self, http, logger):
@@ -48,14 +47,27 @@ class OverlayManifestPlugin(BasePlugin):
                 },
                 "stat.update": {
                     "when": "a counter changed",
-                    "data": {"key": "string", "value": "number", "previous": "number|null", "display": "string"},
+                    "data": {"key": "string", "value": "JSON value", "previous": "JSON value|null", "display": "string"},
                     "known_keys": ["followers", "subs", "viewers", "bits"],
                 },
                 "event.follow":            {"data": {"id": "string", "user": "string", "user_id": "string"}},
                 "event.subscription":      {"data": {"id": "string", "user": "string", "user_id": "string", "tier": "string", "months": "int", "message": "string"}},
-                "event.subscription.gift": {"data": {"id": "string", "user": "string", "user_id": "string", "tier": "string"}},
+                "event.subscription.gift": {"data": {"id": "string", "user": "string", "user_id": "string", "tier": "string", "total": "int"}},
                 "event.raid":              {"data": {"id": "string", "user": "string", "user_id": "string", "viewers": "int"}},
                 "event.cheer":             {"data": {"id": "string", "user": "string", "user_id": "string", "bits": "int", "message": "string"}},
+                "event.redemption":        {"data": {"id": "string", "user": "string", "user_id": "string", "reward_name": "string", "cost": "int", "user_input": "string"}},
+                "event.twitch":            {"data": {"id": "string", "event_type": "raw Twitch EventSub type", "user": "string", "user_id": "string", "details": "EventSub payload"}},
+                "event.superchat":         {"data": {"id": "string", "platform": "youtube", "user": "string", "user_id": "string", "amount_micros": "int", "currency": "string", "display_amount": "string", "message": "string"}},
+                "event.supersticker":      {"data": {"id": "string", "platform": "youtube", "user": "string", "user_id": "string", "amount_micros": "int", "currency": "string", "display_amount": "string", "message": "string"}},
+                "event.member":           {"data": {"id": "string", "platform": "youtube", "user": "string", "user_id": "string", "message": "string"}},
+                "chat.delete":            {"data": {"id": "string", "platform": "string", "channel_id": "string"}},
+                "stream.session.started": {"data": {"session_id": "int", "started_at": "ISO timestamp", "broadcaster_login": "string"}},
+                "stream.session.ended": {"data": {"session_id": "int", "ended_at": "ISO timestamp"}},
+                "viewer.regular.added": {"data": {"global_user_id": "string", "platform": "string", "display_name": "string"}},
+                "viewer.regular.removed": {"data": {"global_user_id": "string", "platform": "string", "display_name": "string"}},
+                "moderation.action.taken": {"data": {"platform": "string", "user": "string", "user_id": "string", "action": "string", "reason": "string"}},
+                "chat.command.received": {"data": {"command": "string", "args": "string", "user": "string", "user_id": "string"}},
+                "feed.error": {"data": {"error": "string"}},
                 "chat.message": {
                     "data": {
                         "id": "string", "user": "string", "user_id": "string", "color": "hex string",
@@ -69,7 +81,8 @@ class OverlayManifestPlugin(BasePlugin):
                 "Additive only: types and fields are never removed or renamed.",
                 "New capability = new type namespace or new stat key.",
                 "Consumers are tolerant readers: ignore unknown types, default missing fields.",
-                "Emote and badge image URLs are pre-resolved server-side — just drop them into <img src>.",
+                "Use fragments[].url for emote images and badges[].url for badge images; preserve fragment order.",
+                "A badge URL may be empty (for example on YouTube); show its set as a text label.",
                 "Events fired from the dashboard 'test' button carry data.test = true; render them like real ones.",
             ],
         }

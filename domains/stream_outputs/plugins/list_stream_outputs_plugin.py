@@ -10,7 +10,6 @@ class StreamOutputData(BaseModel):
     platform: str
     channel_id: str
     enabled: bool
-    overlay_id: Optional[int] = None
     rtmp_url: Optional[str] = None
     stream_key_configured: bool
     stream_key_preview: Optional[str] = None
@@ -28,7 +27,6 @@ def serialize_stream_output(row: dict) -> dict:
         "platform": row["platform"],
         "channel_id": row["channel_id"],
         "enabled": bool(row["enabled"]),
-        "overlay_id": row.get("overlay_id"),
         "rtmp_url": row.get("rtmp_url"),
         "stream_key_configured": bool(secret),
         "stream_key_preview": secret[-4:] if secret else None,

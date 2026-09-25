@@ -1,6 +1,6 @@
 # StreamCoreOS
 
-A complete **Twitch & YouTube Live multi-platform streaming engine** — unified chatbot, RTMP restreaming, AI moderation, TTS with per-user voices, dynamic overlay builder with AI generation, real-time dashboard, loyalty points, and more. All built as isolated, single-file plugins on top of the atomic [MicroCoreOS](https://github.com/theanibalos/MicroCoreOS) kernel.
+A complete **Twitch & YouTube Live multi-platform streaming engine** — unified chatbot, RTMP restreaming, AI moderation, TTS with per-user voices, a feed for local overlays, real-time dashboard, loyalty points, and more. All built as isolated, single-file plugins on top of the atomic [MicroCoreOS](https://github.com/theanibalos/MicroCoreOS) kernel.
 
 **License:** AGPL-3.0 — free to self-host, modifications must be open-sourced if used as a network service.
 
@@ -77,7 +77,7 @@ docker compose -f docker-compose.prod.yml up -d
 Docker pulls the images automatically. Open `http://localhost`, click **Connect with Twitch** and authorize. Done.
 
 **Data persists automatically.** `docker-compose.prod.yml` mounts a `./data` folder next to your
-`.env` into the container — that's where `database.db` (tokens, viewers, points, overlays, chat
+`.env` into the container — that's where `database.db` (tokens, viewers, points, overlay feed settings, chat
 config, everything) lives. `docker compose down` / `up` again and nothing is lost. To back up,
 just copy the `data/` folder; to reset, delete it and restart.
 
@@ -207,7 +207,7 @@ StreamCoreOS/
     ├── moderation/              # AI mod + word/link/caps/spam filters + manual controls
     ├── timers/                  # Recurring scheduled chat messages
     ├── dashboard/               # Stats + real-time alerts SSE
-    ├── overlays/                # Overlay builder + AI generation + live SSE
+    ├── overlays/                # Token-protected SSE feed for local overlays
     ├── subscribers/             # Sub/bits/gifter tracking + leaderboards
     ├── tts_chat/                # TTS listener + per-user voice assignment
     ├── webhooks/                # Event-driven HTTP webhooks (Discord, external APIs)
@@ -282,9 +282,9 @@ Recurring messages posted to live chat on a cron schedule.
 Aggregated stream stats + real-time SSE alert stream for all platform events.
 
 ### `overlays`
-Overlay builder with widgets (alert, stat, progress bar, chat highlight, banner).
-AI generation endpoint — describe the layout in text, get a configured overlay back.
-Live SSE endpoint for real-time widget updates in OBS.
+Token-protected SSE feed for locally built overlays. The dashboard exposes the
+feed URL, event manifest, token rotation, and test events. Use the feed URL with
+`EventSource` in local HTML/JavaScript and load that file in OBS.
 
 ### `subscribers`
 Subscription, bits, and gifter tracking with leaderboards.
@@ -529,15 +529,11 @@ All endpoints are prefixed with `/api/`.
 | POST | `/api/moderation/ban` | Manual ban |
 | POST | `/api/moderation/timeout` | Manual timeout |
 | POST | `/api/moderation/unban` | Manual unban |
-| GET | `/api/overlays` | List overlays |
-| POST | `/api/overlays` | Create overlay |
-| GET | `/api/overlays/{id}` | Get overlay |
-| PUT | `/api/overlays/{id}` | Update overlay |
-| DELETE | `/api/overlays/{id}` | Delete overlay |
-| GET | `/api/overlays/{id}/config` | Get config (OBS use) |
-| POST | `/api/overlays/generate` | AI overlay generation |
-| GET | `/api/overlays/data` | Live stat values |
-| GET | `/api/overlays/stats` | SSE — real-time stat updates |
+| GET | `/api/overlays/feed?token=...` | SSE — local overlay events |
+| GET | `/api/overlays/manifest` | Event types and fields |
+| GET | `/api/overlays/token` | Get feed token |
+| POST | `/api/overlays/token` | Rotate feed token |
+| POST | `/api/overlays/test` | Send a test event |
 | GET | `/api/subscribers/leaderboard` | Subscribers leaderboard |
 | GET | `/api/gifters/leaderboard` | Gifters leaderboard |
 | GET | `/api/bits/leaderboard` | Bits leaderboard |

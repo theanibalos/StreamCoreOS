@@ -10,7 +10,6 @@ class StreamOutputData(BaseModel):
     platform: str
     channel_id: str
     enabled: bool
-    overlay_id: Optional[int] = None
     rtmp_url: Optional[str] = None
     stream_key_configured: bool
     stream_key_preview: Optional[str] = None
@@ -28,7 +27,6 @@ def serialize_stream_output(row: dict) -> dict:
         "platform": row["platform"],
         "channel_id": row["channel_id"],
         "enabled": bool(row["enabled"]),
-        "overlay_id": row.get("overlay_id"),
         "rtmp_url": row.get("rtmp_url"),
         "stream_key_configured": bool(secret),
         "stream_key_preview": secret[-4:] if secret else None,
@@ -44,7 +42,6 @@ class UpdateStreamOutputRequest(BaseModel):
     platform: Optional[str] = Field(default=None, min_length=1)
     channel_id: Optional[str] = Field(default=None, min_length=1)
     enabled: Optional[bool] = Field(default=None)
-    overlay_id: Optional[int] = Field(default=None)
     rtmp_url: Optional[str] = Field(default=None)
     stream_key_secret: Optional[str] = Field(default=None)
     status: Optional[str] = Field(default=None)
@@ -83,7 +80,7 @@ class UpdateStreamOutputPlugin(BasePlugin):
                 return {"success": False, "error": "Stream output not found"}
 
             allowed = {
-                "name", "platform", "channel_id", "enabled", "overlay_id", "rtmp_url",
+                "name", "platform", "channel_id", "enabled", "rtmp_url",
                 "stream_key_secret", "status", "settings",
             }
             updates = []
