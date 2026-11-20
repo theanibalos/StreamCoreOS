@@ -11,6 +11,8 @@ class ModRuleEntity(BaseModel):
     duration_s: Optional[int]
     enabled: int
     exempt_roles: str   # comma-separated: mod,vip,regular,sub
+    target_users: str = ""   # comma-separated usernames, logins or IDs
+    exempt_users: str = ""   # comma-separated usernames, logins or IDs
 
 
 class ModLogEntity(BaseModel):

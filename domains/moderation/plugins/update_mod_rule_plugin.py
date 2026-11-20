@@ -11,6 +11,8 @@ class UpdateModRuleRequest(BaseModel):
     duration_s: Optional[int] = Field(default=None, ge=1, le=1209600)
     enabled: Optional[bool] = Field(default=None)
     exempt_roles: Optional[list[str]] = Field(default=None)
+    target_users: Optional[list[str]] = Field(default=None)
+    exempt_users: Optional[list[str]] = Field(default=None)
 
 
 class ModRuleData(BaseModel):
@@ -21,6 +23,8 @@ class ModRuleData(BaseModel):
     duration_s: Optional[int] = None
     enabled: bool
     exempt_roles: list[str] = []
+    target_users: list[str] = []
+    exempt_users: list[str] = []
 
 
 class UpdateModRuleResponse(BaseModel):
@@ -67,18 +71,30 @@ class UpdateModRulePlugin(BasePlugin):
             new_duration = req.duration_s if req.duration_s is not None else rule["duration_s"]
             new_enabled = int(req.enabled) if req.enabled is not None else rule["enabled"]
             new_exempt_roles = (
-                ",".join(req.exempt_roles) if req.exempt_roles is not None else (rule["exempt_roles"] or "")
+                ",".join(req.exempt_roles) if req.exempt_roles is not None else (rule.get("exempt_roles") or "")
+            )
+            new_target_users = (
+                ",".join(u.strip().lstrip("@") for u in req.target_users if u.strip())
+                if req.target_users is not None
+                else (rule.get("target_users") or "")
+            )
+            new_exempt_users = (
+                ",".join(u.strip().lstrip("@") for u in req.exempt_users if u.strip())
+                if req.exempt_users is not None
+                else (rule.get("exempt_users") or "")
             )
 
             await self.db.execute(
-                "UPDATE mod_rules SET value=$1, action=$2, duration_s=$3, enabled=$4, exempt_roles=$5 WHERE id=$6",
-                [new_value, new_action, new_duration, new_enabled, new_exempt_roles, rule_id],
+                "UPDATE mod_rules SET value=$1, action=$2, duration_s=$3, enabled=$4, exempt_roles=$5, target_users=$6, exempt_users=$7 WHERE id=$8",
+                [new_value, new_action, new_duration, new_enabled, new_exempt_roles, new_target_users, new_exempt_users, rule_id],
             )
             await self.bus.publish("moderation.rules.updated", {"rule_id": rule_id})
             return {"success": True, "data": {
                 "id": rule_id, "type": rule["type"], "value": new_value,
                 "action": new_action, "duration_s": new_duration, "enabled": bool(new_enabled),
                 "exempt_roles": [x for x in new_exempt_roles.split(",") if x],
+                "target_users": [x for x in new_target_users.split(",") if x],
+                "exempt_users": [x for x in new_exempt_users.split(",") if x],
             }}
         except Exception as e:
             self.logger.error(f"[UpdateModRule] {e}")

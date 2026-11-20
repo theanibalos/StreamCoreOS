@@ -13,6 +13,8 @@ class CreateModRuleRequest(BaseModel):
     action: str = Field(default="timeout")
     duration_s: Optional[int] = Field(default=600, ge=1, le=1209600)
     exempt_roles: list[str] = Field(default_factory=list)
+    target_users: list[str] = Field(default_factory=list)
+    exempt_users: list[str] = Field(default_factory=list)
 
 
 class ModRuleData(BaseModel):
@@ -23,6 +25,8 @@ class ModRuleData(BaseModel):
     duration_s: Optional[int] = None
     enabled: bool
     exempt_roles: list[str] = []
+    target_users: list[str] = []
+    exempt_users: list[str] = []
 
 
 class CreateModRuleResponse(BaseModel):
@@ -60,16 +64,23 @@ class CreateModRulePlugin(BasePlugin):
                 return {"success": False, "error": f"Invalid exempt_roles: {invalid_roles}. Must be one of: {VALID_ROLES}"}
 
             exempt_roles_str = ",".join(req.exempt_roles)
+            target_users_clean = [u.strip().lstrip("@") for u in req.target_users if u.strip()]
+            exempt_users_clean = [u.strip().lstrip("@") for u in req.exempt_users if u.strip()]
+            target_users_str = ",".join(target_users_clean)
+            exempt_users_str = ",".join(exempt_users_clean)
+
             rule_id = await self.db.execute(
-                """INSERT INTO mod_rules (type, value, action, duration_s, exempt_roles)
-                   VALUES ($1,$2,$3,$4,$5) RETURNING id""",
-                [req.type, req.value, req.action, req.duration_s, exempt_roles_str],
+                """INSERT INTO mod_rules (type, value, action, duration_s, exempt_roles, target_users, exempt_users)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
+                [req.type, req.value, req.action, req.duration_s, exempt_roles_str, target_users_str, exempt_users_str],
             )
             await self.bus.publish("moderation.rules.updated", {"rule_id": rule_id})
             return {"success": True, "data": {
                 "id": rule_id, "type": req.type, "value": req.value,
                 "action": req.action, "duration_s": req.duration_s, "enabled": True,
                 "exempt_roles": req.exempt_roles,
+                "target_users": target_users_clean,
+                "exempt_users": exempt_users_clean,
             }}
         except Exception as e:
             self.logger.error(f"[CreateModRule] {e}")

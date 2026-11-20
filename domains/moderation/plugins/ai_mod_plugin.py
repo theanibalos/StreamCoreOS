@@ -84,9 +84,40 @@ class AiModPlugin(BasePlugin):
         display_name = user.get("display_name", "")
         message_id   = msg.get("message_id", "")
 
+        sender_identifiers = set()
+        login = user.get("login")
+        if login:
+            sender_identifiers.add(str(login).lower().strip())
+        if display_name:
+            sender_identifiers.add(str(display_name).lower().strip())
+        uid = user.get("id")
+        if uid:
+            uid_str = str(uid).lower().strip()
+            sender_identifiers.add(uid_str)
+            if ":" in uid_str:
+                sender_identifiers.add(uid_str.split(":", 1)[1])
+        if user_id:
+            sender_identifiers.add(str(user_id).lower().strip())
+
         for rule in rules:
             exempt_roles = {r for r in (rule.get("exempt_roles") or "").split(",") if r}
             if sender_roles & exempt_roles:
+                continue
+
+            exempt_users = {
+                u.strip().lstrip("@").lower()
+                for u in (rule.get("exempt_users") or "").split(",")
+                if u.strip()
+            }
+            if sender_identifiers & exempt_users:
+                continue
+
+            target_users = {
+                u.strip().lstrip("@").lower()
+                for u in (rule.get("target_users") or "").split(",")
+                if u.strip()
+            }
+            if target_users and not (sender_identifiers & target_users):
                 continue
 
             if await self._evaluate(rule, message):
